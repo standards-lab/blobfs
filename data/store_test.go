@@ -121,7 +121,7 @@ func ops(rec *sqltest.Recorder) string {
 }
 
 // TestNew proves the catalog builds with the two sources, every statement
-// compiles, and the inventory: sixteen statements, all standard tier; the
+// compiles, and the inventory: eighteen statements, all standard tier; the
 // directory move, the file delete, and the two file holds the ones
 // requiring a transaction; and the six returning commands, the directory
 // ones reading their row back through directory_by_id and the file ones
@@ -130,8 +130,8 @@ func ops(rec *sqltest.Recorder) string {
 func TestNew(t *testing.T) {
 	want := []string{
 		"complete_file", "create_directory", "create_file", "delete_directory", "delete_file",
-		"directory_ancestors", "directory_by_id", "directory_by_name", "directory_is_within",
-		"file_by_id", "file_by_name", "hold_file", "hold_file_at_version", "move_directory",
+		"directory_ancestors", "directory_by_id", "directory_by_name", "directory_children",
+		"directory_files", "directory_is_within", "file_by_id", "file_by_name", "hold_file", "hold_file_at_version", "move_directory",
 		"move_file", "purge_file",
 	}
 	returning := map[string]string{
@@ -211,31 +211,42 @@ func TestNewWithoutPatterns(t *testing.T) {
 	}
 }
 
-// TestVerify proves Verify prepares every statement as authored, and each
+// TestVerify proves Verify prepares every statement as authored, each
 // returning command's single-statement form beside it where the dialect
-// renders one, without consuming a response.
+// renders one, and each listing's two projection probes, its field
+// contract over the base and a page past a cursor over the name key,
+// without consuming a response.
 func TestVerify(t *testing.T) {
 	for _, c := range []struct {
-		form form
-		want int
-	}{{forms[0], 16}, {forms[1], 22}} {
+		form      form
+		returning int
+	}{{forms[0], 0}, {forms[1], 6}} {
 		t.Run(c.form.name, func(t *testing.T) {
 			s, db, rec := openStore(t, c.form)
 			if err := s.Verify(context.Background(), db); err != nil {
 				t.Fatalf("Verify: %v", err)
 			}
 			prepared := rec.SQL(sqltest.OpPrepare)
-			if len(prepared) != c.want {
-				t.Errorf("Verify prepared %d statements, want %d", len(prepared), c.want)
+			if want := 18 + c.returning + 4; len(prepared) != want {
+				t.Errorf("Verify prepared %d statements, want %d", len(prepared), want)
 			}
-			returning := 0
+			returning, contracts, cursors := 0, 0, 0
 			for _, text := range prepared {
-				if strings.Contains(text, "RETURNING") {
+				switch {
+				case strings.Contains(text, "RETURNING"):
 					returning++
+				case strings.HasPrefix(text, "SELECT q.id, q.parent_id, q.name,"),
+					strings.HasPrefix(text, "SELECT q.id, q.directory_id, q.name, q.status,"):
+					contracts++
+				case strings.Contains(text, " WHERE (q.name > CAST($2 AS text)) ORDER BY q.name OFFSET"):
+					cursors++
 				}
 			}
-			if returning != c.want-16 {
-				t.Errorf("Verify prepared %d single-statement forms, want %d", returning, c.want-16)
+			if returning != c.returning {
+				t.Errorf("Verify prepared %d single-statement forms, want %d", returning, c.returning)
+			}
+			if contracts != 2 || cursors != 2 {
+				t.Errorf("Verify prepared %d field-contract and %d cursor-page probes, want 2 of each", contracts, cursors)
 			}
 		})
 	}
@@ -312,8 +323,8 @@ func TestConsumerVariantSwapsOneMethod(t *testing.T) {
 	if n := len(rec.SQL(sqltest.OpQuery)); n != 2 {
 		t.Errorf("the walk ran %d queries, want the baseline's 2", n)
 	}
-	if n := len(s.Statements()); n != 16 {
-		t.Errorf("Statements() lists %d, want the persistence package's 16", n)
+	if n := len(s.Statements()); n != 18 {
+		t.Errorf("Statements() lists %d, want the persistence package's 18", n)
 	}
 
 	s = newStore(t, fallback, data.WithVariant(failingLock{Variant: base}))

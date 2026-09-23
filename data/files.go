@@ -26,6 +26,7 @@ import (
 type Files struct {
 	byID     query.Rows[blobfs.File]
 	byName   query.Rows[blobfs.File]
+	list     query.Projection[blobfs.File]
 	create   query.Returning[blobfs.File]
 	complete query.RowGuard[blobfs.File]
 	move     query.RowGuard[blobfs.File]
@@ -42,6 +43,7 @@ func newFiles(stmts *query.Statements) *Files {
 	return &Files{
 		byID:     stmts.Statement("file_by_id").Scan(file),
 		byName:   stmts.Statement("file_by_name").Scan(file),
+		list:     stmts.Statement("directory_files").Project(file),
 		create:   stmts.Statement("create_file").Returning(file),
 		complete: stmts.Statement("complete_file").Returning(file).Guarded("version", version),
 		move:     stmts.Statement("move_file").Returning(file).Guarded("version", version),

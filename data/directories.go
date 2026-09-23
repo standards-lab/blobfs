@@ -18,6 +18,7 @@ type Directories struct {
 	variant   Variant
 	byID      query.Rows[blobfs.Directory]
 	byName    query.Rows[blobfs.Directory]
+	list      query.Projection[blobfs.Directory]
 	ancestors query.Rows[ancestor]
 	isWithin  query.Rows[int64]
 	create    query.Returning[blobfs.Directory]
@@ -40,6 +41,7 @@ func newDirectories(stmts *query.Statements, variant Variant) *Directories {
 		variant:   variant,
 		byID:      stmts.Statement("directory_by_id").Scan(directory),
 		byName:    stmts.Statement("directory_by_name").Scan(directory),
+		list:      stmts.Statement("directory_children").Project(directory),
 		ancestors: stmts.Statement("directory_ancestors").Scan(query.Scanner[ancestor]()),
 		isWithin:  stmts.Statement("directory_is_within").Scan(query.Scalar[int64]),
 		create:    stmts.Statement("create_directory").Returning(directory),

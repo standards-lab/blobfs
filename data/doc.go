@@ -16,8 +16,8 @@
 // published patterns are the column lists the entity types scan,
 // blobfs.directory_columns and blobfs.file_columns, which a consumer's own
 // statements include with {{> blobfs.name}}. Every pattern is
-// parameter-free, so a projection base that includes one binds no
-// parameters of its own.
+// parameter-free, so a projection base that includes one gains no
+// parameter from it.
 //
 // The tree has one root, seeded by the schema with blobfs.RootID. The
 // Store's Directories handle reads and writes directories. Ids are the
@@ -55,6 +55,21 @@
 // same row lock, waits for that transaction. Find and FindByName read a
 // file whatever its status, and Move moves or renames one, guarded by
 // version, without touching its key.
+//
+// Each handle lists one directory's contents, anchored on its id: List
+// reads a page by number and Continue the page past a cursor, both over a
+// projection base of the query library, directory_children or
+// directory_files, with the caller's query.Directives composed onto it.
+// The library owns the composition: an undeclared field is refused before
+// any SQL, name is the key and the tie-breaker of every sort, a page
+// reports More by reading one row past its size, and it carries a Next
+// cursor only under a sort a cursor can continue, one direction over
+// fields that are never null. The cursor is opaque, bound to the listing,
+// its sort, and its filters, and refused otherwise. The total is a count
+// under the same filters, run before the page as a second statement, so a
+// caller that needs the two to agree while rows change reads them in one
+// repeatable-read transaction. The listing of blobfs.RootID is the
+// depth-one directories; the root itself is in no listing.
 //
 // Two operations are variation points, where an engine may do better than
 // standard SQL: the tree lock that serializes directory moves, and path

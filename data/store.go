@@ -78,10 +78,13 @@ func (s *Store) Statements() []query.Statement {
 
 // Verify prepares every statement against the schema the session reaches,
 // so a statement the migrated schema no longer satisfies fails at startup
-// and not at first use. A variant that can verify itself is verified in
-// the same pass.
+// and not at first use. The two listings are verified as projections too:
+// each declared field compared with its declared type over the base, and
+// a page past a cursor, so a field contract the schema no longer satisfies
+// and the keyset predicate fail here as well. A variant that can verify
+// itself is verified in the same pass.
 func (s *Store) Verify(ctx context.Context, sess sqlate.Session) error {
-	vs := []query.Verifier{s.stmts}
+	vs := []query.Verifier{s.stmts, s.Directories.list, s.Files.list}
 	if v, ok := s.variant.(query.Verifier); ok {
 		vs = append(vs, v)
 	}
