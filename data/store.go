@@ -21,6 +21,9 @@ type Store struct {
 	// Directories holds the operations over blobfs_directory rows.
 	Directories *Directories
 
+	// Files holds the operations over blobfs_file rows.
+	Files *Files
+
 	stmts   *query.Statements
 	variant Variant
 }
@@ -55,6 +58,7 @@ func New(catalog *query.Catalog, dialect sqlate.Dialect, opts ...Option) (*Store
 	}
 	return &Store{
 		Directories: newDirectories(stmts, variant),
+		Files:       newFiles(stmts),
 		stmts:       stmts,
 		variant:     variant,
 	}, nil

@@ -34,6 +34,28 @@
 // files and then directories, deepest first. No operation walks the whole
 // tree.
 //
+// The Store's Files handle reads and writes file rows, and never calls the
+// object store: the consumer sequences each protocol around its own put
+// and delete. A write is Create, which inserts the row as pending with the
+// key built by blobfs.NewKey and validated against the consumer's
+// blobfs.KeyValidator, then the object put under the row's Key, then
+// Complete, which records what the store reported and makes the row
+// available, guarded by the pending row's version. Ensure is the
+// retry-safe first step: it reports whether it created the row, resumed a
+// pending one an earlier write left, or found the name present. There is
+// no failed status: a stop leaves the row pending for a retry, and an
+// abandoned write is deleted like any file. A delete is Delete, which
+// marks the row deleting and returns it with its key, idempotent on a row
+// already deleting; then the object delete; then Purge, which removes the
+// row, succeeds on a row already gone, and refuses one that is not
+// deleting. Every other mutation refuses a deleting row, and a deleting
+// row keeps its name until it is purged. Hold is the library's half of the
+// reference-then-delete rule: a consumer holds a file's row in the
+// transaction that inserts a reference to it, and Delete, which takes the
+// same row lock, waits for that transaction. Find and FindByName read a
+// file whatever its status, and Move moves or renames one, guarded by
+// version, without touching its key.
+//
 // Two operations are variation points, where an engine may do better than
 // standard SQL: the tree lock that serializes directory moves, and path
 // resolution. The Variant interface names them; Standard is the baseline
@@ -46,11 +68,16 @@
 //
 // Every operation takes the session as an argument and passes it through
 // unwrapped, so a call runs against the pool or inside the caller's
-// transaction; an operation correct only inside a transaction, the move
-// and the tree lock, takes a *sqlate.Tx. A violation of one of blobfs's
-// own constraints becomes blobfs.ErrNameTaken, blobfs.ErrIDTaken,
-// blobfs.ErrNotFound, blobfs.ErrRootDirectory, or, on a delete,
-// blobfs.ErrNotEmpty, carried by a blobfs.ViolationError. A violation of a
+// transaction; an operation correct only inside a transaction, the
+// directory move, the tree lock, a file's hold, and a file's Delete, takes
+// a *sqlate.Tx. A guarded step whose row moved on is
+// query.ErrVersionMismatch, with the expected and current versions in the
+// text; a step a deleting row refuses is blobfs.ErrDeleting, and a status
+// change the transition table refuses a blobfs.TransitionError. A
+// violation of one of blobfs's own constraints becomes
+// blobfs.ErrNameTaken, blobfs.ErrIDTaken, blobfs.ErrNotFound,
+// blobfs.ErrRootDirectory, or, on a directory delete, blobfs.ErrNotEmpty,
+// carried by a blobfs.ViolationError. A violation of a
 // constraint blobfs does not own returns unclassified on a write, wrapped
 // with the operation's context; on a delete a foreign key blobfs does not
 // own is a consumer's row that references the one being removed, which the

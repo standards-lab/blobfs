@@ -41,3 +41,24 @@ func WithID(id string) CreateOption {
 		o.hasID = true
 	}
 }
+
+// HoldOption configures one call of Files.Hold beyond its required
+// arguments.
+type HoldOption func(*holdOptions)
+
+// holdOptions collects what the hold options set.
+type holdOptions struct {
+	version    int64
+	hasVersion bool
+}
+
+// AtVersion makes Files.Hold match the row only at version, the value the
+// caller read from a listing or an earlier read, so a caller that acts on a
+// row it has not read inside its transaction learns that the row moved on.
+// A row at another version is query.ErrVersionMismatch.
+func AtVersion(version int64) HoldOption {
+	return func(o *holdOptions) {
+		o.version = version
+		o.hasVersion = true
+	}
+}
