@@ -12,9 +12,11 @@ express.
 
 ## Capability map
 
-The first release is being built from the closed experiment
-[spike-blobfs](https://github.com/JaimeStill/spike-blobfs): the root package, the persistence
-package `data` with its conformance suite, and the `postgres` engine sub-module.
+The first release is built, and `docs/` describes it: the root package, the persistence
+package `data` with its conformance suite `data/datatest`, the `postgres` engine sub-module
+(its variant, native statements, migration set, and integration tier), and the `example`
+module, the composition proof with `go-storage`. Its provenance is the closed experiment
+[spike-blobfs](https://github.com/JaimeStill/spike-blobfs).
 
 ## Notes
 

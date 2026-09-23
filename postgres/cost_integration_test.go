@@ -2,9 +2,8 @@
 
 package postgres_test
 
-// This file holds the plan-shape and cost regression assertions, ported
-// from the spike's two cost files and extended to the statements the
-// promoted store runs: the listing under query.TotalNone and under
+// This file holds the plan-shape and cost regression assertions for the
+// statements the store runs: the listing under query.TotalNone and under
 // query.TotalExact, the cursor page by name and by the row-value
 // comparison over a consumer's created_at index, the baseline's path walk
 // step and the variant's one-statement resolution, the recursive walks up

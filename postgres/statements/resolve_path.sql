@@ -19,8 +19,8 @@
 -- depth 0, since an empty array has no element at position 1. The
 -- segments bind as one parameter, so a name is never spliced into the
 -- text, whatever characters it carries. The row is selected by the
--- maximum depth rather than sorted and cut, which the spike's measurement
--- showed saves three buffers on a sort the walk does not need.
+-- maximum depth rather than sorted and cut, which saves the buffers of a
+-- sort the walk does not need.
 WITH RECURSIVE walk (id, parent_id, name, version, created_at, updated_at, depth) AS (
     SELECT {{> blobfs.directory_columns}}, CAST(0 AS integer)
     FROM blobfs_directory d
