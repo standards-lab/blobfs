@@ -79,9 +79,11 @@
 // standard SQL: the tree lock that serializes directory moves, and path
 // resolution. The Variant interface names them; Standard is the baseline
 // every engine runs (a no-op lock that reports it does not serialize, and
-// one child read per path segment), and New takes another implementation
-// through WithVariant: an engine sub-module's, or a consumer's own, which
-// embeds either and overrides the methods it needs. The Store validates
+// one child read per path segment), and New installs another through
+// WithEngine: an Engine builds the variant over the baseline New compiled
+// and bound, so the statements are compiled once. The Engine is an engine
+// sub-module's, or a consumer's own, whose variant embeds the baseline or
+// an engine's variant and overrides the methods it needs. The Store validates
 // every input and classifies every error itself, so a variant binds what
 // it is given and returns what the session mapped.
 //

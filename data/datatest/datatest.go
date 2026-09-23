@@ -3,10 +3,10 @@
 // the engine, the dialect's form of the returning commands, and the
 // variant the store forwards its variation points to. An engine
 // sub-module's integration tier runs it over the standard baseline and
-// over its own variant, under both forms of the returning commands, and a
-// consumer that supplies a variant of its own runs it over that. It lives
-// in a package of its own because a test helper in a _test.go file cannot
-// be imported by another module's tests.
+// over its own Engine's variant, under both forms of the returning
+// commands, and a consumer that supplies an Engine of its own runs it over
+// that. It lives in a package of its own because a test helper in a
+// _test.go file cannot be imported by another module's tests.
 //
 // The suite is engine-agnostic: it imports no engine package and no
 // driver, and every statement it runs outside the store is standard SQL
@@ -40,52 +40,51 @@ import (
 )
 
 // Run runs the suite as subtests of t, over a store it builds from
-// catalog and db's dialect with variant, and over a second store it
-// builds over the standard baseline to compare against. A nil variant is
-// the store data.New builds without WithVariant, the baseline itself.
-// catalog is the consumer's catalog: data.Patterns() registered beside the
-// query library's patterns or an engine's overlay of them, which the
-// caller chooses so a run covers the keyset spelling it ships. db is a
-// migrated throwaway database, and its dialect is the one the variant was
-// compiled for; a dialect that renders RETURNING runs every returning
-// command as one statement, and one that does not runs the fallback.
+// catalog and db's dialect with engine, and over a second store it builds
+// over the standard baseline to compare against. A nil engine is the store
+// data.New builds without WithEngine, the baseline itself. catalog is the
+// consumer's catalog: data.Patterns() registered beside the query
+// library's patterns or an engine's overlay of them, which the caller
+// chooses so a run covers the keyset spelling it ships. db is a migrated
+// throwaway database, and its dialect is the one the store and the
+// engine's statements are compiled for; a dialect that renders RETURNING
+// runs every returning command as one statement, and one that does not
+// runs the fallback.
 //
-// The groups, in order: Verify (the store's statements, listings, and
-// variant prepared against the migrated schema); Directories (the root,
-// reads by id and by name, Create and Ensure with their refusals by
-// sentinel and constraint, a concurrent Ensure on the pool, and Delete);
-// Paths (FindByPath at every depth, a missing segment and a missing
-// start, the refused forms, and names that would break a spliced path,
-// against the baseline; Path after moves); Files (reads and Move);
-// Writes (Create, Ensure, and Complete of the write protocol against the
-// baseline, a write inside the caller's transaction, a retry after a
-// stop, and caller-supplied ids); Deletes (Delete and Purge, retries at
-// each step, and a consumer's reference); Holds (Hold's refusals and the
-// two interleavings of a hold and a delete on the row lock); Moves (the
-// tree lock, the directory move's sequential contract, and two opposing
-// concurrent moves, which serialize or form a cycle as Serializes says,
-// and which serializable isolation refuses on every variant); Listing
-// (both listings against a plain query, the page boundaries, the counted
-// total's rules for empty and continued pages, the total under
-// concurrent inserts, and the refusals); and Keyset (every cursorable
-// sort walked to the end against the baseline and an offset walk,
-// without and then with a sort index).
-func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, variant data.Variant) {
+// The groups, in order: Verify (the store's statements, listings, and the
+// engine's own statements prepared against the migrated schema);
+// Directories (the root, reads by id and by name, Create and Ensure with
+// their refusals by sentinel and constraint, a concurrent Ensure on the
+// pool, and Delete); Paths (FindByPath at every depth, a missing segment
+// and a missing start, the refused forms, and names that would break a
+// spliced path, against the baseline; Path after moves); Files (reads and
+// Move); Writes (Create, Ensure, and Complete of the write protocol
+// against the baseline, a write inside the caller's transaction, a retry
+// after a stop, and caller-supplied ids); Deletes (Delete and Purge,
+// retries at each step, and a consumer's reference); Holds (Hold's
+// refusals and the two interleavings of a hold and a delete on the row
+// lock); Moves (the tree lock, the directory move's sequential contract,
+// and two opposing concurrent moves, which serialize or form a cycle as
+// Serializes says, and which serializable isolation refuses on every
+// variant); Listing (both listings against a plain query, the page
+// boundaries, the counted total's rules for empty and continued pages, the
+// total under concurrent inserts, and the refusals); and Keyset (every
+// cursorable sort walked to the end against the baseline and an offset
+// walk, without and then with a sort index).
+func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, engine data.Engine) {
 	t.Helper()
 	dialect := db.Dialect()
-	var opts []data.Option
-	if variant != nil {
-		opts = append(opts, data.WithVariant(variant))
-	} else {
-		standard, err := data.NewStandard(catalog, dialect)
-		if err != nil {
-			t.Fatalf("data.NewStandard: %v", err)
-		}
-		variant = standard
+	if engine == nil {
+		engine = baselineEngine
 	}
-	store, err := data.New(catalog, dialect, opts...)
+	var variant data.Variant
+	store, err := data.New(catalog, dialect, data.WithEngine(func(c *query.Catalog, d sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+		v, err := engine(c, d, base)
+		variant = v
+		return v, err
+	}))
 	if err != nil {
-		t.Fatalf("data.New over the variant under test: %v", err)
+		t.Fatalf("data.New over the engine under test: %v", err)
 	}
 	baseline, err := data.New(catalog, dialect)
 	if err != nil {
@@ -95,6 +94,7 @@ func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, variant data.Varia
 		ctx:      context.Background(),
 		db:       db,
 		catalog:  catalog,
+		engine:   engine,
 		variant:  variant,
 		store:    store,
 		baseline: baseline,
@@ -116,9 +116,10 @@ type suite struct {
 	ctx     context.Context
 	db      *sqlate.DB
 	catalog *query.Catalog
-	// variant is the variant the store under test forwards to, the
-	// baseline's own when Run was given none, which the move group wraps to
-	// interleave two moves.
+	// engine is the engine under test, the baseline's when Run was given
+	// none, which the move group wraps to interleave two moves.
+	engine data.Engine
+	// variant is the variant the engine built for the store under test.
 	variant data.Variant
 	// store is the store under test.
 	store *data.Store
@@ -145,4 +146,9 @@ func (s *suite) verify(t *testing.T) {
 	if err := s.baseline.Verify(s.ctx, s.db); err != nil {
 		t.Fatalf("Verify of the baseline: %v", err)
 	}
+}
+
+// baselineEngine is the engine of a run given none: the baseline itself.
+func baselineEngine(_ *query.Catalog, _ sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+	return base, nil
 }

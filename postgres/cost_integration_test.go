@@ -78,11 +78,7 @@ func openCost(t *testing.T, sizes dbtest.Sizes) costEnv {
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)
 	}
-	v, err := postgres.New(c, db.Dialect())
-	if err != nil {
-		t.Fatalf("postgres.New: %v", err)
-	}
-	store, err := data.New(c, db.Dialect(), data.WithVariant(v))
+	store, err := data.New(c, db.Dialect(), data.WithEngine(postgres.Engine))
 	if err != nil {
 		t.Fatalf("data.New: %v", err)
 	}

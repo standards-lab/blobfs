@@ -36,23 +36,34 @@ func catalog(t *testing.T) *query.Catalog {
 	return c
 }
 
-// newVariant compiles the variant under dialect.
-func newVariant(t *testing.T, dialect sqlate.Dialect) *postgres.Variant {
+// newStore compiles the store over the engine under dialect and returns
+// it with the variant the engine built for it.
+func newStore(t *testing.T, dialect sqlate.Dialect) (*data.Store, *postgres.Variant) {
 	t.Helper()
-	v, err := postgres.New(catalog(t), dialect)
-	if err != nil {
-		t.Fatalf("New: %v", err)
+	var v *postgres.Variant
+	capture := func(c *query.Catalog, d sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+		dv, err := postgres.Engine(c, d, base)
+		if err != nil {
+			return nil, err
+		}
+		v = dv.(*postgres.Variant)
+		return dv, nil
 	}
-	return v
+	s, err := data.New(catalog(t), dialect, data.WithEngine(capture))
+	if err != nil {
+		t.Fatalf("data.New: %v", err)
+	}
+	return s, v
 }
 
-// TestNew proves the variant compiles against the consumer's catalog under
-// the engine's dialect: two statements, both native tier, each with a
-// port note, the lock requiring a transaction and the resolution not; the
-// variant reporting that it serializes; and New refusing a catalog
-// without the blobfs namespace.
-func TestNew(t *testing.T) {
-	v := newVariant(t, sqlatepg.Dialect{})
+// TestEngine proves the engine compiles against the consumer's catalog
+// under the engine's dialect: two statements, both native tier, each with
+// a port note, the lock requiring a transaction and the resolution not;
+// the variant reporting that it serializes; the store's Verify preparing
+// both beside its own; and the engine refusing a catalog without the
+// blobfs namespace.
+func TestEngine(t *testing.T) {
+	s, v := newStore(t, sqlatepg.Dialect{})
 	var names []string
 	for _, st := range v.Statements() {
 		names = append(names, st.Name())
@@ -72,16 +83,30 @@ func TestNew(t *testing.T) {
 	if !v.Serializes() {
 		t.Error("Serializes = false, want true")
 	}
+
+	pool, rec := sqltest.Open(t)
+	if err := s.Verify(context.Background(), sqlate.Wrap(pool, sqltest.Dialect{})); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	prepared := rec.SQL(sqltest.OpPrepare)
+	for _, st := range v.Statements() {
+		if n := len(slices.DeleteFunc(slices.Clone(prepared), func(text string) bool { return text != st.Text() })); n != 1 {
+			t.Errorf("the store's Verify prepared %s %d times, want once", st.Name(), n)
+		}
+	}
+
 	bare, err := query.NewCatalog(sqlatepg.Patterns())
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)
 	}
-	if _, err := postgres.New(bare, sqlatepg.Dialect{}); err == nil {
-		t.Error("New without the blobfs namespace compiled; resolve_path includes blobfs.directory_columns")
+	// data.New refuses such a catalog before it reaches an engine, so the
+	// engine is called directly; it fails compiling, before it binds base.
+	if _, err := postgres.Engine(bare, sqlatepg.Dialect{}, nil); err == nil {
+		t.Error("Engine without the blobfs namespace compiled; resolve_path includes blobfs.directory_columns")
 	}
 }
 
-// TestStoreForms proves the store over the variant compiles under the
+// TestStoreForms proves the store over the engine compiles under the
 // engine's dialect and under the dialect with its capabilities hidden:
 // the store lists its own statements and then the variant's, and each of
 // the six returning commands carries its single-statement form, a
@@ -98,11 +123,7 @@ func TestStoreForms(t *testing.T) {
 		{"Fallback", fallback{sqlatepg.Dialect{}}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			v := newVariant(t, c.dialect)
-			s, err := data.New(catalog(t), c.dialect, data.WithVariant(v))
-			if err != nil {
-				t.Fatalf("data.New: %v", err)
-			}
+			s, _ := newStore(t, c.dialect)
 			stmts := s.Statements()
 			if n := len(stmts); n < 3 || stmts[n-2].Name() != "lock_tree" || stmts[n-1].Name() != "resolve_path" {
 				t.Fatalf("the store's inventory does not end with the variant's two statements: %d statements", n)
@@ -142,7 +163,7 @@ func TestTreeLockKey(t *testing.T) {
 // TestLockTreeSQL proves LockTree runs the advisory lock statement in the
 // transaction with the key bound.
 func TestLockTreeSQL(t *testing.T) {
-	v := newVariant(t, sqltest.Dialect{})
+	_, v := newStore(t, sqltest.Dialect{})
 	pool, rec := sqltest.Open(t, sqltest.Response{Affected: 0})
 	db := sqlate.Wrap(pool, sqltest.Dialect{})
 	ctx := context.Background()
@@ -175,15 +196,11 @@ func resolvedResponse(id, parent, name string, depth int64) sqltest.Response {
 	return sqltest.Response{Columns: resolvedColumns, Rows: [][]driver.Value{{id, parent, name, int64(1), now, now, depth}}}
 }
 
-// openStore compiles the store over the variant under the stub dialect
+// openStore compiles the store over the engine under the stub dialect
 // and opens a scripted pool over the responses.
 func openStore(t *testing.T, responses ...sqltest.Response) (*data.Store, *sqlate.DB, *sqltest.Recorder) {
 	t.Helper()
-	v := newVariant(t, sqltest.Dialect{})
-	s, err := data.New(catalog(t), sqltest.Dialect{}, data.WithVariant(v))
-	if err != nil {
-		t.Fatalf("data.New: %v", err)
-	}
+	s, _ := newStore(t, sqltest.Dialect{})
 	pool, rec := sqltest.Open(t, responses...)
 	return s, sqlate.Wrap(pool, sqltest.Dialect{}), rec
 }

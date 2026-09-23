@@ -10,8 +10,8 @@
 //
 // # The variant
 //
-// Variant implements data.Variant over two native-tier statements, with
-// the standard baseline embedded:
+// Engine builds a Variant, which implements data.Variant over two
+// native-tier statements with the store's standard baseline embedded:
 //
 //   - The tree lock (lock_tree) is a transaction-scoped advisory lock,
 //     pg_advisory_xact_lock over the fixed key TreeLockKey, so two
@@ -32,11 +32,15 @@
 //
 // Every statement file declares its tier as native and carries a port
 // note: the engine feature it uses and what a port to another engine must
-// provide. A consumer composes the variant at its composition root, over
-// the one catalog and the dialect its store uses:
+// provide. A consumer selects the engine at its composition root, over the
+// one catalog and the dialect its store uses:
 //
-//	v, err := postgres.New(catalog, dialect)
-//	store, err := data.New(catalog, dialect, data.WithVariant(v))
+//	store, err := data.New(catalog, dialect, data.WithEngine(postgres.Engine))
+//
+// data.New compiles the persistence package's statements once and hands
+// the baseline it bound to Engine, which compiles only its own two. The
+// store lists the variant's statements after its own, and its Verify
+// prepares them in the same pass.
 //
 // The datatest package's suite proves the variant against the same
 // contract the baseline satisfies, comparing each outcome with the

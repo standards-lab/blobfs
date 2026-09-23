@@ -5,16 +5,17 @@ type Option func(*options)
 
 // options collects what the options set.
 type options struct {
-	variant Variant
+	engine Engine
 }
 
-// WithVariant makes the store forward its variation points to v instead
-// of Standard. The variant is built by its own constructor against the
-// same catalog and dialect, so a consumer composes an engine's variant and
-// then New(catalog, dialect, WithVariant(v)), or passes an implementation
-// of its own.
-func WithVariant(v Variant) Option {
-	return func(o *options) { o.variant = v }
+// WithEngine makes the store forward its variation points to the variant
+// e builds instead of Standard. New calls e once, with its own catalog and
+// dialect and the baseline it bound over the statements it compiled, so a
+// consumer selects an engine with New(catalog, dialect,
+// WithEngine(postgres.Engine)), or passes an Engine of its own. See
+// Engine.
+func WithEngine(e Engine) Option {
+	return func(o *options) { o.engine = e }
 }
 
 // CreateOption configures one call of an operation that creates a row,

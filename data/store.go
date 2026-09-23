@@ -3,6 +3,7 @@ package data
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -38,8 +39,11 @@ type Store struct {
 // RETURNING, the command and its read otherwise. No I/O happens here.
 //
 // The options choose the variant the store forwards its variation points
-// to (see Variant); without WithVariant the store runs Standard, built
-// over the same compiled statements.
+// to (see Variant). New binds Standard over the statements it compiled;
+// without WithEngine the store runs it, and with one New passes it to the
+// Engine as the baseline and runs the variant the Engine returns. The
+// statements are compiled once either way. An Engine's error is returned
+// wrapped as "data: engine: ...".
 func New(catalog *query.Catalog, dialect sqlate.Dialect, opts ...Option) (*Store, error) {
 	var o options
 	for _, opt := range opts {
@@ -52,9 +56,17 @@ func New(catalog *query.Catalog, dialect sqlate.Dialect, opts ...Option) (*Store
 	if err != nil {
 		return nil, fmt.Errorf("data: %w", err)
 	}
-	variant := o.variant
-	if variant == nil {
-		variant = newStandard(stmts)
+	base := newStandard(stmts)
+	var variant Variant = base
+	if o.engine != nil {
+		v, err := o.engine(catalog, dialect, base)
+		if err != nil {
+			return nil, fmt.Errorf("data: engine: %w", err)
+		}
+		if v == nil {
+			return nil, errors.New("data: engine: returned no variant")
+		}
+		variant = v
 	}
 	return &Store{
 		Directories: newDirectories(stmts, variant),
@@ -82,7 +94,8 @@ func (s *Store) Statements() []query.Statement {
 // each declared field compared with its declared type over the base, and
 // a page past a cursor, so a field contract the schema no longer satisfies
 // and the keyset predicate fail here as well. A variant that can verify
-// itself is verified in the same pass.
+// itself, as an Engine's variant that compiled statements of its own
+// does, is verified in the same pass (see Engine).
 func (s *Store) Verify(ctx context.Context, sess sqlate.Session) error {
 	vs := []query.Verifier{s.stmts, s.Directories.list, s.Files.list}
 	if v, ok := s.variant.(query.Verifier); ok {
@@ -92,8 +105,9 @@ func (s *Store) Verify(ctx context.Context, sess sqlate.Session) error {
 }
 
 // inventory is the optional capability of a variant that compiled
-// statements of its own. Standard has none: its statements are the
-// persistence package's own, which the Store already lists and verifies.
+// statements of its own (see Engine). Standard has none: its statements
+// are the persistence package's own, which the Store already lists and
+// verifies.
 type inventory interface {
 	Statements() []query.Statement
 }

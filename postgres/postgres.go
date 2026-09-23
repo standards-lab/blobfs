@@ -28,12 +28,12 @@ const TreeLockName = "blobfs_directory.tree"
 // this package's tests recompute it from the name.
 const TreeLockKey int64 = -8521165719926625175
 
-// Variant is the Postgres implementation of data.Variant: the standard
-// baseline embedded, so a variation point this package does not override
-// runs as the baseline does, and the compiled native statements bound to
-// their handles. It overrides two: the tree lock, which the baseline
-// cannot take, and path resolution in one statement. It holds no session;
-// every method takes one.
+// Variant is the Postgres implementation of data.Variant, the variant
+// Engine builds: the store's standard baseline embedded, so a variation
+// point this package does not override runs as the baseline does, and the
+// compiled native statements bound to their handles. It overrides two:
+// the tree lock, which the baseline cannot take, and path resolution in
+// one statement. It holds no session; every method takes one.
 type Variant struct {
 	*data.Standard
 	stmts       *query.Statements
@@ -50,28 +50,28 @@ type resolved struct {
 }
 
 var (
+	_ data.Engine    = Engine
 	_ data.Variant   = (*Variant)(nil)
 	_ query.Verifier = (*Variant)(nil)
 )
 
-// New compiles the variant's statements against catalog for dialect and
-// binds them, over a baseline built the same way by data.NewStandard. The
-// catalog must carry the blobfs namespace, registered from data.Patterns(),
-// because resolve_path returns the published directory columns. The
-// dialect is the one the store is built with; the variant's statements
-// take no returning form, so either form of the store's returning
-// commands suits it. No I/O happens here.
-func New(catalog *query.Catalog, dialect sqlate.Dialect) (*Variant, error) {
-	standard, err := data.NewStandard(catalog, dialect)
-	if err != nil {
-		return nil, fmt.Errorf("blobfs/postgres: %w", err)
-	}
+// Engine is the Postgres engine for data.WithEngine: it compiles the
+// variant's own two statements against catalog for dialect, binds them,
+// and returns a *Variant over base, the baseline data.New compiled, so the
+// persistence package's statements are compiled once. A consumer selects
+// it at its composition root with data.New(catalog, dialect,
+// data.WithEngine(Engine)). The catalog must carry the blobfs namespace,
+// registered from data.Patterns(), because resolve_path returns the
+// published directory columns. The variant's statements take no returning
+// form, so either form of the store's returning commands suits it. No I/O
+// happens here.
+func Engine(catalog *query.Catalog, dialect sqlate.Dialect, base *data.Standard) (data.Variant, error) {
 	stmts, err := catalog.Compile(statementFiles, "statements", dialect)
 	if err != nil {
 		return nil, fmt.Errorf("blobfs/postgres: %w", err)
 	}
 	return &Variant{
-		Standard:    standard,
+		Standard:    base,
 		stmts:       stmts,
 		lockTree:    stmts.Statement("lock_tree"),
 		resolvePath: stmts.Statement("resolve_path").Scan(query.Scanner[resolved]()),
@@ -79,14 +79,15 @@ func New(catalog *query.Catalog, dialect sqlate.Dialect) (*Variant, error) {
 }
 
 // Statements returns the variant's compiled inventory in name order, for
-// a consumer that lists the SQL its program runs. The store appends it to
-// its own.
+// a consumer that lists the SQL its program runs. The store's Statements
+// appends it to the persistence package's own.
 func (v *Variant) Statements() []query.Statement {
 	return v.stmts.Statements()
 }
 
 // Verify prepares the variant's statements against the schema the session
-// reaches. The store's Verify includes it.
+// reaches. The store's Verify runs it in the same pass as its own, so a
+// startup Verify covers lock_tree and resolve_path.
 func (v *Variant) Verify(ctx context.Context, sess sqlate.Session) error {
 	return v.stmts.Verify(ctx, sess)
 }

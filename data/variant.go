@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 
 	"github.com/standards-lab/sqlate"
 	"github.com/standards-lab/sqlate/query"
@@ -17,11 +16,12 @@ import (
 // standard SQL cannot express as well. The Store runs every other
 // operation from its standard-tier statements, whose returning commands
 // already take the one-statement form on an engine whose dialect renders
-// it, and forwards these to the variant it was built with. The default is
-// Standard, which is complete on any engine; an engine sub-module ships its
-// own; and a consumer supplies one by implementing the interface,
-// typically by embedding one of the two and overriding the methods it
-// needs.
+// it, and forwards these to the variant its Engine built. The default is
+// Standard, which is complete on any engine; an engine sub-module ships an
+// Engine of its own; and a consumer supplies one by writing an Engine
+// whose variant implements the interface, typically by embedding the
+// baseline it is given, or an engine's variant, and overriding the methods
+// it needs.
 //
 // LockTree serializes tree-shape changes: the caller takes it inside the
 // transaction that will move a directory, before the cycle check, so that
@@ -51,26 +51,36 @@ type Variant interface {
 	ResolvePath(ctx context.Context, sess sqlate.Session, startID string, segments []string) (blobfs.Directory, int, error)
 }
 
+// Engine builds a store's variant over the baseline the store compiled,
+// against the store's catalog and dialect. New compiles the persistence
+// package's statements once, binds Standard over them, and passes it as
+// base, so an engine compiles only its own native statements and embeds
+// base for every variation point it does not override. A consumer's own
+// variant is an Engine too, one that embeds base, or the variant another
+// Engine returned, and overrides the methods it needs:
+//
+//	func(c *query.Catalog, d sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+//		return lockless{Variant: base}, nil
+//	}
+//
+// A variant that compiled statements of its own exposes them through two
+// optional methods the store asserts: Statements() []query.Statement,
+// which Store.Statements appends to its inventory, and Verify(ctx,
+// sess) error, the query.Verifier that Store.Verify runs in the same pass
+// as its own, so a startup Verify covers the engine's statements too. A
+// wrapper that embeds such a variant through the Variant interface hides
+// them, and forwards them itself when it wants them listed and verified.
+type Engine func(catalog *query.Catalog, dialect sqlate.Dialect, base *Standard) (Variant, error)
+
 // Standard is the standard-tier variant, the baseline every engine runs:
 // no tree lock, and path resolution one child read per segment. It is the
-// variant New uses when no WithVariant option is given, and a consumer
-// that wants to override one of its methods builds it with NewStandard
-// and embeds it.
+// variant New uses when no WithEngine option is given. New builds it over
+// the statements it compiled and hands it to the Engine, if any, so a
+// variant that overrides some of its methods embeds that one and
+// compiles no baseline of its own.
 type Standard struct {
 	directoryByID   query.Rows[blobfs.Directory]
 	directoryByName query.Rows[blobfs.Directory]
-}
-
-// NewStandard compiles the baseline variant's statements against catalog
-// for dialect. They are the persistence package's own statement files, so
-// a consumer that builds a Standard to embed compiles the same directory
-// New does.
-func NewStandard(catalog *query.Catalog, dialect sqlate.Dialect) (*Standard, error) {
-	stmts, err := catalog.Compile(statementFiles, "statements", dialect)
-	if err != nil {
-		return nil, fmt.Errorf("data: %w", err)
-	}
-	return newStandard(stmts), nil
 }
 
 // newStandard binds the baseline over an already compiled set.

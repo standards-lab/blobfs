@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/standards-lab/sqlate"
+	"github.com/standards-lab/sqlate/query"
 
 	"github.com/standards-lab/blobfs"
 	"github.com/standards-lab/blobfs/data"
@@ -191,12 +192,21 @@ func (s *suite) opposingSerializableMoves(t *testing.T) {
 	s.wantPath(t, x.ID, "/"+y.Name+"/moved")
 }
 
-// gatedStore builds a store over a gated wrapper of the variant under
-// test, against the suite's catalog and dialect.
+// gatedStore builds a store over a gated wrapper of the variant the
+// engine under test builds, through an engine that wraps it, against the
+// suite's catalog and dialect.
 func (s *suite) gatedStore(t *testing.T) (*gated, *data.Store) {
 	t.Helper()
-	g := &gated{Variant: s.variant, arrived: make(chan chan struct{})}
-	store, err := data.New(s.catalog, s.db.Dialect(), data.WithVariant(g))
+	g := &gated{arrived: make(chan chan struct{})}
+	gate := func(c *query.Catalog, d sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+		v, err := s.engine(c, d, base)
+		if err != nil {
+			return nil, err
+		}
+		g.Variant = v
+		return g, nil
+	}
+	store, err := data.New(s.catalog, s.db.Dialect(), data.WithEngine(gate))
 	if err != nil {
 		t.Fatalf("data.New over the gated variant: %v", err)
 	}

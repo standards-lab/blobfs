@@ -30,14 +30,15 @@ var forms = []struct {
 
 // TestConformance runs the conformance suite over the matrix of the two
 // forms of the returning commands and the two variants, the standard
-// baseline (the store data.New builds without WithVariant) and the
-// Postgres variant, each in a throwaway database of its own, with the
-// catalog built from the engine's overlay of the library's patterns; and
-// once more over the Postgres variant with the library's own patterns, so
-// the standard spelling of the keyset predicate runs on the engine too.
-// The baseline reports that it does not serialize, and the suite proves
-// the cycle two opposing moves form on it; the Postgres variant reports
-// that it does, and the suite proves the second move refused.
+// baseline (the store data.New builds without WithEngine) and the
+// Postgres variant Engine builds, each in a throwaway database of its
+// own, with the catalog built from the engine's overlay of the library's
+// patterns; and once more over the Postgres engine with the library's own
+// patterns, so the standard spelling of the keyset predicate runs on the
+// engine too. The baseline reports that it does not serialize, and the
+// suite proves the cycle two opposing moves form on it; the Postgres
+// variant reports that it does, and the suite proves the second move
+// refused.
 func TestConformance(t *testing.T) {
 	for _, form := range forms {
 		for _, variant := range []string{"Standard", "Postgres"} {
@@ -54,7 +55,7 @@ func TestConformance(t *testing.T) {
 }
 
 // conform runs the suite in a throwaway database under dialect, with the
-// catalog built from patterns and blobfs's own, over the Postgres variant
+// catalog built from patterns and blobfs's own, over the Postgres engine
 // or the baseline.
 func conform(t *testing.T, dialect sqlate.Dialect, patterns query.Source, native bool) {
 	d := dbtest.Migrated(t)
@@ -62,26 +63,22 @@ func conform(t *testing.T, dialect sqlate.Dialect, patterns query.Source, native
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)
 	}
-	var v data.Variant
+	var (
+		engine data.Engine
+		opts   []data.Option
+	)
 	if native {
-		pv, err := postgres.New(c, dialect)
-		if err != nil {
-			t.Fatalf("postgres.New: %v", err)
-		}
-		if !pv.Serializes() {
-			t.Fatal("the Postgres variant reports it does not serialize")
-		}
-		v = pv
-	} else {
-		std, err := data.NewStandard(c, dialect)
-		if err != nil {
-			t.Fatalf("data.NewStandard: %v", err)
-		}
-		if std.Serializes() {
-			t.Fatal("the baseline reports it serializes")
-		}
+		engine = postgres.Engine
+		opts = append(opts, data.WithEngine(engine))
 	}
-	datatest.Run(t, d.Session(dialect), c, v)
+	store, err := data.New(c, dialect, opts...)
+	if err != nil {
+		t.Fatalf("data.New: %v", err)
+	}
+	if store.Directories.Serializes() != native {
+		t.Fatalf("the store reports Serializes %v over the %s", store.Directories.Serializes(), map[bool]string{true: "Postgres engine", false: "baseline"}[native])
+	}
+	datatest.Run(t, d.Session(dialect), c, engine)
 }
 
 // TestTreeLockIsAnAdvisoryLock proves the lock LockTree takes is a
@@ -96,11 +93,7 @@ func TestTreeLockIsAnAdvisoryLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)
 	}
-	v, err := postgres.New(c, db.Dialect())
-	if err != nil {
-		t.Fatalf("postgres.New: %v", err)
-	}
-	store, err := data.New(c, db.Dialect(), data.WithVariant(v))
+	store, err := data.New(c, db.Dialect(), data.WithEngine(postgres.Engine))
 	if err != nil {
 		t.Fatalf("data.New: %v", err)
 	}
