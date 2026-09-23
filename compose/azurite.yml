@@ -1,0 +1,20 @@
+services:
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    container_name: blobfs-azurite
+    # The Azure SDK sends an x-ms-version that Azurite rejects unless the version check is off.
+    command: azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck -l /data
+    ports:
+      - "127.0.0.1:${AZURITE_BLOB_PORT:-10000}:10000"
+    volumes:
+      - blobfs-azurite:/data
+    healthcheck:
+      # The image defines no health check. Its busybox provides nc, which is enough to
+      # show the blob listener accepts connections.
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 10000"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  blobfs-azurite:

@@ -1,0 +1,159 @@
+[tools]
+go = "1.27"
+golangci-lint = "2.13.2"
+
+# Space-separated list of module directories, kept in sync with the go.work
+# use-list and the ci.yml matrix. "." is the base module; postgres is the
+# engine sub-module and example the composition proof. A directory without a
+# go.mod yet is skipped.
+[env]
+GO_MODULES = ". postgres example"
+# The compose stack's defaults. The Azurite account and key are the
+# emulator's published development credentials, not secrets.
+BLOBFS_DSN = "postgres://app:app@127.0.0.1:5434/app?sslmode=disable"
+BLOBFS_STORAGE_ENDPOINT = "http://127.0.0.1:10000/devstoreaccount1"
+BLOBFS_STORAGE_ACCOUNT = "devstoreaccount1"
+BLOBFS_STORAGE_KEY = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+BLOBFS_STORAGE_CONTAINER = "blobfs"
+
+# Maintenance.
+[tasks.tidy]
+description = "Run go mod tidy across all modules"
+run = '''
+set -e
+for mod in $GO_MODULES; do
+  [ -f "$mod/go.mod" ] || continue
+  echo "==> tidy: $mod"
+  (cd "$mod" && go mod tidy)
+done
+'''
+
+# Verification.
+[tasks.fmt]
+description = "Format all Go source"
+run = "gofmt -w ."
+
+[tasks.lint]
+description = "Run golangci-lint across all modules, then sqlint over the repository"
+run = '''
+set -e
+for mod in $GO_MODULES; do
+  [ -f "$mod/go.mod" ] || continue
+  echo "==> lint: $mod"
+  (cd "$mod" && golangci-lint run ./...)
+done
+if [ -f sqlint.toml ]; then
+  echo "==> sqlint"
+  go run github.com/standards-lab/sqlate/sqlint/cmd/sqlint .
+fi
+'''
+
+[tasks.build]
+description = "Build each module with the workspace off, proving it resolves its own pins standalone"
+run = '''
+set -e
+for mod in $GO_MODULES; do
+  [ -f "$mod/go.mod" ] || continue
+  echo "==> build (GOWORK=off): $mod"
+  (cd "$mod" && GOWORK=off go build ./...)
+done
+'''
+
+[tasks.vet]
+description = "Run go vet across all modules"
+run = '''
+set -e
+for mod in $GO_MODULES; do
+  [ -f "$mod/go.mod" ] || continue
+  echo "==> vet: $mod"
+  (cd "$mod" && go vet ./...)
+done
+'''
+
+[tasks.split-check]
+description = "Fail if a library package imports what its layer may not"
+run = '''
+{% raw %}
+set -e
+fail=0
+module='github.com/standards-lab/blobfs'
+sqlate='github.com/standards-lab/sqlate'
+storage='github.com/standards-lab/go-storage'
+
+# report <rule> <offenders>: print the rule's failure and the offenders, and mark the run failed.
+report() {
+  echo "split-check: $1:"; echo "$2"; fail=1
+}
+
+# deps <dir> <package> <extended-regex>: fail when a transitive non-test dependency of the
+# package, listed from the module at dir, matches the pattern. A package not created yet is
+# skipped.
+deps() {
+  [ -d "$1/$2" ] || return 0
+  self=$(cd "$1" && go list "./$2" 2>/dev/null) || return 0
+  bad=$(cd "$1" && go list -deps "./$2" 2>/dev/null | grep -v -x "$self" | grep -E "$3" || true)
+  [ -z "$bad" ] || report "$2 depends on what its layer may not" "$bad"
+}
+
+# The root package is Go only: neither sqlate nor go-storage.
+deps . . "^($sqlate|$storage)"
+# The persistence package takes sqlate, never go-storage or an engine.
+deps . data "^($storage|$module/postgres)"
+# The conformance suite is engine-agnostic.
+deps . data/datatest "^($storage|$module/postgres)"
+# The engine takes the persistence package and sqlate only: never go-storage, never the
+# conformance suite, never a driver outside its tests.
+deps postgres . "^($storage|$module/data/datatest|github.com/jackc/)"
+
+# No non-test file outside the suite names the conformance suite or the test support.
+bad=$(grep -rl --include='*.go' -E "\"$module/(data/datatest|postgres/internal/dbtest)\"" . \
+  | grep -v '_test.go$' | sed 's#^\./##' | grep -v -E '^(data/datatest|postgres/internal/dbtest)/' || true)
+[ -z "$bad" ] || report "a non-test file names the conformance suite or the test support" "$bad"
+
+[ "$fail" -eq 0 ] && echo "split-check: ok"
+exit "$fail"
+{% endraw %}
+'''
+
+# Testing.
+[tasks.test]
+description = "Run the unit tier across all modules"
+run = '''
+set -e
+for mod in $GO_MODULES; do
+  [ -f "$mod/go.mod" ] || continue
+  echo "==> test: $mod"
+  (cd "$mod" && go test -race ./...)
+done
+'''
+
+[tasks.integration]
+description = "Run the integration tier against the PostgreSQL named by BLOBFS_DSN"
+run = "cd postgres && go test -race -tags integration -count=1 ./..."
+
+[tasks.example]
+description = "Run the composition proof against the compose PostgreSQL and Azurite"
+run = "cd example && go run ."
+
+[tasks.acceptance]
+description = "The one-shot proof: up, integration, example, then reset regardless of the result"
+run = '''
+set -e
+trap 'mise run reset' EXIT
+mise run up
+mise run integration
+mise run example
+'''
+
+# Services.
+[tasks.up]
+description = "Start the compose PostgreSQL and Azurite and wait until they are healthy"
+run = "docker compose up -d --wait"
+
+[tasks.down]
+description = "Stop the compose stack, keeping its volumes"
+run = "docker compose down"
+
+[tasks.reset]
+description = "Stop the compose stack and drop its volumes"
+run = "docker compose down -v"
