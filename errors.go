@@ -24,9 +24,11 @@ var (
 	ErrInvalidName = errors.New("blobfs: invalid name")
 
 	// ErrInvalidPath reports a path the persistence layer could not read:
-	// one that does not start with a slash, or one with a segment
-	// ValidateName refuses, in which case the error also matches
-	// ErrInvalidName. A path is / for the root and /a/b below it.
+	// one that starts with a slash, or one with a segment ValidateName
+	// refuses, in which case the error also matches ErrInvalidName. A path
+	// is relative, a/b below the directory it starts from; a spelling from
+	// the root, /a/b, is a consumer's own input syntax, which it strips
+	// before resolving from RootID.
 	ErrInvalidPath = errors.New("blobfs: invalid path")
 
 	// ErrRootDirectory reports an operation refused because it targets the
