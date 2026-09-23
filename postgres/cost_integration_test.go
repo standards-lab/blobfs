@@ -58,7 +58,7 @@ var middlePage = listingSizes.BigFiles / costPageSize / 2
 const sortIndexDDL = "CREATE INDEX blobfs_ix_file_directory_created ON blobfs_file (directory_id, created_at)"
 
 // costEnv is one cost test's throwaway database, seeded, and the store
-// over the Postgres variant under sqlate's postgres dialect.
+// over the PostgreSQL variant under sqlate's postgres dialect.
 type costEnv struct {
 	ctx   context.Context
 	db    *sqlate.DB

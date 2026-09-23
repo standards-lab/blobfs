@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// The sentinels the persistence layer maps its outcomes onto. A database
+// The sentinels package data maps its outcomes onto. A database
 // violation of one of blobfs's own documented constraints becomes one of
 // these, carried by a ViolationError; a violation of a consumer's
 // constraint is left unclassified.
@@ -23,12 +23,12 @@ var (
 	// carries the reason.
 	ErrInvalidName = errors.New("blobfs: invalid name")
 
-	// ErrInvalidPath reports a path the persistence layer could not read:
-	// one that starts with a slash, or one with a segment ValidateName
-	// refuses, in which case the error also matches ErrInvalidName. A path
-	// is relative, a/b below the directory it starts from; a spelling from
-	// the root, /a/b, is a consumer's own input syntax, which it strips
-	// before resolving from RootID.
+	// ErrInvalidPath reports a path package data refused: one that starts
+	// with a slash, or one with a segment ValidateName refuses, in which
+	// case the error also matches ErrInvalidName. A path is relative, a/b
+	// below the directory it starts from; a spelling from the root, /a/b,
+	// is a consumer's own input syntax, which it strips before resolving
+	// from RootID.
 	ErrInvalidPath = errors.New("blobfs: invalid path")
 
 	// ErrRootDirectory reports an operation refused because it targets the
@@ -62,9 +62,9 @@ var (
 	// a move or rename, or a status change out of deleting.
 	ErrDeleting = errors.New("blobfs: row is deleting")
 
-	// ErrNotDeleting reports the complete step of a file delete refused
-	// because the row exists and is not deleting: its delete has not
-	// begun. The caller runs the begin step first.
+	// ErrNotDeleting reports a purge, the last step of the two-phase
+	// delete, refused because the row exists and is not deleting: its
+	// delete has not begun. The caller runs the delete's first step first.
 	ErrNotDeleting = errors.New("blobfs: the file is not deleting")
 
 	// ErrReferenced reports a delete refused by a foreign key blobfs does
@@ -80,8 +80,8 @@ var (
 
 // ViolationError reports a database constraint violation that a classifier
 // mapped to a sentinel: the sentinel it means, the name of the violated
-// constraint, and the error the database reported as the cause. The
-// persistence layer builds one for each constraint blobfs owns, and a
+// constraint, and the error the database reported as the cause. Package
+// data builds one for each constraint blobfs owns, and a
 // consumer builds one for its own constraints with its own sentinels. The
 // message prints the sentinel and the constraint name and never the
 // driver's text. Unwrap yields the sentinel and the cause, so errors.Is

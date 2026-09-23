@@ -78,7 +78,7 @@ func TestObjectNames(t *testing.T) {
 
 // TestConstraintConstants proves that every constraint-name constant the
 // root package exports names a constraint or a unique index the DDL
-// declares, so the persistence layer's error mapping cannot drift from
+// declares, so the data package's error mapping cannot drift from
 // the schema. The scan is over the embedded up texts and needs no engine.
 func TestConstraintConstants(t *testing.T) {
 	set, err := postgres.Migrations()

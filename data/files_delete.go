@@ -73,14 +73,14 @@ func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...Hold
 // existed or a concurrent delete purged it first.
 //
 // It takes a *sqlate.Tx because it is the delete's half of the
-// reference-then-delete rule: its update takes the row's lock, and waits
-// on a Hold another transaction took, so the delete and a consumer's new
-// reference to the file serialize on the row: once Delete returns, every
-// reference a Hold admitted has committed, so a consumer checks for its
-// own references in tx after the call, and a foreign key of its own
-// refuses Purge while one remains. The update returns the row: one
-// statement where the dialect renders RETURNING, the update and a read of
-// the row otherwise.
+// reference-then-delete rule: its update takes the row's lock and waits on a
+// Hold another transaction took, so the delete and a consumer's new
+// reference to the file serialize on the row. Once Delete returns, every
+// reference a Hold admitted has committed, so a consumer checks for its own
+// references in tx after the call, and a foreign key of its own refuses
+// Purge while one remains. The update is a returning command: the
+// single-statement form where the dialect renders RETURNING, and otherwise
+// the fallback, the update and a read of the row.
 func (f *Files) Delete(ctx context.Context, tx *sqlate.Tx, id string) (blobfs.File, error) {
 	file, _, err := f.remove.One(ctx, tx, query.Args{"id": id})
 	if err != nil {
@@ -99,12 +99,12 @@ func (f *Files) Delete(ctx context.Context, tx *sqlate.Tx, id string) (blobfs.Fi
 // and is left as it is: its delete has not begun, so the object may still
 // be wanted.
 //
-// A foreign key from a consumer's table that references the row refuses
-// the removal as blobfs.ErrReferenced, with the sqlate.ConstraintError
-// reachable, so the consumer matches the constraint's name against its
-// own; the row stays deleting, and a retry after the consumer's row is
-// gone converges. One statement removes the row, so the session may be the
-// pool or a transaction.
+// A foreign key from a consumer's table that references the row refuses the
+// removal as blobfs.ErrReferenced, with the sqlate.ConstraintError
+// reachable, so the consumer matches the constraint's name against its own;
+// the row stays deleting, and a retry after the consumer's row is gone
+// converges. Purge runs one statement to remove the row, so the session may
+// be the pool or a transaction.
 func (f *Files) Purge(ctx context.Context, sess sqlate.Session, id string) error {
 	args := query.Args{"id": id}
 	n, err := f.purge.Exec(ctx, sess, args)

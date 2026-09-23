@@ -1,13 +1,13 @@
 package blobfs
 
 // The names of the constraints and unique indexes blobfs's DDL declares and
-// the persistence layer maps to sentinel errors. Constraint names are public
-// API: a violation reaches a consumer as ViolationError.Constraint, with
-// the sqlate.ConstraintError beneath it, and the scheme is
+// package data maps to sentinel errors. Constraint names are public API: a
+// violation reaches a consumer as ViolationError.Constraint, with the
+// sqlate.ConstraintError beneath it, and the scheme is
 // blobfs_<kind>_<table>_<detail>. The constants live here rather than in
-// an engine package because the persistence layer imports this package and
-// must not import an engine package. The Postgres engine package's tests
-// check that every constant names a constraint or an index in its DDL.
+// an engine package because package data imports this package and must not
+// import an engine package. The postgres engine package's tests check that
+// every constant names a constraint or an index in its DDL.
 const (
 	// ConstraintPrimaryKeyDirectory is the primary key of blobfs_directory.
 	// A violation is ErrIDTaken: a caller-supplied id another directory

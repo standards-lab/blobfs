@@ -117,7 +117,7 @@ func TestEntityTags(t *testing.T) {
 }
 
 // TestSentinels fixes that each sentinel is distinct and matches only
-// itself, so the persistence layer's mapping cannot alias two outcomes.
+// itself, so package data's mapping cannot alias two outcomes.
 func TestSentinels(t *testing.T) {
 	sentinels := []error{
 		blobfs.ErrNotFound,

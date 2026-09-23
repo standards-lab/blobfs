@@ -102,15 +102,15 @@ func (f *Files) findByName(ctx context.Context, sess sqlate.Session, directoryID
 // exist is blobfs.ErrNotFound. The content type is what the caller
 // declares; the row's size and entity tag stay nil until Complete.
 //
-// The insert returns its row: in one statement where the dialect renders
-// RETURNING, and otherwise as the insert and a read of the row in one
-// transaction, the caller's when sess is a *sqlate.Tx and one of its own
-// when sess is the pool. Inside a caller's transaction the pending row
-// commits with the caller's own rows. The caller then stores the object
-// under the row's Key and calls Complete with the row's ID and Version. A
-// stop between the two steps leaves the row pending, where FindByName or
-// Ensure finds it for a retry to complete, and an abandoned write is
-// removed through Delete and Purge.
+// The insert is a returning command: it runs in the single-statement form
+// where the dialect renders RETURNING, and otherwise in the fallback, the
+// insert and a read of the row in one transaction, the caller's when sess is
+// a *sqlate.Tx and one of its own when sess is the pool. Inside a caller's
+// transaction the pending row commits with the caller's own rows. The caller
+// then stores the object under the row's Key and calls Complete with the
+// row's ID and Version. A stop between the two steps leaves the row pending,
+// where FindByName or Ensure finds it for a retry to complete, and an
+// abandoned write is removed through Delete and Purge.
 func (f *Files) Create(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts ...CreateOption) (blobfs.File, error) {
 	name, id, key, err := newFile("create file", keys, name, opts)
 	if err != nil {
@@ -160,7 +160,7 @@ const (
 // transaction. A writer that commits the name between the lookup and the
 // insert makes the insert fail as blobfs.ErrNameTaken. On the pool the row
 // is then looked up again and reported by its status. Inside a transaction
-// the error is returned instead, because on Postgres the failed insert has
+// the error is returned instead, because on PostgreSQL the failed insert has
 // aborted the transaction, and the caller retries the transaction. The
 // other refusals are Create's.
 func (f *Files) Ensure(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts ...CreateOption) (blobfs.File, WriteOutcome, error) {
@@ -229,17 +229,17 @@ func (f *Files) insert(ctx context.Context, sess sqlate.Session, id, directoryID
 // optimistic-concurrency protocol, and by the row's status: only a pending
 // row completes.
 //
-// A row that does not exist is blobfs.ErrNotFound. A row whose version
-// moved on is query.ErrVersionMismatch, with the expected and current
-// versions in the text. A row at the expected version that is no longer
-// pending is a blobfs.TransitionError from its status to available, which
-// matches blobfs.ErrDeleting when a delete began in the meantime and
+// A row that does not exist is blobfs.ErrNotFound. A row whose version moved
+// on is query.ErrVersionMismatch, with the expected and current versions in
+// the text. A row at the expected version that is no longer pending is a
+// blobfs.TransitionError from its status to available, which matches
+// blobfs.ErrDeleting when a delete began in the meantime and
 // blobfs.ErrInvalidTransition when the write was completed already. The
-// update returns the row: one statement where the dialect renders
-// RETURNING, the update and a read of the row otherwise, and the refusals
-// are told apart from the row that read returns, with no further
-// statement. One statement changes the row, so the session may be the pool
-// or a transaction.
+// update is a returning command: the single-statement form where the dialect
+// renders RETURNING, and otherwise the fallback, the update and a read of
+// the row. The refusals are told apart from the row that read returns, with
+// no further statement. One statement changes the row, so the session may be
+// the pool or a transaction.
 func (f *Files) Complete(ctx context.Context, sess sqlate.Session, id string, version int64, obj blobfs.Object) (blobfs.File, error) {
 	file, err := f.complete.Run(ctx, sess, version, query.Args{
 		"id": id, "size": obj.Size, "content_type": obj.ContentType, "etag": obj.ETag,
@@ -268,11 +268,12 @@ func (f *Files) Complete(ctx context.Context, sess sqlate.Session, id string, ve
 // optimistic-concurrency protocol, and by the row's status: a deleting row
 // is left as it is. The key is untouched, so the object stays where it is
 // and a rename moves nothing in the store. A pending row may move: its key
-// was fixed at the insert, and a retry of its write finds it by its new
-// name. No lock and no cycle check precede the update, because a file
-// cannot be its own ancestor, so the session may be the pool or a
-// transaction. The update returns the row: one statement where the dialect
-// renders RETURNING, the update and a read of the row otherwise.
+// is fixed at the insert, and a retry of its write finds it by its new name.
+// No lock and no cycle check precede the update, because a file cannot be
+// its own ancestor, so the session may be the pool or a transaction. The
+// update is a returning command: the single-statement form where the dialect
+// renders RETURNING, and otherwise the fallback, the update and a read of
+// the row.
 //
 // A file that does not exist is blobfs.ErrNotFound, and so is a directory
 // that does not exist, through the foreign key blobfs_fk_file_directory. A

@@ -37,7 +37,7 @@ delimiter = true
 native_forms = true
 
 # blobfs's migration set. The migrations role has no native-forms check;
-# the DDL is Postgres at v1 by design.
+# the DDL is PostgreSQL's, the only engine's.
 [migrations]
 dirs = ["postgres/migrations"]
 single_statement = true

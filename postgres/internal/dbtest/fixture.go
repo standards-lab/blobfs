@@ -27,9 +27,9 @@ type Sizes struct {
 }
 
 // Tree is the fixture the cost assertions run on, seeded by SeedTree: a
-// chain of directories l1/l2/.../ln below the root for path resolution,
-// one directory big whose files were inserted first and so sit on contiguous heap
-// pages, and Directories more directories attached at random below the
+// chain of directories l1/l2/.../ln below the root for path resolution, one
+// directory big whose files were inserted first and so sit on contiguous
+// heap pages, and Directories more directories attached at random below the
 // chain's first levels, each holding a share of OtherFiles. Every id is a
 // blobfs id, and the rows are inserted in bulk through unnest.
 type Tree struct {

@@ -5,7 +5,7 @@ golangci-lint = "2.13.2"
 # Space-separated list of module directories, kept in sync with the go.work
 # use-list and the ci.yml matrix. "." is the base module; postgres is the
 # engine sub-module and example the composition proof. A directory without a
-# go.mod yet is skipped.
+# go.mod is skipped.
 [env]
 GO_MODULES = ". postgres example"
 # The compose stack's defaults. The Azurite account and key are the
@@ -86,8 +86,8 @@ report() {
 }
 
 # deps <dir> <package> <extended-regex>: fail when a transitive non-test dependency of the
-# package, listed from the module at dir, matches the pattern. A package not created yet is
-# skipped.
+# package, listed from the module at dir, matches the pattern. A package directory that does
+# not exist is skipped.
 deps() {
   [ -d "$1/$2" ] || return 0
   self=$(cd "$1" && go list "./$2" 2>/dev/null) || return 0

@@ -18,7 +18,7 @@ const (
 	StatusAvailable Status = "available"
 
 	// StatusDeleting marks a row whose object is being removed. The row
-	// keeps its name slot until the delete completes and removes it.
+	// keeps its name until the purge removes it.
 	StatusDeleting Status = "deleting"
 )
 
@@ -45,16 +45,15 @@ func (s Status) Mutable() bool {
 
 // transitions is the table of allowed status changes. Completing a write
 // moves pending to available. Beginning a delete moves pending or available
-// to deleting, and deleting to deleting again, which is how the begin step
-// stays idempotent under retry. No transition leaves deleting except the
-// row's removal, which is not a status.
+// to deleting, and deleting to deleting again, which keeps the delete's
+// first step idempotent under retry. No transition leaves deleting except
+// the row's removal, which is not a status.
 //
-// The table has no row for a failed write, by decision: a write that stops
-// after the pending row is inserted leaves the row pending, where a query
-// finds it and a retry of the same write completes it, and a write that is
-// abandoned is removed through the delete steps, which pending already
-// allows. A fourth status would name a state the delete path already
-// handles.
+// The table has no failed status. A write that stops after the pending row
+// is inserted leaves the row pending, where a query finds it and a retry
+// of the same write completes it, and a write that is abandoned is removed
+// through the delete steps, which pending already allows. A fourth status
+// would name a state the delete steps already handle.
 var transitions = map[Status]map[Status]bool{
 	StatusPending: {
 		StatusAvailable: true,

@@ -16,10 +16,10 @@ import (
 	"github.com/standards-lab/blobfs/postgres/internal/dbtest"
 )
 
-// forms are the two forms a returning command runs in on Postgres: one
-// statement under sqlate's postgres dialect, which renders RETURNING, and
-// the command followed by its read under the same dialect with its
-// capabilities hidden.
+// forms are the two forms a returning command runs in on PostgreSQL: the
+// single-statement form under sqlate's postgres dialect, which renders
+// RETURNING, and the fallback, the command followed by its read, under the
+// same dialect with its capabilities hidden.
 var forms = []struct {
 	name    string
 	dialect sqlate.Dialect
@@ -31,12 +31,12 @@ var forms = []struct {
 // TestConformance runs the conformance suite over the matrix of the two
 // forms of the returning commands and the two variants, the standard
 // baseline (the store data.New builds without WithEngine) and the
-// Postgres variant Engine builds, each in a throwaway database of its
+// PostgreSQL variant Engine builds, each in a throwaway database of its
 // own, with the catalog built from the engine's overlay of the library's
-// patterns; and once more over the Postgres engine with the library's own
+// patterns; and once more over the PostgreSQL engine with the library's own
 // patterns, so the standard spelling of the keyset predicate runs on the
 // engine too. The baseline reports that it does not serialize, and the
-// suite proves the cycle two opposing moves form on it; the Postgres
+// suite proves the cycle two opposing moves form on it; the PostgreSQL
 // variant reports that it does, and the suite proves the second move
 // refused.
 func TestConformance(t *testing.T) {
@@ -55,7 +55,7 @@ func TestConformance(t *testing.T) {
 }
 
 // conform runs the suite in a throwaway database under dialect, with the
-// catalog built from patterns and blobfs's own, over the Postgres engine
+// catalog built from patterns and blobfs's own, over the PostgreSQL engine
 // or the baseline.
 func conform(t *testing.T, dialect sqlate.Dialect, patterns query.Source, native bool) {
 	d := dbtest.Migrated(t)

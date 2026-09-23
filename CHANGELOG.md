@@ -30,9 +30,10 @@ library never calls.
   (`Delete`, then `Purge`), `Hold` for the reference-then-delete rule, `Find`, `FindByName`, and
   `Move`. `WithID` supplies a row's id, and `AtVersion` guards a hold.
 - Listings of one directory's child directories or files, `List` by page and `Continue` by
-  cursor, over sqlate projections with a counted total that never disagrees with its page.
-- `Variant`, `Engine`, `WithEngine`, and `Standard`, the baseline: the tree lock and path
-  resolution as the variation points an engine may override.
+  cursor, over sqlate projections whose counted total never disagrees with its page.
+- `Variant`, the interface of the two variation points an engine may override, the tree lock
+  and path resolution; `Engine`, which builds a variant over the baseline; `WithEngine`, which
+  installs one; and `Standard`, the baseline.
 - `data/datatest`, the conformance suite: `Run` checks a store over any engine against the
   baseline on a live database.
 

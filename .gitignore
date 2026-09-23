@@ -20,3 +20,6 @@ bin/
 .idea/
 .DS_Store
 Thumbs.db
+
+# The example module's binary, when built in place.
+example/example

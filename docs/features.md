@@ -120,7 +120,8 @@ for the dialect and binds them. No I/O happens. The catalog must carry the query
 patterns, `query.Patterns()` or an engine's overlay of them such as `postgres.Patterns()` from
 `sqlate/postgres`, and blobfs's own, `data.Patterns()`; a catalog without the `blobfs` namespace
 is refused before compiling, with the fix named. The dialect chooses the form of each returning
-command: one statement where it renders `RETURNING`, the command and its read otherwise.
+command: the single-statement form where it renders `RETURNING`, and otherwise the fallback,
+the command and its read in one transaction.
 
 `WithEngine(e)` installs an engine. Without it the store runs `Standard`, the baseline. With it,
 `New` binds the baseline over the statements it compiled and calls `e(catalog, dialect, base)`
@@ -176,9 +177,9 @@ directory from the module's own `[export]`.
 | `List`, `Continue` | [Listings](#listings). | |
 
 `Create` never creates a root, since it always binds a parent. It returns the row as the
-database holds it: in one statement where the dialect renders `RETURNING`, otherwise as the
-insert and a read in one transaction, the caller's when `sess` is a `*sqlate.Tx` and one of its
-own on the pool.
+database holds it: in the single-statement form where the dialect renders `RETURNING`, and
+otherwise in the fallback, the insert and a read in one transaction, the caller's when `sess` is
+a `*sqlate.Tx` and one of its own on the pool.
 
 `Ensure` looks the name up first and inserts only when it finds no row, so the common case runs
 no failing statement and composes into a caller's transaction. A creator that commits the name
@@ -230,10 +231,10 @@ to make directory moves safe.
 The lookup-first behavior inside and outside a transaction is `Directories.Ensure`'s. A found
 row keeps its own id and key whatever `WithID` supplied.
 
-A pending row may be moved: its key was fixed at the insert, and a retry of its write finds it
-by its new name. `Complete`, `Move`, and `Delete` return the row in one statement where the
-dialect renders `RETURNING`, and otherwise as the update and a read; the refusals are told apart
-from the row that read returns, with no further statement.
+A pending row may be moved: its key is fixed at the insert, and a retry of its write finds it
+by its new name. `Complete`, `Move`, and `Delete` return the row in the single-statement form
+where the dialect renders `RETURNING`, and otherwise in the fallback, the update and a read; the
+refusals are told apart from the row that read returns, with no further statement.
 
 `Hold` is an update that assigns a column to itself: it takes the row's lock, changes no value,
 and advances no version, so other holders of the row's version stay valid. A pending row is held
@@ -473,8 +474,8 @@ m, err := migrate.New(db, sets, migrate.Options{})
 ```
 
 `Up` applies blobfs's set before the consumer's, each under its own history table; blobfs's set
-cannot be reverted while the consumer's above it has applied migrations. An upgrade that ships a
-new migration is applied by the next `Up`.
+cannot be reverted while the consumer's set above it has applied migrations. A blobfs upgrade
+that ships a new migration is applied by the next `Up`.
 
 ### What the tiers prove
 

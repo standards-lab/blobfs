@@ -25,7 +25,7 @@ import (
 // returning command compiles to its fallback.
 type fallback struct{ sqlate.Dialect }
 
-// catalog builds the catalog a consumer on Postgres builds: the engine's
+// catalog builds the catalog a consumer on PostgreSQL builds: the engine's
 // overlay of the library's patterns, and blobfs's.
 func catalog(t *testing.T) *query.Catalog {
 	t.Helper()

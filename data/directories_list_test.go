@@ -292,9 +292,9 @@ func editCursor(t *testing.T, c query.Cursor, old, new string) query.Cursor {
 }
 
 // TestDirectoriesCursorRefusals proves a cursor is refused before any SQL
-// when its position was edited, when it comes from the file listing, and when it is
-// relayed under other filters or another sort than the page that issued
-// it.
+// when its position was edited, when it comes from the file listing, and
+// when it is relayed under other filters or another sort than the page that
+// issued it.
 func TestDirectoriesCursorRefusals(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,

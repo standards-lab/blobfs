@@ -14,12 +14,12 @@ var patternFiles embed.FS
 const Namespace = "blobfs"
 
 // Patterns is blobfs's published pattern source: the column lists of the
-// directory and file rows, directory_columns and file_columns,
-// standard-tier fragments a consumer's statements include. The consumer
-// registers it in its one catalog beside query.Patterns() and its own
-// sources. Every pattern is parameter-free and includes no other pattern:
-// a pattern cannot include one, and a pattern's slots would become
-// parameters of the including statement, which a projection base rejects.
+// directory and file rows, directory_columns and file_columns, standard-tier
+// fragments a consumer's statements include. The consumer registers it in
+// its one catalog beside query.Patterns() and its own sources. Every pattern
+// is parameter-free and includes no other pattern: a pattern cannot include
+// one, and a pattern's parameters would become parameters of the including
+// statement, which a projection base rejects.
 func Patterns() query.Source {
 	return query.Publish(Namespace, patternFiles, "patterns")
 }

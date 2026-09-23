@@ -17,17 +17,17 @@ import (
 const MaxNameLength = 255
 
 // NormalizeName returns name in Unicode normalization form C. Uniqueness is
-// an exact match on the stored name, so the persistence layer normalizes
-// every name before an insert or a rename: a composed and a decomposed
-// spelling of the same name then collide instead of coexisting.
+// an exact match on the stored name, so package data normalizes every name
+// before an insert or a rename: a composed and a decomposed spelling of
+// the same name then collide instead of coexisting.
 func NormalizeName(name string) string {
 	return norm.NFC.String(name)
 }
 
-// ValidateName reports whether name may be a directory or file
-// name. A name is non-empty, valid UTF-8, at most MaxNameLength runes,
-// contains no slash and no control character, and is neither "." nor "..".
-// The rejection is a NameError. Validate the normalized form: the check
+// ValidateName reports whether name may be a directory or file name. A
+// name is non-empty, valid UTF-8, at most MaxNameLength runes, contains no
+// slash and no control character, and is neither "." nor "..". The
+// rejection is a NameError. Validate the normalized form: the check
 // counts runes, and normalization can change the count.
 func ValidateName(name string) error {
 	switch {

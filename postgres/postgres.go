@@ -28,12 +28,12 @@ const TreeLockName = "blobfs_directory.tree"
 // this package's tests recompute it from the name.
 const TreeLockKey int64 = -8521165719926625175
 
-// Variant is the Postgres implementation of data.Variant, the variant
-// Engine builds: the store's standard baseline embedded, so a variation
-// point this package does not override runs as the baseline does, and the
-// compiled native statements bound to their handles. It overrides two:
-// the tree lock, which the baseline cannot take, and path resolution in
-// one statement. It holds no session; every method takes one.
+// Variant is the PostgreSQL implementation of data.Variant, the variant
+// Engine builds. It embeds the store's standard baseline, so a variation
+// point this package does not override runs as the baseline does, and it
+// binds the compiled native statements to their handles. It overrides two:
+// the tree lock, which the baseline cannot take, and path resolution in one
+// statement. It holds no session; every method takes one.
 type Variant struct {
 	*data.Standard
 	stmts       *query.Statements
@@ -55,16 +55,15 @@ var (
 	_ query.Verifier = (*Variant)(nil)
 )
 
-// Engine is the Postgres engine for data.WithEngine: it compiles the
-// variant's own two statements against catalog for dialect, binds them,
-// and returns a *Variant over base, the baseline data.New compiled, so the
-// persistence package's statements are compiled once. A consumer selects
-// it at its composition root with data.New(catalog, dialect,
-// data.WithEngine(Engine)). The catalog must carry the blobfs namespace,
-// registered from data.Patterns(), because resolve_path returns the
-// published directory columns. The variant's statements take no returning
-// form, so either form of the store's returning commands suits it. No I/O
-// happens here.
+// Engine is the PostgreSQL engine for data.WithEngine: it compiles the
+// variant's own two statements against catalog for dialect, binds them, and
+// returns a *Variant over base, the baseline data.New compiled, so the data
+// package's statements are compiled once. A consumer selects it at its
+// composition root with data.New(catalog, dialect, data.WithEngine(Engine)).
+// The catalog must carry the blobfs namespace, registered from
+// data.Patterns(), because resolve_path returns the published directory
+// columns. The variant's statements are not returning commands, so either
+// form of the store's returning commands suits it. No I/O happens here.
 func Engine(catalog *query.Catalog, dialect sqlate.Dialect, base *data.Standard) (data.Variant, error) {
 	stmts, err := catalog.Compile(statementFiles, "statements", dialect)
 	if err != nil {
@@ -78,9 +77,9 @@ func Engine(catalog *query.Catalog, dialect sqlate.Dialect, base *data.Standard)
 	}, nil
 }
 
-// Statements returns the variant's compiled inventory in name order, for
-// a consumer that lists the SQL its program runs. The store's Statements
-// appends it to the persistence package's own.
+// Statements returns the variant's compiled inventory in name order, for a
+// consumer that lists the SQL its program runs. The store's Statements
+// appends it to the data package's own.
 func (v *Variant) Statements() []query.Statement {
 	return v.stmts.Statements()
 }
@@ -110,9 +109,9 @@ func (*Variant) Serializes() bool {
 // statement, the recursive query resolve_path, and returns the deepest
 // directory reached and its depth, where the baseline reads the start and
 // then one child per segment. The segments bind as one text[] parameter,
-// encoded by the driver from the Go slice, so no name is ever spliced
-// into the text; no segments bind as an empty array. No row is
-// blobfs.ErrNotFound: the start does not exist. See data.Variant.
+// encoded by the driver from the Go slice, so no name is ever spliced into
+// the text; no segments bind as an empty array. No row means the start does
+// not exist and is blobfs.ErrNotFound. See data.Variant.
 func (v *Variant) ResolvePath(ctx context.Context, sess sqlate.Session, startID string, segments []string) (blobfs.Directory, int, error) {
 	if segments == nil {
 		segments = []string{}

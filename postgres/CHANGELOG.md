@@ -20,9 +20,9 @@ The first release of the PostgreSQL engine.
   table `Table` (`blobfs_schema_version`): the directory migration, which seeds the root, and
   the file migration.
 - The integration tier: the conformance suite over the baseline and the engine's variant under
-  both forms of the returning commands, the constraints and the migration set against a live
-  PostgreSQL, and plan-shape and buffer-bound assertions for the listings, the tree walks, and
-  the protocol steps.
+  both forms of the returning commands, the single-statement form and the fallback; the
+  constraints and the migration set against a live PostgreSQL; and plan-shape and buffer-bound
+  assertions for the listings, the tree walks, and the protocol steps.
 
 Requires `github.com/standards-lab/blobfs v0.1.0` and `github.com/standards-lab/sqlate v0.4.0`.
 

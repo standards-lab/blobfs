@@ -7,11 +7,10 @@ import (
 	"testing"
 )
 
-// released pins the sha256 of every migration file by name. A released
-// file never changes in text or name: a new migration adds a row here, and
-// a changed row is a breaking change to the schema's version line. The
-// discipline starts at the module's first release, v0.1.0; the files are
-// the spike's, unchanged in text.
+// released pins the sha256 of every migration file by name. A released file
+// never changes in text or name: a new migration adds a row here, and a
+// changed row is a breaking change to the schema's version line. The pins
+// start at the module's first release, v0.1.0.
 var released = map[string]string{
 	"0001_directory.up.sql":   "dc9b2f45d590bd5d06f897c40bb8ab9983aed40beb323fc7a44ac83574301b46",
 	"0001_directory.down.sql": "7193988c04d57b6b7729c0daa0523ee70e3c920e12baec2897ce720d5e274ba9",

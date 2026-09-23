@@ -47,17 +47,18 @@ func (d *Directories) Serializes() bool {
 }
 
 // Move moves the directory with id under the directory with parentID as
-// name, which also renames it when the name differs, and returns the row
-// as the database holds it afterward. The move runs in tx, in three steps
-// that must see one tree lock: LockTree, then IsWithin(parentID, id), then
-// the guarded update of parent_id and name. The update is guarded by
-// version, the value the caller read from the directory's row, through the
-// query library's optimistic-concurrency protocol; the caller reads the
-// directory in the same transaction and passes its Version. The update
-// returns the row: one statement where the dialect renders RETURNING, the
-// update and a read of the row otherwise. The directory's children and
-// files follow it, because they reference it by id and every path is
-// computed at read time; no object moves, since no key encodes a path.
+// name, which also renames it when the name differs, and returns the row as
+// the database holds it afterward. The move runs in tx, in three steps that
+// must see one tree lock: LockTree, then IsWithin(parentID, id), then the
+// guarded update of parent_id and name. The update is guarded by version,
+// the value the caller read from the directory's row, through the query
+// library's optimistic-concurrency protocol; the caller reads the directory
+// in the same transaction and passes its Version. The update is a returning
+// command: the single-statement form where the dialect renders RETURNING,
+// and otherwise the fallback, the update and a read of the row. The
+// directory's children and files follow it, because they reference it by id
+// and every path is computed at read time; no object moves, since no key
+// encodes a path.
 //
 // The root is blobfs.ErrRootDirectory, refused before any SQL. A new
 // parent that is the directory itself or one of its descendants is

@@ -1,12 +1,12 @@
-// Package datatest is the conformance suite of the persistence package:
-// the checks every data.Store must pass against a live database, whatever
-// the engine, the dialect's form of the returning commands, and the
-// variant the store forwards its variation points to. An engine
-// sub-module's integration tier runs it over the standard baseline and
-// over its own Engine's variant, under both forms of the returning
-// commands, and a consumer that supplies an Engine of its own runs it over
-// that. It lives in a package of its own because a test helper in a
-// _test.go file cannot be imported by another module's tests.
+// Package datatest is the conformance suite of the data package: the checks
+// every data.Store must pass against a live database, whatever the engine,
+// the form the dialect gives the returning commands, and the variant the
+// store forwards its variation points to. An engine sub-module's integration
+// tier runs it over the standard baseline and over its own Engine's variant,
+// under both forms of the returning commands, and a consumer that supplies
+// an Engine of its own runs it over that. It lives in a package of its own
+// because a test helper in a _test.go file cannot be imported by another
+// module's tests.
 //
 // The suite is engine-agnostic: it imports no engine package and no
 // driver, and every statement it runs outside the store is standard SQL
@@ -39,17 +39,16 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// Run runs the suite as subtests of t, over a store it builds from
-// catalog and db's dialect with engine, and over a second store it builds
-// over the standard baseline to compare against. A nil engine is the store
-// data.New builds without WithEngine, the baseline itself. catalog is the
-// consumer's catalog: data.Patterns() registered beside the query
-// library's patterns or an engine's overlay of them, which the caller
-// chooses so a run covers the keyset spelling it ships. db is a migrated
-// throwaway database, and its dialect is the one the store and the
-// engine's statements are compiled for; a dialect that renders RETURNING
-// runs every returning command as one statement, and one that does not
-// runs the fallback.
+// Run runs the suite as subtests of t, over a store it builds from catalog
+// and db's dialect with engine, and over a second store it builds over the
+// standard baseline to compare against. A nil engine is the store data.New
+// builds without WithEngine, the baseline itself. catalog is the consumer's
+// catalog: data.Patterns() registered beside the query library's patterns or
+// an engine's overlay of them, which the caller chooses so a run covers the
+// keyset spelling it ships. db is a migrated throwaway database, and its
+// dialect is the one the store and the engine's statements are compiled for;
+// a dialect that renders RETURNING runs every returning command in the
+// single-statement form, and one that does not runs the fallback.
 //
 // The groups, in order: Verify (the store's statements, listings, and the
 // engine's own statements prepared against the migrated schema);

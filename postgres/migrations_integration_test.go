@@ -130,7 +130,7 @@ func insertFile(ctx context.Context, db *sqlate.DB, dir, name, status string) (s
 // under blobfs_uq_directory_root, distinct from the primary key; the root
 // rule's check; a directory's empty name and its own parent; the
 // directory and file uniqueness; the file status check; and the two
-// foreign keys, on an insert and on a delete. The persistence layer's
+// foreign keys, on an insert and on a delete. The data package's
 // mapping of the constants to sentinels is proved through the store in
 // the conformance suite; the one constant no store operation can reach,
 // the root's index, is proved here.

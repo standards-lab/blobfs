@@ -21,11 +21,11 @@ const (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
-// Migrations returns blobfs's migration set for Postgres, whole: the name
-// Source, the history table Table, and the migrations in version order,
-// read from the embedded migrations directory. A consumer declares it
-// below its own set in migrate.New, so blobfs's schema is at its head
-// before the consumer's migrations reference it.
+// Migrations returns blobfs's whole migration set for PostgreSQL: the name
+// Source, the history table Table, and the migrations in version order, read
+// from the embedded migrations directory. A consumer declares it below its
+// own set in migrate.New, so blobfs's migrations are all applied before the
+// consumer's migrations reference its tables.
 func Migrations() (migrate.Set, error) {
 	files, err := migrate.Files(migrationFiles, "migrations")
 	if err != nil {

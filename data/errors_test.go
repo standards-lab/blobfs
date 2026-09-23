@@ -10,7 +10,7 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// driverText is a cause with the driver's text, as Postgres reports a
+// driverText is a cause with the driver's text, as PostgreSQL reports a
 // unique violation, so a test can prove the text never reaches a
 // classified message.
 const driverText = `ERROR: duplicate key value violates unique constraint "x" (SQLSTATE 23505)`
@@ -47,13 +47,13 @@ func wantClassified(t *testing.T, got error, in *sqlate.ConstraintError, constra
 }
 
 // TestClassifyWrite is the truth table of the write mapping: each of
-// blobfs's constraints maps to its sentinel under the class it reports,
-// the two primary keys and the root's partial index included, as a blobfs.ViolationError whose
-// message names the sentinel and the constraint and keeps the
-// sqlate.ConstraintError reachable. A constraint blobfs does not own, a
-// class the constraint does not report (a check violation among them),
-// and an error that is no violation pass through unchanged, the driver's
-// text included.
+// blobfs's constraints maps to its sentinel under the class it reports, the
+// two primary keys and the root's partial index included, as a
+// blobfs.ViolationError whose message names the sentinel and the constraint
+// and keeps the sqlate.ConstraintError reachable. A constraint blobfs does
+// not own, a class the constraint does not report (a check violation among
+// them), and an error that is no violation pass through unchanged, the
+// driver's text included.
 func TestClassifyWrite(t *testing.T) {
 	cause := errors.New(driverText)
 	cases := []struct {

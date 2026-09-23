@@ -1,12 +1,11 @@
-// Package postgres is the PostgreSQL engine of blobfs: the Postgres
-// variant of the persistence package's variation points, the native-tier
-// statements the variant runs, and the DDL of the two tables, exported as
-// a migration set. A consumer selects the engine by importing this
-// package, as it imports sqlate's postgres module for the dialect; there
-// is no registry, no init, and no flag, and the standard baseline is what
-// data.New builds when no engine package is used. The package imports the
-// persistence package, the root package, and sqlate only, and names no
-// driver.
+// Package postgres is the PostgreSQL engine of blobfs: the PostgreSQL
+// variant of the data package's variation points, the native-tier statements
+// the variant runs, and the DDL of the two tables, exported as a migration
+// set. A consumer selects the engine by importing this package, as it
+// imports sqlate's postgres module for the dialect; there is no registry, no
+// init, and no flag, and data.New builds the standard baseline when no
+// engine is installed. The package imports only the data package, the root
+// package, and sqlate, and names no driver.
 //
 // # The variant
 //
@@ -23,12 +22,12 @@
 //     parameter, which the driver encodes from the Go slice, so no name is
 //     spliced into the text.
 //
-// The returning commands need no variant: under sqlate's postgres
-// dialect, which renders RETURNING, the store runs each of them as one
-// statement from its standard-tier file. The keyset predicate needs none
-// either: a consumer that registers sqlate's postgres.Patterns() in its
-// catalog in place of query.Patterns() continues its pages by the
-// row-value comparison, which Postgres serves as an index condition.
+// The returning commands need no variant: under sqlate's postgres dialect,
+// which renders RETURNING, the store runs each of them in the
+// single-statement form from its standard-tier file. The keyset predicate
+// needs none either: a consumer that registers sqlate's postgres.Patterns()
+// in its catalog in place of query.Patterns() continues its pages by the
+// row-value comparison, which PostgreSQL serves as an index condition.
 //
 // Every statement file declares its tier as native and carries a port
 // note: the engine feature it uses and what a port to another engine must
@@ -37,23 +36,24 @@
 //
 //	store, err := data.New(catalog, dialect, data.WithEngine(postgres.Engine))
 //
-// data.New compiles the persistence package's statements once and hands
-// the baseline it bound to Engine, which compiles only its own two. The
-// store lists the variant's statements after its own, and its Verify
-// prepares them in the same pass.
+// data.New compiles the data package's statements once and hands the
+// baseline it bound to Engine, which compiles only its own two. The store
+// lists the variant's statements after its own, and its Verify prepares them
+// in the same pass.
 //
-// The datatest package's suite proves the variant against the same
+// The conformance suite in package datatest proves the variant against the
 // contract the baseline satisfies, comparing each outcome with the
 // baseline's on the same database; this module's integration tier runs it
-// under both forms of the returning commands.
+// under both forms of the returning commands, the single-statement form and
+// the fallback.
 //
 // # The migration set
 //
 // Migrations returns blobfs's migration set: the name Source, the history
 // table Table, and two migrations, directory and file, embedded from the
-// migrations directory. A consumer declares the set in migrate.New below
-// its own, so blobfs's schema is at its head before the consumer's
-// migrations reference it.
+// migrations directory. A consumer declares the set in migrate.New below its
+// own, so blobfs's migrations are all applied before the consumer's
+// migrations reference its tables.
 //
 // The directory migration seeds the one root directory, the row with no
 // parent, named /, and the id blobfs.RootID, and a partial unique index
@@ -68,17 +68,17 @@
 // for example CREATE INDEX ix_blobfs_file_directory_created ON
 // blobfs_file (directory_id, created_at).
 //
-// The set owns every object it creates, and every object's name starts
-// with the set's name and an underscore: the tables blobfs_directory and
+// The set owns every object it creates, and every object's name starts with
+// the set's name and an underscore: the tables blobfs_directory and
 // blobfs_file, their constraints and indexes, and the history table
-// blobfs_schema_version. Constraint and index names are public API,
-// because a violation reaches a consumer as
-// sqlate.ConstraintError.Constraint, and the persistence layer maps
-// blobfs's own constraints to its sentinel errors through the root
-// package's constants. The scheme is blobfs_<kind>_<table>_<detail>,
-// where kind is pk, fk, uq, cc, or ix (a plain index), table is the table
-// name without its blobfs_ prefix, and detail names the referenced
-// relation, the indexed columns, or the checked rule.
+// blobfs_schema_version. Constraint and index names are public API, because
+// a violation reaches a consumer as sqlate.ConstraintError.Constraint, and
+// the data package maps blobfs's own constraints to its sentinel errors
+// through the root package's constants. The scheme is
+// blobfs_<kind>_<table>_<detail>, where kind is pk, fk, uq, cc, or ix (a
+// plain index), table is the table name without its blobfs_ prefix, and
+// detail names the referenced relation, the indexed columns, or the checked
+// rule.
 //
 // A released migration file never changes in text or name; the
 // golden-hash test in this package pins each one. A second engine is a

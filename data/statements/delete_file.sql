@@ -1,7 +1,7 @@
 --| tier: standard
 --| transaction: required
 --| returning: file_by_id
--- The first step of a file delete: moves the row to deleting, advances its
+-- The first step of the two-phase delete: moves the row to deleting, advances its
 -- version, stamps updated_at, and returns the row with the key the caller
 -- deletes the object under. A row that is already deleting is left as it is,
 -- and its read returns it unchanged, so a retry converges and the version

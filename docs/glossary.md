@@ -71,14 +71,18 @@ full.
   `blobfs.file_columns`, which a consumer's own statements include.
 - **Listing**: one page of one directory's child directories or files, a sqlate projection
   anchored on the directory's id, with the caller's filters and sort composed onto it.
-- **Directives** (sqlate): a listing request's sorts, filters, and whether it counts the total.
+- **Directives** (sqlate): a listing request's sorts, filters, and whether it counts the
+  total.
 - **Cursor** (sqlate): an opaque position in a listing's order that `Continue` reads the next
   page from. Only a sort in one direction over fields that are never null issues one.
 - **Counted total**: the total a listing reports, a window count in the page's own statement, so
   it never disagrees with the page. An empty page after the first carries none.
 - **Returning command** (sqlate): a standard-tier command that names the read of its changed
-  row. The dialect runs it as one statement with `RETURNING` where the engine has the clause,
-  and as the command and its read in one transaction elsewhere.
+  row: a create, a complete, a move, or a delete's first step.
+- **Single-statement form** (sqlate): a returning command run as one statement with
+  `RETURNING`, on an engine whose dialect renders the clause.
+- **Fallback** (sqlate): a returning command run as the command and then its read, in one
+  transaction, on an engine whose dialect does not render `RETURNING`.
 - **Guarded step**: an update that runs only at the version the caller read, and reports
   `query.ErrVersionMismatch` otherwise.
 - **Violation**: a database constraint violation mapped to a blobfs sentinel, reported as a

@@ -2,7 +2,7 @@
 
 blobfs keeps a tree of directories and file rows in SQL over objects a consumer stores in an
 object store under opaque keys. This document explains the model: the tree, the keys, the
-protocols that keep rows and objects in step, and the layers a consumer builds on. The
+protocols that keep rows and objects consistent, and the layers a consumer builds on. The
 [glossary](glossary.md) defines the terms; the [features](features.md) document states every
 rule.
 
@@ -54,7 +54,7 @@ constraint ties the name `/` to the absence of a parent.
 The root is in no listing: the listing of `blobfs.RootID` is the depth-one directories. It
 cannot be deleted, moved, or renamed. Files may sit in it.
 
-## The write
+## The two-phase write
 
 A file is written in two steps around the object put, and a row exists before any byte does:
 
@@ -64,9 +64,9 @@ A file is written in two steps around the object put, and a row exists before an
 3. `Files.Complete` records what the store reported, the size, the content type, and the entity
    tag, and moves the row to `available`. It is guarded by the version the pending row carried.
 
-The first step takes a session, so it runs in the consumer's own transaction beside the
-consumer's own rows, and the pending row and the consumer's record of it commit together before
-the put. The last step runs on the pool.
+Both steps take any session. The first can run in the consumer's own transaction beside the
+consumer's own rows, so the pending row and the consumer's record of it commit together before
+the put. The last runs on the pool or in a transaction.
 
 There is no failed status. A write that stops after the first step leaves the row `pending`,
 where `Files.FindByName` or a listing filtered on status finds it. `Files.Ensure` is the
@@ -75,7 +75,7 @@ attempt left, or found the name held by a row that is available or deleting. A r
 carries its original key, so a retried put overwrites the same object. A write that is abandoned
 is removed through the delete steps, which a pending row accepts.
 
-## The delete
+## The two-phase delete
 
 A file is deleted in two steps around the object delete:
 
@@ -109,7 +109,7 @@ A file row's status is one of three, and the root package holds the table of all
 No change leaves `deleting` except the row's removal. A refused change is a
 `blobfs.TransitionError`.
 
-## Who calls what
+## Who calls each step
 
 | Step | Caller | Session |
 |---|---|---|
@@ -166,11 +166,11 @@ A caller that needs the guarantee checks `Serializes` before its first move.
 A listing reads one directory's contents, one page at a time: `Directories.List` the child
 directories, `Files.List` the files. No operation lists across directories or walks the tree.
 
-Each listing is a projection of the query library, `sqlate`. Its base is an authored statement
-anchored on the directory, and the caller's `query.Directives`, filters, sort, and whether to
-count, are composed onto it by the library. Only the fields the base declares may be filtered or
-sorted, and anything else is refused before any SQL. The key is `name`, unique within the
-directory, so the default order is by name and every sort is total.
+Each listing is a projection of sqlate's `query` package. Its base is an authored statement
+anchored on the directory, and the `query` package composes the caller's `query.Directives`
+onto it: the filters, the sort, and whether to count. Only the fields the base declares may be
+filtered or sorted, and anything else is refused before any SQL. The key is `name`, unique
+within the directory, so the default order is by name and every sort is total.
 
 A page is read by number with `List`, or past a cursor with `Continue`. A page carries a cursor
 only when more rows remain and its sort can be continued: the sort runs in one direction and
@@ -214,9 +214,10 @@ and resolves a path of any depth in one statement. Each native statement declare
 port note, the engine feature it uses and what a port to another engine must provide.
 
 The other native forms need no variant. A command that returns its changed row, a create, a
-complete, a move, or a delete's first step, is a returning command of `sqlate`: the dialect
-chooses its form when the statement compiles, one statement with `RETURNING` on an engine that
-has the clause, the command and a read of the row in one transaction elsewhere. The cursor's
+complete, a move, or a delete's first step, is a returning command of `sqlate`, and the dialect
+chooses its form when the statement compiles: the single-statement form, with `RETURNING`, on an
+engine that has the clause, and elsewhere the fallback, the command and a read of the row in one
+transaction. The cursor's
 keyset predicate is a pattern an engine's dialect module overlays, so a consumer on PostgreSQL
 registers `sqlate/postgres`'s patterns in its catalog in place of `query.Patterns()`.
 

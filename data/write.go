@@ -36,8 +36,8 @@ func rowID(opts []CreateOption) (string, error) {
 
 // inTransaction reports whether sess is a transaction. An insert-or-find
 // that hit a unique violation does not look the row up again inside one,
-// because on Postgres a failed statement aborts the transaction and every
-// later statement in it fails.
+// because on PostgreSQL a failed statement aborts the transaction and
+// every later statement in it fails.
 func inTransaction(sess sqlate.Session) bool {
 	_, ok := sess.(*sqlate.Tx)
 	return ok
@@ -73,7 +73,7 @@ func insertOrFind[T any](ctx context.Context, sess sqlate.Session, find, create 
 		return zero, false, err
 	}
 	// A concurrent creator committed the name between the lookup and the
-	// insert; the row exists now.
+	// insert, so the row exists.
 	row, err = find(ctx, sess)
 	if err != nil {
 		return zero, false, fmt.Errorf("after a concurrent create: %w", notFound(err))

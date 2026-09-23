@@ -34,8 +34,9 @@ go get github.com/jackc/pgx/v5
 go get -tool github.com/standards-lab/sqlate/sqlint/cmd/sqlint
 ```
 
-`blobfs` is the base module: the root package and the persistence package `data`, over `sqlate`
-alone. `blobfs/postgres` is the PostgreSQL engine and its migration set. blobfs names no driver
+`blobfs` is the base module: the root package, the persistence package `data`, and its
+conformance suite `data/datatest`, over `sqlate` and `golang.org/x/text` alone. `blobfs/postgres`
+is the PostgreSQL engine and its migration set. blobfs names no driver
 and no object store; the program brings pgx, sqlate's PostgreSQL dialect, and `go-storage`
 itself.
 
@@ -154,8 +155,8 @@ DROP TABLE app_attachment;
 The database layer opens the pool, wraps it with sqlate's PostgreSQL dialect, and runs one
 migrator over two sets, declared bottom first: blobfs's, from `postgres.Migrations()`, then the
 program's. Each set records its history in its own table, `blobfs_schema_version` and the
-default `schema_version`, and `Up` brings blobfs's set to its head before the program's runs.
-Concurrent starters serialize on the migrator's lock.
+default `schema_version`, and `Up` applies every migration of blobfs's set before any of the
+program's. Two processes that start at once serialize on the migrator's lock.
 
 `database.go`:
 
@@ -291,8 +292,8 @@ of the cursor predicate, `sqlatepg.Patterns()`, and blobfs's published patterns,
 PostgreSQL engine with `data.WithEngine`; the program's own statements compile against the same
 catalog. `Verify` prepares both against the migrated schema.
 
-`BeginUpload` and `BeginDelete` are the first step of each protocol, each in one transaction
-with the program's own row. The pending row and its note commit together before any byte reaches
+`BeginUpload` and `BeginDelete` are the first steps of the two-phase write and the two-phase
+delete, each in one transaction with the program's own row. The pending row and its note commit together before any byte reaches
 the store. The note is removed in the transaction that marks the file deleting, so the program's
 foreign key never refuses the purge.
 

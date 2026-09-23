@@ -6,10 +6,11 @@ import (
 	"unicode"
 )
 
-// KeyValidator is what blobfs asks of the object store: whether it accepts
-// a key. A consumer wires its store's key validation to this interface at
-// its composition root, so blobfs validates a key before it stores the key
-// in a pending row and never imports the store's package.
+// KeyValidator is the one question blobfs asks of the object store:
+// whether it accepts a key. A consumer wires its store's key validation to
+// this interface at its composition root, so blobfs validates a key before
+// it stores the key in a pending row and never imports the store's
+// package.
 //
 // The interface carries no maximum key length. The store's own validation
 // enforces its limit, counted the way the store counts, and MaxNameLength

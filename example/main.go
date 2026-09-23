@@ -150,8 +150,8 @@ func run(ctx context.Context) error {
 	return nil
 }
 
-// abandonWrite removes a pending row whose object was never
-// stored: the delete's first step, then its last, with nothing between.
+// abandonWrite removes a pending row whose object was never stored: the
+// delete's first step, then its last, with nothing between.
 func abandonWrite(ctx context.Context, db *sqlate.DB, store *data.Store, id string) error {
 	if _, err := sqlate.Transact(ctx, db, func(tx *sqlate.Tx) (blobfs.File, error) {
 		return store.Files.Delete(ctx, tx, id)

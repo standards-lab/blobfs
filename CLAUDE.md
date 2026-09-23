@@ -1,10 +1,11 @@
 # blobfs
 
-blobfs is a SQL-backed virtual-directory and file-metadata layer over any object store: a tree
-of directories and file rows in SQL, over blobs the consumer stores under opaque keys. The
-engine's DDL and native forms live in one sub-module per engine, `postgres` at v1. It is a
-standalone library any Go project can adopt, built by the Standards Lab organization. The
-repository is managed with the marathon workflow; start from `context/README.md`.
+blobfs is a Go library that keeps a tree of directories and file metadata in SQL over any object
+store: the rows live in the database, and the blobs live in the consumer's store under opaque
+keys. Each engine's DDL and native forms live in a sub-module named for the engine; `postgres` is
+the only one, and a second waits on a consumer that needs one. It is a standalone library any Go
+project can adopt, built by the Standards Lab organization. The repository is managed with the
+marathon workflow; start from `context/README.md`.
 
 ## Where the documentation lives
 
@@ -27,13 +28,13 @@ updates the guide in the same effort.
   no driver, no dialect module, no object store. An engine's driver and dialect enter only
   through its sub-module; `go-storage` enters only through `example`. `mise run split-check`
   enforces the import boundaries between the layers.
-- **Local development** uses the committed root `go.work`. Pinned `require` versions are the
-  committed steady state; a `replace` directive is a transient bridge while a sub-module builds
-  against unreleased base changes, and the release drops it.
+- **Local development** uses the committed root `go.work`. In the steady state each `go.mod`
+  pins released `require` versions. A `replace` directive is temporary: it points a sub-module
+  at unreleased base changes, and the release removes it.
 - **Tests.** The unit tier runs with nothing installed. The integration tier,
-  `mise run integration`, runs the conformance suite over the standard tier and each engine's
-  variant against the compose stack and is not part of CI; `mise run acceptance` is the
-  one-shot run, with the example.
+  `mise run integration`, runs the conformance suite over the baseline and each engine's variant
+  against the compose stack and is not part of CI. `mise run acceptance` starts the stack, runs
+  the integration tier and the example, and resets the stack.
 - **Releases, CI, tasks** follow the organization's engineering conventions, the Go Elemental
   principles in the architecture repository: `v*` and `postgres/v*` tags, a per-module CI
   matrix, mise tasks over the modules.

@@ -95,10 +95,10 @@ func (d *Directories) findByName(ctx context.Context, sess sqlate.Session, paren
 // blobfs.ErrIDTaken, and a parent that does not exist is
 // blobfs.ErrNotFound.
 //
-// The insert returns its row: in one statement where the dialect renders
-// RETURNING, and otherwise as the insert and a read of the row in one
-// transaction, the caller's when sess is a *sqlate.Tx and one of its own
-// when sess is the pool.
+// The insert is a returning command: it runs in the single-statement form
+// where the dialect renders RETURNING, and otherwise in the fallback, the
+// insert and a read of the row in one transaction, the caller's when sess is
+// a *sqlate.Tx and one of its own when sess is the pool.
 func (d *Directories) Create(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (blobfs.Directory, error) {
 	name, err := validName(name)
 	if err != nil {
@@ -115,23 +115,22 @@ func (d *Directories) Create(ctx context.Context, sess sqlate.Session, parentID,
 	return dir, nil
 }
 
-// Ensure returns the directory named name under the directory with
-// parentID, creating it when none exists, and reports whether this call
-// created it. It is the insert-or-find a seeder needs: a seeded directory
-// is read on every run after the first, without the seeder catching
-// blobfs.ErrNameTaken and looking the name up itself. The name is
-// normalized and validated and the id resolved as in Create, before any
-// SQL; a found row keeps its own id whatever WithID supplied.
+// Ensure returns the directory named name under the directory with parentID,
+// creating it when none exists, and reports whether this call created it. It
+// is the insert-or-find a seeder needs: a seeded directory is read on every
+// run after the first, without the seeder catching blobfs.ErrNameTaken and
+// looking the name up itself. The name is normalized and validated and the
+// id resolved as in Create, before any SQL; a found row keeps its own id
+// whatever WithID supplied.
 //
 // The lookup runs first and the insert only when it found no row, so the
 // common case runs no failing statement and composes into a caller's
 // transaction, where a seeder writes its own rows beside the directory. A
 // creator that commits between the lookup and the insert makes the insert
 // fail as blobfs.ErrNameTaken. On the pool the row is then looked up again
-// and returned as found. Inside a transaction the error is returned
-// instead, because on Postgres the failed insert has aborted the
-// transaction, and the caller retries the transaction. The other refusals
-// are Create's.
+// and returned as found. Inside a transaction the error is returned instead,
+// because on PostgreSQL the failed insert has aborted the transaction, and
+// the caller retries the transaction. The other refusals are Create's.
 func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (blobfs.Directory, bool, error) {
 	name, err := validName(name)
 	if err != nil {
@@ -166,19 +165,20 @@ func (d *Directories) insert(ctx context.Context, sess sqlate.Session, id, paren
 	return dir, nil
 }
 
-// Delete removes the directory with id. It takes no version: the one case
-// a stale version would catch, a directory that gained children since the
-// caller read it, the foreign keys already refuse. The root is refused
-// with blobfs.ErrRootDirectory before any SQL, and the statement itself
-// never removes a row without a parent. A directory that still has child
+// Delete removes the directory with id. It takes no version: the one case a
+// stale version would catch, a directory that gained children since the
+// caller read it, the foreign keys already refuse. The root is refused with
+// blobfs.ErrRootDirectory before any SQL, and the statement itself never
+// removes a row without a parent. A directory that still has child
 // directories or files is blobfs.ErrNotEmpty, reported by the foreign keys
-// blobfs_fk_directory_parent and blobfs_fk_file_directory, since there is
-// no cascade; a consumer removes the contents first, deepest first. A
+// blobfs_fk_directory_parent and blobfs_fk_file_directory, since there is no
+// cascade; a consumer removes the contents first, deepest first. A
 // consumer's own foreign key into blobfs_directory refuses the removal as
 // blobfs.ErrReferenced, with the sqlate.ConstraintError reachable. A
-// directory that does not exist is blobfs.ErrNotFound. One statement, so
-// the session may be the pool or a transaction; a consumer that keeps a
-// row of its own about the directory removes both in one transaction.
+// directory that does not exist is blobfs.ErrNotFound. Delete runs one
+// statement, so the session may be the pool or a transaction; a consumer
+// that keeps a row of its own about the directory removes both in one
+// transaction.
 func (d *Directories) Delete(ctx context.Context, sess sqlate.Session, id string) error {
 	if id == blobfs.RootID {
 		return fmt.Errorf("data: delete directory %s: %w", id, blobfs.ErrRootDirectory)

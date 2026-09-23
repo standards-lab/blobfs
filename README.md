@@ -20,8 +20,9 @@ where a file sits turns a move of a directory into a copy and a delete of everyt
 blobfs keeps the tree in SQL, where a move is one update and a listing is one indexed read, and
 leaves each key opaque: the file's id and its name at upload, never changed and never parsed.
 Because the rows and the objects live in two systems with no shared transaction, blobfs exposes
-each protocol that touches an object as steps, a pending row before the put and a deleting row
-before the delete, and the consumer runs its own store's call between them. The library never
+each protocol that touches an object as steps: the two-phase write inserts a pending row before
+the put, the two-phase delete marks the row deleting before the object delete, and the consumer
+runs its own store's call between the steps. The library never
 calls the object store, so it depends on none, and a consumer keeps its own store, its own
 lifecycle, and its own credentials.
 
@@ -40,14 +41,14 @@ each exported name.
 
 ## How it works
 
-The library is three layers, and a consumer takes as many as it needs. The root package is Go
+The library has three layers, and a consumer takes as many as it needs. The root package is Go
 only: the entities, statuses, key and name rules, and errors. The persistence package, `data`,
 holds blobfs's standard-tier SQL and runs it through `sqlate` on any engine sqlate has a dialect
 for. An engine sub-module adds the engine's native forms and ships the schema as a migration
 set.
 
 A consumer builds one pattern catalog, compiles the store against it with the engine installed,
-and runs the write's steps around its own put. `keys` is the consumer's adapter over its store's
+and runs the steps of the two-phase write around its own put. `keys` is the consumer's adapter over its store's
 key rule and `objects` is its store; error handling is elided.
 
 ```go
@@ -89,13 +90,13 @@ Four conventions the library keeps are stricter than a reader might expect:
   vocabulary and its transitions, `NewKey` and `SanitizeFilename`, `NormalizeName` and
   `ValidateName`, `KeyValidator`, the sentinel errors, `ViolationError`, and the constraint
   names.
-- `data` is the persistence layer: `New` compiles the `Store`, whose `Directories` and `Files`
-  handles run the operations and listings, with the `Variant` and `Engine` interfaces and the
-  published patterns.
+- `data` is the persistence package: `New` compiles the `Store`, whose `Directories` and `Files`
+  handles run the operations and listings. The package also holds the `Variant` interface, the
+  `Engine` type, and the published patterns.
 - `data/datatest` is the conformance suite, `Run`, which an engine or a consumer's own variant
   runs against a live database.
-- `postgres` (sub-module) is the PostgreSQL engine: `Engine` with its advisory tree lock and
-  one-statement path resolution, and `Migrations`, the schema's migration set.
+- `postgres` (sub-module) is the PostgreSQL engine: `Engine`, whose variant takes an advisory
+  tree lock and resolves a path in one statement, and `Migrations`, the schema's migration set.
 - `example` (module) composes the library with PostgreSQL and `go-storage`'s Azure Blob provider
   through one adapter, and runs one file's whole life.
 
