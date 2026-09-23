@@ -5,7 +5,6 @@ import (
 	"database/sql/driver"
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +15,8 @@ import (
 )
 
 // filesIn scripts one page of available file rows in directory, one per
-// name, with ids derived from the names.
+// name, with ids derived from the names. A test under query.TotalExact
+// wraps it with sqltest.WithTotal; a TotalNone page scripts it unwrapped.
 func filesIn(directory string, names ...string) sqltest.Response {
 	now := time.Now()
 	r := sqltest.Response{Columns: fileColumns}
@@ -36,20 +36,27 @@ func fileNames(c query.Collection[blobfs.File]) []string {
 	return out
 }
 
-// fileBase is the file listing's base as the page wraps it, anchored on
-// its directory by the first placeholder.
+// fileBase is the file listing's base as the plain, uncounted page wraps
+// it, anchored on its directory by the first placeholder.
 const fileBase = "FROM blobfs_file f\nWHERE f.directory_id = CAST($1 AS uuid)) q"
 
+// fileCounted is the file listing's base as a counted page wraps it: the
+// plain base inside the window that counts the rows under the listing's
+// filters, itself re-aliased as q for the keyset predicate, the order, and
+// the paging outside it. A listing's own filters, if any, close the inner
+// layer before the count's closing parenthesis.
+const fileCounted = "SELECT * FROM (SELECT q.*, COUNT(*) OVER () AS sqlate_total FROM (SELECT f.id, f.directory_id, f.name, f.status, f.key, f.size, f.content_type, f.etag, f.version, f.created_at, f.updated_at\n" + fileBase
+
 // TestListFiles proves List and Continue over the files of one directory:
-// a status filter bound as text, the count and the page over the base
-// anchored on the directory, the name tie-breaker after a sort by
-// updated_at, and the continuation past the cursor's two keyed values
-// under the same filter.
+// a status filter bound as text, the total counted in the page's own
+// statement over the base anchored on the directory, the name tie-breaker
+// after a sort by updated_at, and the continuation past the cursor's two
+// keyed values under the same filter.
 func TestListFiles(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,
-		count(3), filesIn(parentID, "a", "b", "c"),
-		count(3), filesIn(parentID, "c"),
+		sqltest.WithTotal(filesIn(parentID, "a", "b", "c"), 3),
+		sqltest.WithTotal(filesIn(parentID, "c"), 3),
 	)
 	req := query.Directives{
 		Filters: []query.Filter{{Field: "status", Op: query.OpEq, Value: string(blobfs.StatusAvailable)}},
@@ -71,21 +78,46 @@ func TestListFiles(t *testing.T) {
 	}
 
 	calls := queries(rec)
+	if len(calls) != 2 {
+		t.Fatalf("ran %d queries, want one per page", len(calls))
+	}
 	filter := " WHERE q.status = CAST($2 AS text)"
-	if !strings.HasSuffix(calls[0].SQL, fileBase+filter) || !strings.HasPrefix(calls[0].SQL, "SELECT COUNT(*) FROM (SELECT f.id, f.directory_id") {
-		t.Errorf("count = %q, want the count over the base under the filter", calls[0].SQL)
+	want := fileCounted + filter + ") q ORDER BY q.updated_at, q.name OFFSET $3 ROWS FETCH NEXT $4 ROWS ONLY"
+	if calls[0].SQL != want || !slices.Equal(calls[0].Args, []any{parentID, "available", 0, 3}) {
+		t.Errorf("page = %q %v, want %q", calls[0].SQL, calls[0].Args, want)
 	}
-	want := fileBase + filter + " ORDER BY q.updated_at, q.name OFFSET $3 ROWS FETCH NEXT $4 ROWS ONLY"
-	if !strings.HasSuffix(calls[1].SQL, want) || !slices.Equal(calls[1].Args, []any{parentID, "available", 0, 3}) {
-		t.Errorf("page = %q %v, want the suffix %q", calls[1].SQL, calls[1].Args, want)
-	}
-	want = fileBase + filter + " AND (q.updated_at > CAST($3 AS timestamp with time zone) OR (q.updated_at = CAST($3 AS timestamp with time zone) AND q.name > CAST($4 AS text)))" +
+	want = fileCounted + filter + ") q WHERE (q.updated_at > CAST($3 AS timestamp with time zone) OR (q.updated_at = CAST($3 AS timestamp with time zone) AND q.name > CAST($4 AS text)))" +
 		" ORDER BY q.updated_at, q.name OFFSET $5 ROWS FETCH NEXT $6 ROWS ONLY"
-	if !strings.HasSuffix(calls[3].SQL, want) {
-		t.Errorf("continued page = %q, want the suffix %q", calls[3].SQL, want)
+	if calls[1].SQL != want {
+		t.Errorf("continued page = %q, want %q", calls[1].SQL, want)
 	}
-	if args := calls[3].Args; len(args) != 6 || args[0] != parentID || args[3] != "b" {
+	if args := calls[1].Args; len(args) != 6 || args[0] != parentID || args[3] != "b" {
 		t.Errorf("continued page args = %v, want the directory, the filter, the keyed values past b, and the paging", args)
+	}
+}
+
+// TestListFilesEmptyPage proves the total an empty page carries: an empty
+// first page, no row under the filters at all, reports a total of 0,
+// while an empty later page, one whose offset ran past the end, carries
+// no count column to read and reports query.NoTotal.
+func TestListFilesEmptyPage(t *testing.T) {
+	ctx := context.Background()
+	s, db, _ := openStore(t, fallback, sqltest.WithTotal(filesIn(parentID), 0))
+	empty, err := s.Files.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 1, Size: 2})
+	if err != nil {
+		t.Fatalf("List page 1: %v", err)
+	}
+	if len(empty.Items) != 0 || empty.More || empty.Total != 0 {
+		t.Errorf("empty first page = %+v, want no items, no more, and a total of 0", empty)
+	}
+
+	s, db, _ = openStore(t, fallback, sqltest.WithTotal(filesIn(parentID), 0))
+	past, err := s.Files.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 2, Size: 2})
+	if err != nil {
+		t.Fatalf("List page 2: %v", err)
+	}
+	if len(past.Items) != 0 || past.More || past.Total != query.NoTotal {
+		t.Errorf("page past the end = %+v, want no items, no more, and NoTotal", past)
 	}
 }
 

@@ -65,11 +65,15 @@
 // reports More by reading one row past its size, and it carries a Next
 // cursor only under a sort a cursor can continue, one direction over
 // fields that are never null. The cursor is opaque, bound to the listing,
-// its sort, and its filters, and refused otherwise. The total is a count
-// under the same filters, run before the page as a second statement, so a
-// caller that needs the two to agree while rows change reads them in one
-// repeatable-read transaction. The listing of blobfs.RootID is the
-// depth-one directories; the root itself is in no listing.
+// its sort, and its filters, and refused otherwise. The total is counted
+// in the page's own statement, so it never disagrees with the page and a
+// continued page's total covers the whole listing, not only the rows
+// from the cursor on; an empty page after the first, or an empty
+// continued page, carries no count and reports query.NoTotal. A caller
+// that wants to walk a large directory by cursor cheaply passes
+// query.TotalNone, since the counted read holds every filtered row before
+// it pages. The listing of blobfs.RootID is the depth-one directories;
+// the root itself is in no listing.
 //
 // Two operations are variation points, where an engine may do better than
 // standard SQL: the tree lock that serializes directory moves, and path

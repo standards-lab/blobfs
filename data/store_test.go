@@ -213,9 +213,9 @@ func TestNewWithoutPatterns(t *testing.T) {
 
 // TestVerify proves Verify prepares every statement as authored, each
 // returning command's single-statement form beside it where the dialect
-// renders one, and each listing's two projection probes, its field
-// contract over the base and a page past a cursor over the name key,
-// without consuming a response.
+// renders one, and each listing's three projection probes: its field
+// contract over the base, a page past a cursor over the name key, and the
+// same page counted, without consuming a response.
 func TestVerify(t *testing.T) {
 	for _, c := range []struct {
 		form      form
@@ -227,10 +227,10 @@ func TestVerify(t *testing.T) {
 				t.Fatalf("Verify: %v", err)
 			}
 			prepared := rec.SQL(sqltest.OpPrepare)
-			if want := 18 + c.returning + 4; len(prepared) != want {
+			if want := 18 + c.returning + 6; len(prepared) != want {
 				t.Errorf("Verify prepared %d statements, want %d", len(prepared), want)
 			}
-			returning, contracts, cursors := 0, 0, 0
+			returning, contracts, cursors, counted := 0, 0, 0, 0
 			for _, text := range prepared {
 				switch {
 				case strings.Contains(text, "RETURNING"):
@@ -238,6 +238,8 @@ func TestVerify(t *testing.T) {
 				case strings.HasPrefix(text, "SELECT q.id, q.parent_id, q.name,"),
 					strings.HasPrefix(text, "SELECT q.id, q.directory_id, q.name, q.status,"):
 					contracts++
+				case strings.Contains(text, "COUNT(*) OVER ()"):
+					counted++
 				case strings.Contains(text, " WHERE (q.name > CAST($2 AS text)) ORDER BY q.name OFFSET"):
 					cursors++
 				}
@@ -245,8 +247,8 @@ func TestVerify(t *testing.T) {
 			if returning != c.returning {
 				t.Errorf("Verify prepared %d single-statement forms, want %d", returning, c.returning)
 			}
-			if contracts != 2 || cursors != 2 {
-				t.Errorf("Verify prepared %d field-contract and %d cursor-page probes, want 2 of each", contracts, cursors)
+			if contracts != 2 || cursors != 2 || counted != 2 {
+				t.Errorf("Verify prepared %d field-contract, %d cursor-page, and %d counted cursor-page probes, want 2 of each", contracts, cursors, counted)
 			}
 		})
 	}

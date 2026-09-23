@@ -20,14 +20,10 @@ import (
 // A parent that is not the root, for the listings under one.
 const parentID = "0199a0b0-0000-7000-8000-000000000001"
 
-// count scripts the count a listing runs before its page under
-// query.TotalExact.
-func count(n int64) sqltest.Response {
-	return sqltest.Response{Columns: []string{"count"}, Rows: [][]driver.Value{{n}}}
-}
-
 // children scripts one page of directory rows under parent, one per name,
-// with ids derived from the names so a test can tell them apart.
+// with ids derived from the names so a test can tell them apart. A test
+// under query.TotalExact wraps it with sqltest.WithTotal; a TotalNone page
+// scripts it unwrapped.
 func children(parent string, names ...string) sqltest.Response {
 	now := time.Now()
 	r := sqltest.Response{Columns: directoryColumns}
@@ -57,21 +53,29 @@ func queries(rec *sqltest.Recorder) []sqltest.Call {
 	return out
 }
 
-// directoryBase is the listing's base as the page wraps it, anchored on
-// its parent by the first placeholder.
+// directoryBase is the listing's base as the plain, uncounted page wraps
+// it, anchored on its parent by the first placeholder.
 const directoryBase = "FROM blobfs_directory d\nWHERE d.parent_id = CAST($1 AS uuid)) q"
 
-// TestListDirectories proves List by page number: the count under the
-// filters, then the page, both over the base anchored on the parent,
-// sorted by the caller's terms with name appended as the tie-breaker, and
-// fetching one row past the page to report More. The first page with More
-// carries a cursor; the last page reports no More and no cursor. Under
-// TotalNone the count does not run and the total is NoTotal.
+// directoryCounted is the listing's base as a counted page wraps it: the
+// plain base inside the window that counts the rows under the listing's
+// filters, itself re-aliased as q for the keyset predicate, the order, and
+// the paging outside it. A listing's own filters, if any, close the inner
+// layer before the count's closing parenthesis.
+const directoryCounted = "SELECT * FROM (SELECT q.*, COUNT(*) OVER () AS sqlate_total FROM (SELECT d.id, d.parent_id, d.name, d.version, d.created_at, d.updated_at\n" + directoryBase
+
+// TestListDirectories proves List by page number: the total counted in the
+// page's own statement, one query per page, over the base anchored on the
+// parent, sorted by the caller's terms with name appended as the
+// tie-breaker, and fetching one row past the page to report More. The
+// first page with More carries a cursor; the last page reports no More
+// and no cursor. Under TotalNone the page carries no count column and the
+// total is NoTotal.
 func TestListDirectories(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,
-		count(3), children(parentID, "a", "b", "c"),
-		count(3), children(parentID, "c"),
+		sqltest.WithTotal(children(parentID, "a", "b", "c"), 3),
+		sqltest.WithTotal(children(parentID, "c"), 3),
 		children(parentID, "a", "b", "c"),
 	)
 	req := query.Directives{Filters: []query.Filter{{Field: "version", Op: query.OpGe, Value: 1}}}
@@ -99,22 +103,44 @@ func TestListDirectories(t *testing.T) {
 	}
 
 	calls := queries(rec)
-	if len(calls) != 5 {
-		t.Fatalf("ran %d queries, want count and page twice, then one page", len(calls))
+	if len(calls) != 3 {
+		t.Fatalf("ran %d queries, want one per page", len(calls))
 	}
-	wantCount := "SELECT COUNT(*) FROM (SELECT d.id, d.parent_id, d.name, d.version, d.created_at, d.updated_at\n" + directoryBase + " WHERE q.version >= CAST($2 AS bigint)"
-	if calls[0].SQL != wantCount || !slices.Equal(calls[0].Args, []any{parentID, 1}) {
-		t.Errorf("count = %q %v, want %q over the parent and the filter", calls[0].SQL, calls[0].Args, wantCount)
+	wantPage := directoryCounted + " WHERE q.version >= CAST($2 AS bigint)) q ORDER BY q.name OFFSET $3 ROWS FETCH NEXT $4 ROWS ONLY"
+	if calls[0].SQL != wantPage || !slices.Equal(calls[0].Args, []any{parentID, 1, 0, 3}) {
+		t.Errorf("page 1 = %q %v, want %q at offset 0 fetching 3", calls[0].SQL, calls[0].Args, wantPage)
 	}
-	wantPage := directoryBase + " WHERE q.version >= CAST($2 AS bigint) ORDER BY q.name OFFSET $3 ROWS FETCH NEXT $4 ROWS ONLY"
-	if !strings.HasSuffix(calls[1].SQL, wantPage) || !slices.Equal(calls[1].Args, []any{parentID, 1, 0, 3}) {
-		t.Errorf("page 1 = %q %v, want the suffix %q at offset 0 fetching 3", calls[1].SQL, calls[1].Args, wantPage)
+	if calls[1].SQL != wantPage || !slices.Equal(calls[1].Args, []any{parentID, 1, 2, 3}) {
+		t.Errorf("page 2 = %q %v, want %q at offset 2 fetching 3", calls[1].SQL, calls[1].Args, wantPage)
 	}
-	if !slices.Equal(calls[3].Args, []any{parentID, 1, 2, 3}) {
-		t.Errorf("page 2 args = %v, want offset 2 fetching 3", calls[3].Args)
+	wantUntotalled := directoryBase + " ORDER BY q.name OFFSET $2 ROWS FETCH NEXT $3 ROWS ONLY"
+	if !strings.HasSuffix(calls[2].SQL, wantUntotalled) || strings.Contains(calls[2].SQL, "COUNT") || !slices.Equal(calls[2].Args, []any{parentID, 0, 3}) {
+		t.Errorf("TotalNone page = %q %v, want the plain page %q with no count", calls[2].SQL, calls[2].Args, wantUntotalled)
 	}
-	if strings.Contains(calls[4].SQL, "COUNT") || !slices.Equal(calls[4].Args, []any{parentID, 0, 3}) {
-		t.Errorf("TotalNone page = %q %v, want the page alone", calls[4].SQL, calls[4].Args)
+}
+
+// TestListDirectoriesEmptyPage proves the total an empty page carries: an
+// empty first page, no row under the filters at all, reports a total of
+// 0, while an empty later page, one whose offset ran past the end,
+// carries no count column to read and reports query.NoTotal.
+func TestListDirectoriesEmptyPage(t *testing.T) {
+	ctx := context.Background()
+	s, db, _ := openStore(t, fallback, sqltest.WithTotal(children(parentID), 0))
+	empty, err := s.Directories.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 1, Size: 2})
+	if err != nil {
+		t.Fatalf("List page 1: %v", err)
+	}
+	if len(empty.Items) != 0 || empty.More || empty.Total != 0 {
+		t.Errorf("empty first page = %+v, want no items, no more, and a total of 0", empty)
+	}
+
+	s, db, _ = openStore(t, fallback, sqltest.WithTotal(children(parentID), 0))
+	past, err := s.Directories.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 2, Size: 2})
+	if err != nil {
+		t.Fatalf("List page 2: %v", err)
+	}
+	if len(past.Items) != 0 || past.More || past.Total != query.NoTotal {
+		t.Errorf("page past the end = %+v, want no items, no more, and NoTotal", past)
 	}
 }
 
@@ -122,7 +148,7 @@ func TestListDirectories(t *testing.T) {
 // blobfs.RootID: the depth-one directories, whose parent is the root. The
 // root itself has no parent, so the base never returns it.
 func TestListRoot(t *testing.T) {
-	s, db, rec := openStore(t, fallback, count(1), children(blobfs.RootID, "docs"))
+	s, db, rec := openStore(t, fallback, sqltest.WithTotal(children(blobfs.RootID, "docs"), 1))
 	c, err := s.Directories.List(context.Background(), db, blobfs.RootID, query.Directives{}, query.Page{Number: 1, Size: 10})
 	if err != nil {
 		t.Fatalf("List(root): %v", err)
@@ -144,8 +170,8 @@ func TestListRoot(t *testing.T) {
 func TestContinueDirectories(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,
-		count(5), children(parentID, "a", "b", "c"),
-		count(5), children(parentID, "c", "d", "e"),
+		sqltest.WithTotal(children(parentID, "a", "b", "c"), 5),
+		sqltest.WithTotal(children(parentID, "c", "d", "e"), 5),
 		children(parentID, "e", "d", "c"),
 		children(parentID, "c", "b"),
 	)
@@ -161,9 +187,9 @@ func TestContinueDirectories(t *testing.T) {
 		t.Errorf("continued page = %v total %d more %v, want [c d] of 5 with a cursor of its own", got, next.Total, next.More)
 	}
 	calls := queries(rec)
-	want := directoryBase + " WHERE (q.name > CAST($2 AS text)) ORDER BY q.name OFFSET $3 ROWS FETCH NEXT $4 ROWS ONLY"
-	if !strings.HasSuffix(calls[3].SQL, want) || !slices.Equal(calls[3].Args, []any{parentID, "b", 0, 3}) {
-		t.Errorf("continued page = %q %v, want the suffix %q past b", calls[3].SQL, calls[3].Args, want)
+	want := directoryCounted + ") q WHERE (q.name > CAST($2 AS text)) ORDER BY q.name OFFSET $3 ROWS FETCH NEXT $4 ROWS ONLY"
+	if calls[1].SQL != want || !slices.Equal(calls[1].Args, []any{parentID, "b", 0, 3}) {
+		t.Errorf("continued page = %q %v, want %q past b", calls[1].SQL, calls[1].Args, want)
 	}
 
 	desc := query.Directives{Sort: []query.Sort{{Field: "name", Descending: true}}, Total: query.TotalNone}
@@ -176,8 +202,8 @@ func TestContinueDirectories(t *testing.T) {
 	}
 	calls = queries(rec)
 	want = " WHERE (q.name < CAST($2 AS text)) ORDER BY q.name DESC OFFSET $3 ROWS FETCH NEXT $4 ROWS ONLY"
-	if !strings.HasSuffix(calls[5].SQL, want) || calls[5].Args[1] != "d" {
-		t.Errorf("descending continuation = %q %v, want the suffix %q past d", calls[5].SQL, calls[5].Args, want)
+	if !strings.HasSuffix(calls[3].SQL, want) || calls[3].Args[1] != "d" {
+		t.Errorf("descending continuation = %q %v, want the suffix %q past d", calls[3].SQL, calls[3].Args, want)
 	}
 }
 
