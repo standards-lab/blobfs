@@ -84,6 +84,11 @@ jobs:
         with:
           go-version: "1.27"
 
+      # sqlint resolves the engine through go list -m, which reads the
+      # module cache and does not download; a fresh runner fetches it first.
+      - name: download the engine module
+        run: go mod download github.com/standards-lab/sqlate/postgres
+
       - name: sqlint
         run: go run github.com/standards-lab/sqlate/sqlint/cmd/sqlint .
 

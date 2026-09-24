@@ -44,6 +44,8 @@ for mod in $GO_MODULES; do
 done
 if [ -f sqlint.toml ]; then
   echo "==> sqlint"
+  # The engine resolves through go list -m, which does not download.
+  go mod download github.com/standards-lab/sqlate/postgres
   go run github.com/standards-lab/sqlate/sqlint/cmd/sqlint .
 fi
 '''
