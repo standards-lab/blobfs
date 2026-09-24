@@ -1,0 +1,3 @@
+include:
+  - compose/postgres.yml
+  - compose/azurite.yml

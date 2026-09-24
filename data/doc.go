@@ -1,0 +1,107 @@
+// Package data is blobfs's persistence package over the root package's
+// entities. It holds blobfs's own SQL statements, the pattern namespace it
+// publishes, and the Store, whose operation handles run the statements
+// against a sqlate.Session the caller provides. Every statement and every
+// pattern it ships is standard SQL, so the package runs on any engine sqlate
+// has a dialect for. Ids are minted in Go with blobfs.NewID, or supplied by
+// the caller through WithID so a seeded row keeps its id across resets. A
+// command that needs its row back is a returning command: it names the read
+// that returns the row, and the dialect chooses the form, the
+// single-statement form on an engine that renders RETURNING and elsewhere
+// the fallback, the command and the read in one transaction.
+//
+// A consumer builds one pattern catalog for its whole program, with
+// query.Patterns() and Patterns() registered beside its own sources, and
+// passes it to New, which compiles the embedded statements against it. The
+// published patterns are the column lists the entity types scan,
+// blobfs.directory_columns and blobfs.file_columns, which a consumer's own
+// statements include with {{> blobfs.name}}. Every pattern is
+// parameter-free, so a projection base that includes one gains no parameter
+// from it.
+//
+// The tree has one root, seeded by the schema with blobfs.RootID. The
+// Store's Directories handle reads and writes directories. Every operation
+// takes a directory by id, and a path is only an entry point. Find reads a
+// directory by id and FindByName a child by name; FindByPath resolves a
+// relative path below a directory the caller holds by id, and Path computes
+// a directory's path from the root at read time. Create inserts a directory,
+// and Ensure is the insert-or-find a seeder runs: it looks the name up first
+// and inserts only when it finds no row. Move moves or renames a directory
+// inside a transaction, under the variant's tree lock and a cycle check,
+// guarded by the version the caller read. Delete removes one empty
+// directory; there is no cascade and no recursive delete, and a consumer
+// that wants one walks the tree, files and then directories, deepest first.
+// No operation walks the whole tree.
+//
+// The Store's Files handle reads and writes file rows and never calls the
+// object store: the consumer runs its own put and delete between the steps
+// of each protocol. The two-phase write is Create, which inserts the row as
+// pending with the key built by blobfs.NewKey and validated against the
+// consumer's blobfs.KeyValidator; then the object put under the row's Key;
+// then Complete, which records what the store reported and makes the row
+// available, guarded by the pending row's version. Ensure is the retry-safe
+// first step: it reports whether it created the row, resumed a pending one
+// an earlier write left, or found the name present. There is no failed
+// status: a stop leaves the row pending for a retry, and an abandoned write
+// is deleted like any file. The two-phase delete is Delete, which marks the
+// row deleting and returns it with its key, and returns a row already
+// deleting as it is; then the object delete; then Purge, which removes the
+// row, succeeds on a row already gone, and refuses one that is not deleting.
+// Every other mutation refuses a deleting row, and a deleting row keeps its
+// name until it is purged. Hold is the library's half of the
+// reference-then-delete rule: a consumer holds a file's row in the
+// transaction that inserts a reference to it, and Delete, which takes the
+// same row lock, waits for that transaction. Find and FindByName read a file
+// whatever its status, and Move moves or renames one, guarded by version,
+// without touching its key.
+//
+// Each handle lists one directory's contents, anchored on its id: List reads
+// a page by number and Continue the page past a cursor, both over a
+// projection base of the query library, directory_children or
+// directory_files, with the caller's query.Directives composed onto it. The
+// query library does the composition: it refuses an undeclared field before
+// any SQL, makes name the key and the tie-breaker of every sort, reports
+// More by reading one row past the page's size, and issues a Next cursor
+// only under a sort a cursor can continue, one direction over fields that
+// are never null. The cursor is opaque, bound to the listing, its sort, and
+// its filters, and refused otherwise. The total is counted in the page's own
+// statement, so it never disagrees with the page, and a continued page's
+// total covers the whole listing, not only the rows from the cursor on. An
+// empty page after the first, or an empty continued page, carries no count
+// and reports query.NoTotal. A caller that walks a large directory by cursor
+// passes query.TotalNone, since the counted read holds every filtered row
+// before it pages. The listing of blobfs.RootID is the depth-one
+// directories; the root itself is in no listing.
+//
+// Three operations are variation points, where an engine may do better than
+// standard SQL: the tree lock that serializes directory moves, path
+// resolution, and a file's hold. The Variant interface names them. Standard
+// is the baseline, a no-op lock that reports it does not serialize, one
+// child read per path segment, and a hold that is a self-assigning update,
+// and a store runs it unless New installs another variant through
+// WithEngine. An Engine builds its variant over the baseline New compiled
+// and bound, so the statements are compiled once. The Engine is an engine
+// sub-module's, or a consumer's own, whose variant embeds the baseline or an
+// engine's variant and overrides the methods it needs; embedding is the
+// contract, so a variation point a later release adds reaches every variant
+// through it. The Store validates
+// every input and classifies every error itself, so a variant binds what it
+// is given and returns what the session mapped.
+//
+// Every operation takes the session as an argument and passes it through
+// unwrapped, so a call runs against the pool or inside the caller's
+// transaction. An operation correct only inside a transaction takes a
+// *sqlate.Tx: the directory move, the tree lock, a file's hold, and a file's
+// Delete. A guarded step whose row moved on is query.ErrVersionMismatch,
+// with the expected and current versions in the text; a step a deleting row
+// refuses is blobfs.ErrDeleting, whatever version the caller holds, and a status change the transition table
+// refuses is a blobfs.TransitionError. A violation of one of blobfs's own
+// constraints becomes blobfs.ErrNameTaken, blobfs.ErrIDTaken,
+// blobfs.ErrNotFound, blobfs.ErrRootDirectory, or, on a directory delete,
+// blobfs.ErrNotEmpty, carried by a blobfs.ViolationError. A violation of a
+// constraint blobfs does not own returns unclassified on a write, wrapped
+// with the operation's context. On a delete, a foreign key blobfs does not
+// own is a consumer's row that references the one being removed, which the
+// package reports as blobfs.ErrReferenced by the violation's class, with the
+// constraint's name reachable for the consumer to match.
+package data

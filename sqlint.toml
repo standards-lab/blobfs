@@ -1,0 +1,43 @@
+# sqlint: the repository's SQL conventions, one file at the root for the
+# base module and the engine sub-module alike. The engine names the native
+# forms a standard-tier file may not use; the sources name the pattern
+# catalogs the statements' includes resolve against: sqlate's own patterns
+# and the namespace blobfs publishes, a bare directory of pattern files.
+engine = "github.com/standards-lab/sqlate/postgres"
+
+# What a consumer reads when it names blobfs as a source: the directory
+# its published patterns live in, registered under the consumer's chosen
+# namespace.
+[export]
+patterns = "data/patterns"
+
+[sources]
+sql = "github.com/standards-lab/sqlate"
+blobfs = "data/patterns"
+
+# The persistence package's statements and the Postgres variant's: named
+# for their operation, the delimiter kept out of comments and literals, no
+# native form in a standard-tier file, and the guard protocol's two
+# includes appearing together. The native-forms check keys on each file's
+# declared tier, so the variant's directory keeps it on: a native file
+# there is exempt by its tier and must carry its port note to compile, and
+# a file there that declared the standard tier would still be held to the
+# standard forms.
+[statements]
+dirs = ["data/statements", "postgres/statements"]
+verb_named = true
+delimiter = true
+native_forms = true
+guard = true
+
+# The published patterns: the same delimiter and native-form checks.
+[patterns]
+dirs = ["data/patterns"]
+delimiter = true
+native_forms = true
+
+# blobfs's migration set. The migrations role has no native-forms check;
+# the DDL is PostgreSQL's, the only engine's.
+[migrations]
+dirs = ["postgres/migrations"]
+single_statement = true

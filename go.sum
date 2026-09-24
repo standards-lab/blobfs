@@ -1,0 +1,4 @@
+github.com/standards-lab/sqlate v0.4.0 h1:1k0pCj9j8wAWlZTNeD9e/XjFWHrzQHUDuUjbQ+zV1pw=
+github.com/standards-lab/sqlate v0.4.0/go.mod h1:pikNmGf/z3x46SBWFXgt/xKIDZuquSgCoXy5OWBFFR4=
+golang.org/x/text v0.42.0 h1:JbOZXgfeCPU9gacVtYliJqOhD+zhrEqK4LfdpmlUZqI=
+golang.org/x/text v0.42.0/go.mod h1:ojzP1Z+2QtioaF8DTtO8K5q7JWVVYwZKenzujK0Zd0E=
