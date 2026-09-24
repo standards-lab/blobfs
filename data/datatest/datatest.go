@@ -54,22 +54,26 @@ import (
 // engine's own statements prepared against the migrated schema);
 // Directories (the root, reads by id and by name, Create and Ensure with
 // their refusals by sentinel and constraint, a concurrent Ensure on the
-// pool, and Delete); Paths (FindByPath at every depth, a missing segment
-// and a missing start, the refused forms, and names that would break a
-// spliced path, against the baseline; Path after moves); Files (reads and
-// Move); Writes (Create, Ensure, and Complete of the write protocol
-// against the baseline, a write inside the caller's transaction, a retry
-// after a stop, and caller-supplied ids); Deletes (Delete and Purge,
-// retries at each step, and a consumer's reference); Holds (Hold's
-// refusals and the two interleavings of a hold and a delete on the row
-// lock); Moves (the tree lock, the directory move's sequential contract,
-// and two opposing concurrent moves, which serialize or form a cycle as
-// Serializes says, and which serializable isolation refuses on every
-// variant); Listing (both listings against a plain query, the page
-// boundaries, the counted total's rules for empty and continued pages, the
-// total under concurrent inserts, and the refusals); and Keyset (every
-// cursorable sort walked to the end against the baseline and an offset
-// walk, without and then with a sort index).
+// pool with the race forced, and Delete); Paths (FindByPath at every
+// depth, a missing segment and a missing start, the refused forms, and
+// names that would break a spliced path, against the baseline; Path after
+// moves); Files (reads and Move, a deleting row refused whatever the
+// version); Writes (Create, Ensure, and Complete of the write protocol
+// against the baseline, a concurrent Ensure with the race forced, a
+// complete after a concurrent delete refused as ErrDeleting, a write
+// inside the caller's transaction, a retry after a stop, and
+// caller-supplied ids); Deletes (Delete and Purge, retries at each step,
+// and a consumer's reference); Holds (Hold's refusals through the
+// variant's HoldFile against the baseline, and the two interleavings of a
+// hold and a delete on the row lock); Moves (the tree lock, the directory
+// move's sequential contract, and two opposing concurrent moves, which
+// serialize or form a cycle as Serializes says, with IsWithin and Path
+// terminating on the cycle and a Move repairing it, and which serializable
+// isolation refuses on every variant); Listing (both listings against a
+// plain query, the page boundaries, the counted total's rules for empty
+// and continued pages, the total under concurrent inserts, and the
+// refusals); and Keyset (every cursorable sort walked to the end against
+// the baseline and an offset walk, without and then with a sort index).
 func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, engine data.Engine) {
 	t.Helper()
 	dialect := db.Dialect()

@@ -166,11 +166,15 @@ func (s *suite) ensureFile(t *testing.T) {
 	}
 }
 
-// ensureFileConcurrent checks the race on the pool: two callers write the
-// same free name at once, exactly one creates the pending row, the other
-// resumes it, and both return the same row.
+// ensureFileConcurrent checks the race on the pool, forced as the
+// directory's is: two callers write the same free name at once through a
+// pool that holds each caller's lookup until both have looked, so both
+// insert and the second insert is refused; the second caller recovers by
+// looking the row up. Exactly one creates the pending row, the other
+// resumes it, both return the same row, and the lookup runs a third time.
 func (s *suite) ensureFileConcurrent(t *testing.T) {
 	dir := s.mkdir(t, "ensure-file-concurrent-"+t.Name())
+	pool := s.racingPool(t, "file_by_name")
 	var (
 		start    sync.WaitGroup
 		done     sync.WaitGroup
@@ -182,7 +186,7 @@ func (s *suite) ensureFileConcurrent(t *testing.T) {
 	for range 2 {
 		done.Go(func() {
 			start.Wait()
-			f, outcome, err := s.store.Files.Ensure(s.ctx, s.db, acceptAll{}, dir.ID, "shared.txt", "text/plain")
+			f, outcome, err := s.store.Files.Ensure(s.ctx, pool, acceptAll{}, dir.ID, "shared.txt", "text/plain")
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -211,6 +215,7 @@ func (s *suite) ensureFileConcurrent(t *testing.T) {
 	if created != 1 {
 		t.Errorf("%d callers created the row, want one", created)
 	}
+	pool.wantRecovered(t)
 }
 
 // completeFile checks Complete against the baseline: the row moved to
@@ -251,7 +256,10 @@ func (s *suite) completeFile(t *testing.T) {
 
 // completeFileRefusals checks Complete's refusals against the baseline,
 // each leaving the row unchanged: a missing row, a stale version, a row
-// already available (an invalid transition), and a deleting row.
+// already available (an invalid transition), and a deleting row, at its
+// own version and at the pending version the writer read before a
+// concurrent Delete advanced it, which is ErrDeleting and never a version
+// mismatch.
 func (s *suite) completeFileRefusals(t *testing.T) {
 	dir := s.mkdir(t, "complete-refusals-"+t.Name())
 	available, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "refused.txt", "text/plain")
@@ -278,6 +286,7 @@ func (s *suite) completeFileRefusals(t *testing.T) {
 		{"VersionMismatch", available.ID, available.Version - 1, query.ErrVersionMismatch, blobfs.ErrInvalidTransition},
 		{"AlreadyAvailable", available.ID, available.Version, blobfs.ErrInvalidTransition, blobfs.ErrDeleting},
 		{"Deleting", deleting.ID, deleting.Version, blobfs.ErrDeleting, query.ErrVersionMismatch},
+		{"DeletingAtThePendingVersion", deleting.ID, pending.Version, blobfs.ErrDeleting, query.ErrVersionMismatch},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var before blobfs.File

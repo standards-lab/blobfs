@@ -21,7 +21,12 @@ import (
 // walks upward from id, so the cost is the depth of id. A directory that
 // does not exist is within nothing. The answer is reliable only while no
 // other transaction is moving directories, which is what Move's lock
-// provides; the walk itself terminates only while the tree has no cycle.
+// provides. The walk discards a directory it has visited, so it terminates
+// on a cycle as well, which two opposing moves on a variant whose
+// Serializes reports false can leave: id is then within every directory on
+// its chain, the loop included, and within no directory off it, the root
+// among them, so a move of a directory on the loop back under the root
+// passes the check and repairs the tree.
 func (d *Directories) IsWithin(ctx context.Context, sess sqlate.Session, id, ancestorID string) (bool, error) {
 	n, err := d.isWithin.One(ctx, sess, query.Args{"id": id, "ancestor_id": ancestorID})
 	if err != nil {
@@ -77,6 +82,18 @@ func (d *Directories) Serializes() bool {
 // state, and the two commits leave the two directories each other's
 // ancestor, detached from the root; a caller on such a variant serializes
 // directory moves outside the database.
+//
+// The lock's guarantee assumes tx runs at read committed, the default
+// isolation, where each statement reads the tree as committed when it
+// starts, so the check after the lock sees the first mover's commit. At
+// repeatable read or serializable the check reads the snapshot the
+// transaction's first statement took, which on PostgreSQL is the lock
+// statement itself, taken before it blocks, so the check does not see the
+// first move and passes. The engine then refuses the second move at its
+// update or commit with sqlate.ErrSerializationFailure: at serializable on
+// any engine that implements it, and at repeatable read on PostgreSQL,
+// whose foreign-key check locks the new parent the first move changed. The
+// caller retries a refused move in a new transaction.
 func (d *Directories) Move(ctx context.Context, tx *sqlate.Tx, id, parentID, name string, version int64) (blobfs.Directory, error) {
 	if id == blobfs.RootID {
 		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, blobfs.ErrRootDirectory)

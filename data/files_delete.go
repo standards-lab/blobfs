@@ -17,47 +17,50 @@ import (
 // reference-then-delete rule. A consumer calls it before it inserts a row
 // that references the file, in the same transaction as the insert, and a
 // Delete, whose update takes the same row lock, waits for that transaction
-// and then sees the reference. The hold is an update that assigns a column
-// to itself: it changes no value and advances no version, so other holders
-// of the row's version stay valid. Only a row that is not deleting is held,
-// because a file whose delete has begun must take no new reference; a
-// pending row is held like an available one. It takes a *sqlate.Tx because
-// on the pool the lock would be released as the statement ends and hold
-// nothing.
+// and then sees the reference. The hold changes no value and advances no
+// version, so other holders of the row's version stay valid. Only a row that
+// is not deleting is held, because a file whose delete has begun must take
+// no new reference; a pending row is held like an available one. It takes a
+// *sqlate.Tx because on the pool the lock would be released as the
+// statement ends and hold nothing.
+//
+// The hold is a variation point, Variant.HoldFile. The baseline takes the
+// lock with an update that assigns a column to itself, which is portable;
+// an engine's variant may take the same lock without writing a row version,
+// as the PostgreSQL engine does with SELECT ... FOR NO KEY UPDATE. The
+// refusals are the same on every variant.
 //
 // A file that does not exist is blobfs.ErrNotFound. A row that is deleting
 // is blobfs.ErrDeleting, whatever its version, since no version will make
 // it holdable. With AtVersion, a row that is not deleting and sits at
 // another version is query.ErrVersionMismatch, with the expected and
-// current versions in the text. When the hold matches no row, the row is
+// current versions in the text. When the hold holds no row, the row is
 // read once more, in tx, to classify.
 func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...HoldOption) error {
 	var o holdOptions
 	for _, opt := range opts {
 		opt(&o)
 	}
-	args := query.Args{"id": id}
-	hold := f.hold
+	var version *int64
 	if o.hasVersion {
-		args["version"] = o.version
-		hold = f.holdAt
+		version = &o.version
 	}
-	n, err := hold.Exec(ctx, tx, args)
+	held, err := f.variant.HoldFile(ctx, tx, id, version)
 	if err != nil {
 		return fmt.Errorf("data: hold file %s: %w", id, err)
 	}
-	if n > 0 {
+	if held {
 		return nil
 	}
 	// No row was held: the row is gone, deleting, or at another version.
-	file, err := f.byID.One(ctx, tx, args)
+	file, err := f.byID.One(ctx, tx, query.Args{"id": id})
 	switch {
 	case err != nil:
 		return fmt.Errorf("data: hold file %s: %w", id, notFound(err))
 	case file.Status == blobfs.StatusDeleting:
 		return fmt.Errorf("data: hold file %s: the row is %s: %w", id, file.Status, blobfs.ErrDeleting)
 	case o.hasVersion && file.Version != o.version:
-		return fmt.Errorf("data: hold file %s: %w: expected %d, current %d", id, query.ErrVersionMismatch, o.version, file.Version)
+		return fmt.Errorf("data: hold file %s: %w", id, versionMismatch(o.version, file.Version))
 	}
 	return fmt.Errorf("data: hold file %s: the hold matched no row, yet the row is %s at version %d", id, file.Status, file.Version)
 }

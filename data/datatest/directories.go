@@ -210,13 +210,17 @@ func (s *suite) ensureDirectory(t *testing.T) {
 	}
 }
 
-// ensureDirectoryConcurrent checks the race on the pool: two callers
-// ensure the same name at once, exactly one creates it, both return the
-// same row, and the parent holds one row of the name. The engine blocks
-// the second insert on the unique constraint until the first commits and
-// then refuses it, and the second caller recovers by looking the row up.
+// ensureDirectoryConcurrent checks the race on the pool, forced: two
+// callers ensure the same name at once through a pool that holds each
+// caller's lookup until both have looked, so both find no row and both
+// insert. The engine blocks the second insert on the unique constraint
+// until the first commits and then refuses it, and the second caller
+// recovers by looking the row up: exactly one creates it, both return the
+// same row, the lookup runs a third time, and the parent holds one row of
+// the name.
 func (s *suite) ensureDirectoryConcurrent(t *testing.T) {
 	parent := s.mkdir(t, "ensure-concurrent-"+t.Name())
+	pool := s.racingPool(t, "directory_by_name")
 	var (
 		start   sync.WaitGroup
 		done    sync.WaitGroup
@@ -228,7 +232,7 @@ func (s *suite) ensureDirectoryConcurrent(t *testing.T) {
 	for range 2 {
 		done.Go(func() {
 			start.Wait()
-			d, created, err := s.store.Directories.Ensure(s.ctx, s.db, parent.ID, "shared")
+			d, created, err := s.store.Directories.Ensure(s.ctx, pool, parent.ID, "shared")
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -246,6 +250,7 @@ func (s *suite) ensureDirectoryConcurrent(t *testing.T) {
 	if len(results) != 2 || !equalDirectory(results[0], results[1]) || creates != 1 {
 		t.Errorf("the two callers got %+v with %d creates; want the same row and one create", results, creates)
 	}
+	pool.wantRecovered(t)
 	if n := s.count(t, s.db, "SELECT COUNT(*) FROM blobfs_directory WHERE parent_id = "+s.db.Dialect().Placeholder(1), parent.ID); n != 1 {
 		t.Errorf("%d rows under the parent, want one", n)
 	}

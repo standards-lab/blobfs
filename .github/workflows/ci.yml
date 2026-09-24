@@ -86,3 +86,18 @@ jobs:
 
       - name: sqlint
         run: go run github.com/standards-lab/sqlate/sqlint/cmd/sqlint .
+
+  # The layer boundaries: mise run split-check lists each library package's
+  # transitive imports and fails on one its layer may not take. mise
+  # installs the pinned Go from mise.toml.
+  split-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: jdx/mise-action@v4
+        with:
+          install_args: go
+
+      - name: split-check
+        run: mise run split-check

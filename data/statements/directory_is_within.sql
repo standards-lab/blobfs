@@ -8,13 +8,21 @@
 -- D: a count above zero means P is D or one of D's descendants, and the
 -- move would make D its own ancestor. A directory that does not exist
 -- yields no rows and a count of zero; the update that follows then fails
--- the foreign key. The walk terminates only while the tree has no cycle,
--- which is what running it under the tree lock keeps true.
+-- the foreign key.
+--
+-- The walk combines its steps with UNION, not UNION ALL, so a row the walk
+-- has already produced is discarded rather than joined again. That is its
+-- termination guarantee on a cycle, which two opposing concurrent moves on
+-- a variant without a tree lock can leave: the walk stops once it returns
+-- to a directory it has visited, after at most one step per directory on
+-- the chain, and the count is then whether ancestor_id is on the chain from
+-- id, the loop included. On a tree without a cycle no row repeats, so UNION
+-- discards nothing and the count is zero or one.
 WITH RECURSIVE up (id, parent_id) AS (
     SELECT d.id, d.parent_id
     FROM blobfs_directory d
     WHERE d.id = {{id:uuid}}
-  UNION ALL
+  UNION
     SELECT d.id, d.parent_id
     FROM blobfs_directory d
     JOIN up ON up.parent_id = d.id

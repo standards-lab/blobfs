@@ -46,10 +46,11 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	db, err := openDatabase(ctx)
+	db, pool, err := openDatabase(ctx)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = pool.Close() }()
 	objects, err := openStorage(ctx)
 	if err != nil {
 		return err
@@ -173,16 +174,27 @@ func (k keyValidator) ValidateKey(key string) error {
 }
 
 // openDatabase opens the pool, wraps it for sqlate, and brings blobfs's
-// migration set up to date.
-func openDatabase(ctx context.Context) (*sqlate.DB, error) {
+// migration set up to date. It returns the pool beside the wrapper, since
+// sqlate's wrapper does not own the pool: the caller closes it.
+func openDatabase(ctx context.Context) (*sqlate.DB, *sql.DB, error) {
 	dsn := os.Getenv("BLOBFS_DSN")
 	if dsn == "" {
-		return nil, fmt.Errorf("BLOBFS_DSN is not set; run through mise, or set it")
+		return nil, nil, fmt.Errorf("BLOBFS_DSN is not set; run through mise, or set it")
 	}
 	pool, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	db, err := migrated(ctx, pool)
+	if err != nil {
+		_ = pool.Close()
+		return nil, nil, err
+	}
+	return db, pool, nil
+}
+
+// migrated wraps pool for sqlate and applies blobfs's migration set.
+func migrated(ctx context.Context, pool *sql.DB) (*sqlate.DB, error) {
 	db := sqlate.Wrap(pool, sqlatepg.Dialect{})
 	set, err := blobfspg.Migrations()
 	if err != nil {
@@ -217,5 +229,5 @@ func openStorage(ctx context.Context) (*storage.Store, error) {
 }
 
 func isNotFound(err error) bool {
-	return err != nil && errors.Is(err, storage.ErrNotFound)
+	return errors.Is(err, storage.ErrNotFound)
 }

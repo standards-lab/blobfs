@@ -50,7 +50,9 @@ full.
 - **Write outcome**: what `Files.Ensure` did with a name: created a pending row, resumed a
   pending row an earlier write left, or found the name present.
 - **Hold**: `Files.Hold`, a lock on a file's row for the rest of a transaction, taken without
-  changing the row. It is the library's half of reference-then-delete.
+  changing the row. It is the library's half of reference-then-delete, and a variation point:
+  the baseline takes it with a self-assigning update, the PostgreSQL engine with
+  `SELECT ... FOR NO KEY UPDATE`, which writes no row version.
 - **Reference-then-delete**: the rule that a consumer holds a file in the transaction that
   inserts a reference to it, so the reference and a delete of the file serialize on the file's
   row.
@@ -84,7 +86,8 @@ full.
 - **Fallback** (sqlate): a returning command run as the command and then its read, in one
   transaction, on an engine whose dialect does not render `RETURNING`.
 - **Guarded step**: an update that runs only at the version the caller read, and reports
-  `query.ErrVersionMismatch` otherwise.
+  `query.ErrVersionMismatch` otherwise, or `blobfs.ErrDeleting` for a deleting file row, whose
+  refusal outranks the version.
 - **Violation**: a database constraint violation mapped to a blobfs sentinel, reported as a
   `blobfs.ViolationError` that names the sentinel and the constraint.
 
@@ -94,10 +97,11 @@ full.
   engine; a native one uses a feature of one engine and carries a port note.
 - **Baseline**: `data.Standard`, the standard-tier variant every store runs unless an engine
   replaces it, complete on any engine `sqlate` has a dialect for.
-- **Variation point**: an operation an engine can do better than standard SQL: the tree lock and
-  path resolution.
+- **Variation point**: an operation an engine can do better than standard SQL: the tree lock,
+  path resolution, and a file's hold.
 - **Variant**: an implementation of the variation points, `data.Variant`, that the store
-  forwards them to.
+  forwards them to. A variant embeds the variant it is given, the baseline or an engine's, so a
+  variation point a later release adds reaches it through the embedding.
 - **Engine**: a `data.Engine`, the function that builds a variant over the baseline `data.New`
   compiled, installed with `data.WithEngine`. An engine sub-module ships one; a consumer may
   write its own.

@@ -71,7 +71,7 @@ func New(catalog *query.Catalog, dialect sqlate.Dialect, opts ...Option) (*Store
 	}
 	return &Store{
 		Directories: newDirectories(stmts, variant),
-		Files:       newFiles(stmts),
+		Files:       newFiles(stmts, variant),
 		stmts:       stmts,
 		variant:     variant,
 	}, nil

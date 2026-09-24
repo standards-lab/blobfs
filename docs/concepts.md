@@ -93,7 +93,10 @@ wanted. A stop at any point is resumed by running the steps again from the first
 
 A deleting row keeps its name until it is purged, so a write of the same name in the window is
 refused as taken. Every mutation other than the delete steps refuses a deleting row with
-`blobfs.ErrDeleting`, so no operation acts on a row whose object is gone or about to be.
+`blobfs.ErrDeleting`, so no operation acts on a row whose object is gone or about to be. The
+refusal holds whatever version the caller read: `Delete` advances the version, so a writer that
+read the pending row before the delete began is told the row is deleting, not that its version
+is stale.
 
 ## Statuses and their transitions
 
@@ -161,6 +164,23 @@ consumer on the baseline takes one of three courses:
 
 A caller that needs the guarantee checks `Serializes` before its first move.
 
+The lock's guarantee assumes read committed isolation, the default, where each statement reads
+the tree as committed when it starts: the second mover's check runs after its lock returns, and
+so sees the first mover's commit. At repeatable read or serializable, a transaction reads the
+tree as of its first statement, and on PostgreSQL that is the lock statement itself, whose
+snapshot is taken before it blocks; the second mover's check then does not see the first move
+and passes. The engine refuses the second move instead, with `sqlate.ErrSerializationFailure`:
+at serializable on any engine that implements it, and at repeatable read on PostgreSQL because
+the update's foreign-key check locks the new parent, which the first move changed. The caller
+retries a refused move in a new transaction. Either way no cycle forms on PostgreSQL, but the
+refusal is the engine's, not the lock's.
+
+If a cycle does form, on the baseline without any of the courses above, the upward walks still
+terminate: `IsWithin` answers true for any directory on the loop and false for any off it, the
+root among them, and `Path` reports `blobfs.ErrCycle` for a directory on the loop or below it. A
+`Move` of a directory on the loop back under the root passes the cycle check and repairs the
+tree.
+
 ## Listings
 
 A listing reads one directory's contents, one page at a time: `Directories.List` the child
@@ -202,15 +222,17 @@ they scan into `blobfs.Directory` and `blobfs.File`.
 ## Engines and variants
 
 Every statement the persistence package ships is standard SQL, and the package is complete
-alone: any engine `sqlate` has a dialect for runs every operation through it. Two operations are
-variation points, where an engine can do better than standard SQL: the tree lock, and path
-resolution, which the baseline walks one segment per statement. The `data.Variant` interface
-names them, with `Serializes`; `data.Standard` is the baseline.
+alone: any engine `sqlate` has a dialect for runs every operation through it. Three operations
+are variation points, where an engine can do better than standard SQL: the tree lock; path
+resolution, which the baseline walks one segment per statement; and a file's hold, which the
+baseline takes with an update that writes a row version. The `data.Variant` interface names
+them, with `Serializes`; `data.Standard` is the baseline.
 
 An engine sub-module adds an engine's native forms and its DDL. It ships a `data.Engine`, which
 `data.New` calls with the baseline it compiled, and a consumer installs it with
-`data.WithEngine`. The PostgreSQL sub-module's variant takes a transaction-scoped advisory lock
-and resolves a path of any depth in one statement. Each native statement declares its tier and a
+`data.WithEngine`. The PostgreSQL sub-module's variant takes a transaction-scoped advisory lock,
+resolves a path of any depth in one statement, and holds a file's row with a locking read that
+writes no row version. Each native statement declares its tier and a
 port note, the engine feature it uses and what a port to another engine must provide.
 
 The other native forms need no variant. A command that returns its changed row, a create, a
@@ -221,9 +243,12 @@ transaction. The cursor's
 keyset predicate is a pattern an engine's dialect module overlays, so a consumer on PostgreSQL
 registers `sqlate/postgres`'s patterns in its catalog in place of `query.Patterns()`.
 
-A consumer can write an engine of its own: a `data.Engine` whose variant embeds the baseline, or
-an engine's variant, and overrides the methods it needs. The conformance suite, `data/datatest`,
-checks any variant against the baseline's outcomes on a live database.
+A consumer can write an engine of its own: a `data.Engine` whose variant embeds the baseline, or an
+engine's variant, and overrides the methods it needs. Embedding is the contract, not a convenience:
+a release that adds a variation point adds it to the baseline too, so every variant that embeds one
+inherits it, and adding a variation point is a minor release. A variant that implements the
+interface without embedding is outside the contract. The conformance suite, `data/datatest`, checks
+any variant against the baseline's outcomes on a live database.
 
 ## One install per configuration
 

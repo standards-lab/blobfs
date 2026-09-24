@@ -82,8 +82,10 @@ change the rune count. The persistence package normalizes and validates every na
 before any SQL.
 
 255 runes is the per-component limit ext4, NTFS, and APFS share, so a name copied from a local
-disk fits. A key of the longest name is 292 runes, well below the 1024 that Azure Blob Storage
-and S3 accept.
+disk fits. A key of the longest name is 292 runes, within Azure Blob Storage's limit of 1024
+characters. S3 counts its limit of 1024 in bytes of UTF-8, and 255 four-byte runes make a key
+of 1057 bytes, so the longest names can exceed it; the store's validator refuses such a key,
+and the write is a `KeyError` before any SQL.
 
 ### Errors and constraints
 
@@ -166,12 +168,12 @@ directory from the module's own `[export]`.
 | `Find(ctx, sess, id)` | Reads a directory by id; the root is `Find` of `RootID`. | `ErrNotFound` |
 | `FindByName(ctx, sess, parentID, name)` | Reads the child directory named `name`, normalized first. A file of the same name is not found. | `NameError`, `ErrNotFound` |
 | `FindByPath(ctx, sess, startID, path)` | Resolves a relative path, `a/b`, below a directory; the empty path is the start. | `ErrInvalidPath` for a leading slash, an empty segment, a trailing slash, or a refused segment (which also matches `ErrInvalidName`); `ErrNotFound` for a missing start, a file's id, or a segment that names no directory, with the failing prefix in the text |
-| `Path(ctx, sess, id)` | Computes the path from the root at read time, `/` for the root and `/a/b` below it, in one recursive statement whose cost is the directory's depth. | `ErrNotFound` |
+| `Path(ctx, sess, id)` | Computes the path from the root at read time, `/` for the root and `/a/b` below it, in one recursive statement whose cost is the directory's depth. | `ErrNotFound`; `ErrCycle` when the chain of parents loops |
 | `Create(ctx, sess, parentID, name, opts...)` | Inserts a directory and returns the row. `WithID` supplies the id. | `NameError`, `IDError`, `ErrNameTaken`, `ErrIDTaken`, `ErrNotFound` for the parent |
 | `Ensure(ctx, sess, parentID, name, opts...)` | Returns the directory with that name, creating it when none exists, and whether this call created it. | as `Create`; a name already held is found, not refused, except in the race below |
-| `Move(ctx, tx, id, parentID, name, version)` | Moves or renames a directory under the tree lock, after the cycle check, guarded by `version`. | `ErrRootDirectory`, `NameError`, `ErrCycle`, `ErrNotFound` for the directory or the new parent, `ErrNameTaken`, `query.ErrVersionMismatch` |
+| `Move(ctx, tx, id, parentID, name, version)` | Moves or renames a directory under the tree lock, after the cycle check, guarded by `version`. | `ErrRootDirectory`, `NameError`, `ErrCycle`, `ErrNotFound` for the directory or the new parent, `ErrNameTaken`, `query.ErrVersionMismatch`; at repeatable read or serializable, `sqlate.ErrSerializationFailure` |
 | `Delete(ctx, sess, id)` | Removes one empty directory. It takes no version: the foreign keys refuse the one case a stale version would catch. | `ErrRootDirectory`, `ErrNotEmpty`, `ErrReferenced`, `ErrNotFound` |
-| `IsWithin(ctx, sess, id, ancestorID)` | Reports whether `id` lies in the subtree of `ancestorID`, that directory included; a directory that does not exist is within nothing. | none of its own |
+| `IsWithin(ctx, sess, id, ancestorID)` | Reports whether `id` lies in the subtree of `ancestorID`, that directory included; a directory that does not exist is within nothing. On a loop in the tree, `id` is within every directory on its chain and none off it. | none of its own |
 | `LockTree(ctx, tx)` | Takes the variant's tree lock in `tx`, held until it ends. | the engine's error |
 | `Serializes()` | Reports whether `LockTree` serializes across transactions. | none |
 | `List`, `Continue` | [Listings](#listings). | |
@@ -196,6 +198,21 @@ refusing a move early in a user interface: a directory D may move under P only w
 `IsWithin(P, D)` is false. Its answer is reliable only while no other transaction moves
 directories.
 
+The tree lock's guarantee assumes `tx` runs at read committed, the default: the check after the
+lock reads the tree as committed when it runs, so a second mover sees the first mover's commit
+and is refused with `ErrCycle`. At repeatable read or serializable the check reads the snapshot
+the transaction's first statement took, on PostgreSQL the lock statement itself, before it
+blocked, so the check passes; the engine refuses the second move at its update or commit with
+`sqlate.ErrSerializationFailure` instead, at serializable on any engine that implements it and at
+repeatable read on PostgreSQL, whose foreign-key check locks the new parent the first move
+changed. The caller retries a refused move in a new transaction.
+
+The upward walks, `IsWithin` and `Path`, combine their recursive steps with `UNION`, which
+discards a directory the walk has visited, so each terminates on a loop in the tree, the cycle
+two opposing moves leave on a variant that does not serialize. On a loop, `IsWithin` reports a
+directory within every directory on its chain and none off it, and `Path` reports `ErrCycle`. A
+`Move` of a directory on the loop back under the root passes the check and repairs the tree.
+
 `Delete` of a directory with children or files is `ErrNotEmpty`; there is no cascade and no
 recursive delete. A consumer that wants one walks the tree itself, files and then directories,
 deepest first. A consumer's own foreign key into `blobfs_directory` refuses the delete as
@@ -213,8 +230,8 @@ to make directory moves safe.
 | `FindByName(ctx, sess, directoryID, name)` | Reads the file named `name` in a directory, whatever its status. A directory of the same name is not found. | `NameError`, `ErrNotFound` |
 | `Create(ctx, sess, keys, directoryID, name, contentType, opts...)` | The write's first step: inserts the row as `pending` with its key and the declared content type, and returns it. | `NameError`, `IDError`, `KeyError`, all before any SQL; `ErrNameTaken` (by a row of any status), `ErrIDTaken`, `ErrNotFound` for the directory |
 | `Ensure(ctx, sess, keys, directoryID, name, contentType, opts...)` | The retry-safe first step: returns the row that holds the name and a `WriteOutcome`. | as `Create`; a name already held is found, not refused, except in the race `Directories.Ensure` describes |
-| `Complete(ctx, sess, id, version, obj)` | The write's last step: moves the pending row to `available`, records `obj`, and returns the row. | `ErrNotFound`, `query.ErrVersionMismatch`, a `TransitionError` matching `ErrDeleting` when a delete began, or `ErrInvalidTransition` when the write was already completed |
-| `Move(ctx, sess, id, directoryID, name, version)` | Moves or renames a file, guarded by `version`. The key is untouched. | `NameError`, `ErrNotFound` for the file or the directory, `ErrNameTaken`, `query.ErrVersionMismatch`, `ErrDeleting` |
+| `Complete(ctx, sess, id, version, obj)` | The write's last step: moves the pending row to `available`, records `obj`, and returns the row. | `ErrNotFound`; a `TransitionError` matching `ErrDeleting` when a delete began, whatever the version; `query.ErrVersionMismatch`; or a `TransitionError` matching `ErrInvalidTransition` when the write was already completed |
+| `Move(ctx, sess, id, directoryID, name, version)` | Moves or renames a file, guarded by `version`. The key is untouched. | `NameError`, `ErrNotFound` for the file or the directory, `ErrNameTaken`, `ErrDeleting` whatever the version, `query.ErrVersionMismatch` |
 | `Hold(ctx, tx, id, opts...)` | Locks the row for the rest of `tx` without changing it. | `ErrNotFound`, `ErrDeleting`, and with `AtVersion`, `query.ErrVersionMismatch` |
 | `Delete(ctx, tx, id)` | The delete's first step: moves the row to `deleting`, advancing its version once, and returns it with its key. | `ErrNotFound` |
 | `Purge(ctx, sess, id)` | The delete's last step: removes a deleting row. A row already gone is success. | `ErrNotDeleting`, `ErrReferenced` |
@@ -234,13 +251,20 @@ row keeps its own id and key whatever `WithID` supplied.
 A pending row may be moved: its key is fixed at the insert, and a retry of its write finds it
 by its new name. `Complete`, `Move`, and `Delete` return the row in the single-statement form
 where the dialect renders `RETURNING`, and otherwise in the fallback, the update and a read; the
-refusals are told apart from the row that read returns, with no further statement.
+refusals are told apart from the row that read returns, with no further statement. A deleting
+row outranks a stale version: `Delete` advances the version, so a writer or a mover that read the
+row before the delete began holds a version the deleting row no longer carries, and `Complete`
+and `Move` report `ErrDeleting` for it, as `Hold` does, rather than a version mismatch that a
+reread and retry could never resolve.
 
-`Hold` is an update that assigns a column to itself: it takes the row's lock, changes no value,
-and advances no version, so other holders of the row's version stay valid. A pending row is held
-like an available one; a deleting row is refused whatever its version, since a file whose delete
-has begun must take no new reference. `AtVersion(v)` makes the hold match only at version `v`,
-for a caller that acts on a listing without reading the row again in its transaction.
+`Hold` takes the row's lock that `Delete` waits on, changes no value, and advances no version, so
+other holders of the row's version stay valid. It is a variation point: the baseline takes the lock
+with an update that assigns a column to itself, which is portable but writes a new row version on an
+engine that keeps one per update, and the PostgreSQL engine takes the same lock with `SELECT ... FOR
+NO KEY UPDATE`, which writes none. The refusals are the same on both. A pending row is held like an
+available one; a deleting row is refused whatever its version, since a file whose delete has begun
+must take no new reference. `AtVersion(v)` makes the hold match only at version `v`, for a caller
+that acts on a listing without reading the row again in its transaction.
 
 `Delete` waits on a `Hold` another transaction took, so once it returns, every reference a hold
 admitted has committed; the consumer checks for its own references in `tx`, after the call.
@@ -302,12 +326,22 @@ Both return a `query.Collection[T]`: `Items`, `Total`, `More`, and `Next`.
 - `ResolvePath(ctx, sess, startID, segments)` walks normalized, validated names down from a
   start and returns the deepest directory reached and its depth, the number of segments matched;
   a start that does not exist is `ErrNotFound`.
+- `HoldFile(ctx, tx, id, version)` takes the row lock `Files.Delete` waits on, for the rest of
+  `tx`, and reports whether it held the row: one that exists, is not deleting, and sits at
+  `*version` when `version` is not nil. It changes no value; `Files.Hold` reads the row after a
+  false to classify the refusal, so the refusals are the same on every variant.
 
-`Standard` is the baseline: a no-op `LockTree`, `Serializes` false, and a walk that reads the
-start and then one child per segment. `Engine` is
-`func(catalog *query.Catalog, dialect sqlate.Dialect, base *Standard) (Variant, error)`. A
-consumer's own engine embeds `base`, or an engine's variant, and overrides the methods it needs.
-This one wraps the PostgreSQL engine's variant and logs each path resolution:
+`Standard` is the baseline: a no-op `LockTree`, `Serializes` false, a walk that reads the start
+and then one child per segment, and a hold that is an update assigning a column to itself.
+`Engine` is
+`func(catalog *query.Catalog, dialect sqlate.Dialect, base *Standard) (Variant, error)`.
+
+A variant embeds the variant it is given, `base` or an engine's variant, and overrides the
+methods it needs. That is the contract: a release that adds a variation point adds its method to
+`Standard` as well, so every variant that embeds one inherits it, and adding a variation point
+is a minor release. A type that implements `Variant` without embedding one is outside the
+contract, and a minor release may break its build. This one wraps the PostgreSQL engine's
+variant and logs each path resolution:
 
 ```go
 // tracing is the PostgreSQL variant with its path resolution logged.
@@ -441,12 +475,11 @@ no registry, init, or flag.
 
 ### The engine
 
-`Engine` is a `data.Engine`: it compiles the variant's two native statements against the
-consumer's catalog for its dialect and returns a `*Variant` over the baseline `data.New`
-compiled. A consumer installs it with
-`data.New(catalog, dialect, data.WithEngine(postgres.Engine))`. The catalog must carry the
-`blobfs` namespace. `Variant` embeds `*data.Standard` and overrides two points; its `Statements`
-and `Verify` put its statements in the store's inventory and its startup verification.
+`Engine` is a `data.Engine`: it compiles the variant's four native statements against the consumer's
+catalog for its dialect and returns a `*Variant` over the baseline `data.New` compiled. A consumer
+installs it with `data.New(catalog, dialect, data.WithEngine(postgres.Engine))`. The catalog must
+carry the `blobfs` namespace. `Variant` embeds `*data.Standard` and overrides all three points; its
+`Statements` and `Verify` put its statements in the store's inventory and its startup verification.
 
 - **The tree lock.** `lock_tree` is `pg_advisory_xact_lock` over the fixed key `TreeLockKey`,
   `-8521165719926625175`, the 64-bit FNV-1a hash of `TreeLockName`, `blobfs_directory.tree`,
@@ -456,8 +489,15 @@ and `Verify` put its statements in the store's inventory and its startup verific
 - **Path resolution.** `resolve_path` walks every segment in one recursive statement that
   indexes a `text[]` parameter by depth, so a path of any depth is one round trip. The segments
   bind as one parameter the driver encodes from the Go slice; no name is spliced into the text.
+  The walk is bounded by the segments, so a loop in the tree cannot extend it.
+- **The file hold.** `lock_file` and `lock_file_at_version` are `SELECT ... FOR NO KEY UPDATE`
+  of a row that is not deleting, and at the version under `AtVersion`: the lock the baseline's
+  self-assigning update takes and `delete_file` waits on, taken without writing a row version,
+  so a hold leaves the row's `ctid` and `xmin` as they were and the table gains no dead tuple.
+  A refused hold returns no row and takes no lock, and the store reads the row to classify the
+  refusal as it does over the baseline.
 
-Both files declare the native tier and carry a port note naming what another engine must
+Each file declares the native tier and carry a port note naming what another engine must
 provide. The returning commands need no variant, since sqlate's `postgres.Dialect` renders
 `RETURNING`; the keyset predicate needs none, since a consumer registers sqlate's
 `postgres.Patterns()` in its catalog for the row-value comparison.
@@ -482,14 +522,18 @@ that ships a new migration is applied by the next `Up`.
 The unit tier runs with nothing installed. It pins each released migration file's hash, checks
 that every object the DDL creates carries the set's prefix and that every constraint constant
 names an object in the DDL, recomputes the tree lock's key from its name, and proves the engine
-compiles against a consumer's catalog, runs the lock in a transaction, and resolves a path in
-one statement.
+compiles against a consumer's catalog, runs the lock in a transaction, resolves a path in one
+statement, and holds a file with the locking read and no write.
 
 The integration tier, behind the `integration` build tag, runs against a live PostgreSQL:
 
 - the conformance suite over the baseline and the engine's variant, under both forms of the
   returning commands, and once more with the standard keyset spelling;
 - the tree lock as an advisory lock held until commit, as the engine reports it;
+- the file hold writing no row version, its `ctid` and `xmin` unchanged, while it still makes a
+  `Delete` wait until the holder ends, where the baseline's hold moves the row to a new version;
+- two opposing directory moves at repeatable read, over both variants, refused at the second
+  move's update with a serialization failure and leaving no cycle;
 - the set beneath a consumer's set: the order of `Up`, the refused revert, `Reset`, and a
   replay;
 - every named constraint and index as the engine reports its violation;
@@ -514,7 +558,10 @@ The suite builds a second store over the baseline on the same database and asser
 outcome belongs to a variation point or a returning command, the same rows and the same
 refusals, in text, for the same inputs. The concurrency checks assert what `Serializes` reports:
 that the lock blocks a second mover, or that two opposing moves on a variant without a lock form
-the cycle, and that serializable isolation refuses one of them on every variant. It creates two
+the cycle, that `IsWithin` and `Path` terminate on it with their defined answers and a `Move`
+repairs it, and that serializable isolation refuses one of them on every variant. The concurrent
+`Ensure` checks force the race they test: the suite holds each caller's lookup until both have
+looked, so both insert and one recovers from the refused insert. It creates two
 tables of its own, `datatest_reference` and `datatest_owner`, with foreign keys into blobfs's
 tables, to stand in for a consumer's references, and an index on
 `blobfs_file (directory_id, created_at)`, which it drops again.
@@ -540,14 +587,14 @@ library that a step returns are listed after them.
 | `ErrIDTaken` | An id supplied through `WithID` that a row of the same table already carries. |
 | `ErrNotEmpty` | A directory delete while the directory has child directories or files. |
 | `ErrInvalidTransition` | A status change the table does not allow, such as `Complete` of a row already available; a `TransitionError` carries the statuses. |
-| `ErrDeleting` | `Complete`, `Move`, or `Hold` of a deleting row. |
+| `ErrDeleting` | `Complete`, `Move`, or `Hold` of a deleting row, whatever version the caller holds. |
 | `ErrNotDeleting` | `Purge` of a row whose delete has not begun. |
 | `ErrReferenced` | A directory `Delete` or a file `Purge` refused by a foreign key blobfs does not own: a consumer's row references the row. |
-| `ErrCycle` | A directory move under the directory itself or one of its descendants. |
+| `ErrCycle` | A directory move under the directory itself or one of its descendants; `Path` of a directory whose chain of parents loops. |
 
 | Query library error | Returned when |
 |---|---|
-| `query.ErrVersionMismatch` | A guarded step, `Complete`, a `Move`, or `Hold` with `AtVersion`, finds the row at another version; the text carries both versions. |
+| `query.ErrVersionMismatch` | A guarded step, `Complete`, a `Move`, or `Hold` with `AtVersion`, finds the row at another version and not deleting; the text carries both versions. |
 | `query.ErrDirectives` | A listing request names an undeclared field, an unknown operator, a malformed value, or a page number or size below 1. |
 | `query.CursorError` | `Continue` refuses a cursor: malformed, issued elsewhere, or under a sort that cannot be continued. |
 

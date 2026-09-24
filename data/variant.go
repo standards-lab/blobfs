@@ -19,8 +19,15 @@ import (
 // forwards these to the variant its Engine built. The default is Standard,
 // which is complete on any engine. An engine sub-module ships an Engine of
 // its own, and a consumer supplies one by writing an Engine whose variant
-// implements the interface, typically by embedding the baseline it is given,
-// or an engine's variant, and overriding the methods it needs.
+// implements the interface.
+//
+// A variant embeds the variant it is given, the baseline or an engine's
+// variant, and overrides the methods it needs: that is the contract, not a
+// convenience. It is what lets the interface grow, since a release that adds
+// a variation point adds the method to Standard as well, and every variant
+// that embeds one inherits it, so adding a variation point is a minor
+// release. A type that implements the interface without embedding one is
+// outside the contract, and a minor release may break its build.
 //
 // LockTree serializes tree-shape changes: the caller takes it inside the
 // transaction that will move a directory, before the cycle check, so that
@@ -42,12 +49,24 @@ import (
 // is blobfs.ErrNotFound. Standard reads the start and then one child per
 // segment; a variant may walk the whole path in one statement.
 //
+// HoldFile takes the row lock of the file with id for the rest of tx, the
+// lock a Files.Delete of the row waits on, and reports whether it held the
+// row: true when the row exists, is not deleting, and, when version is not
+// nil, sits at *version; false, with no lock taken and no error, otherwise.
+// It changes no value and advances no version. Files.Hold reads the row
+// after a false to classify the refusal, so a variant decides only whether
+// the row is held and how the lock is taken. Standard takes it with an
+// update that assigns a column to itself, which is portable but writes a
+// new row version on an engine that keeps one per update; a variant may
+// take the same lock without writing.
+//
 // The Store validates every input and classifies every error itself, so a
 // variant binds what it is given and returns what the session mapped.
 type Variant interface {
 	LockTree(ctx context.Context, tx *sqlate.Tx) error
 	Serializes() bool
 	ResolvePath(ctx context.Context, sess sqlate.Session, startID string, segments []string) (blobfs.Directory, int, error)
+	HoldFile(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (bool, error)
 }
 
 // Engine builds a store's variant over the baseline the store compiled,
@@ -71,14 +90,17 @@ type Variant interface {
 // forwards them itself when it wants them listed and verified.
 type Engine func(catalog *query.Catalog, dialect sqlate.Dialect, base *Standard) (Variant, error)
 
-// Standard is the standard-tier variant, the baseline: no tree lock, and
-// path resolution one child read per segment. It is the variant New uses
-// when no WithEngine option is given. New builds it over the statements it
-// compiled and hands it to the Engine, if any, so a variant that overrides
-// some of its methods embeds that one and compiles no baseline of its own.
+// Standard is the standard-tier variant, the baseline: no tree lock, path
+// resolution one child read per segment, and a file hold that is a
+// self-assigning update. It is the variant New uses when no WithEngine
+// option is given. New builds it over the statements it compiled and hands
+// it to the Engine, if any, so a variant that overrides some of its methods
+// embeds that one and compiles no baseline of its own.
 type Standard struct {
 	directoryByID   query.Rows[blobfs.Directory]
 	directoryByName query.Rows[blobfs.Directory]
+	holdFile        query.Statement
+	holdFileAt      query.Statement
 }
 
 // newStandard binds the baseline over an already compiled set.
@@ -87,6 +109,8 @@ func newStandard(stmts *query.Statements) *Standard {
 	return &Standard{
 		directoryByID:   stmts.Statement("directory_by_id").Scan(directory),
 		directoryByName: stmts.Statement("directory_by_name").Scan(directory),
+		holdFile:        stmts.Statement("hold_file"),
+		holdFileAt:      stmts.Statement("hold_file_at_version"),
 	}
 }
 
@@ -124,4 +148,23 @@ func (v *Standard) ResolvePath(ctx context.Context, sess sqlate.Session, startID
 		dir = child
 	}
 	return dir, len(segments), nil
+}
+
+// HoldFile runs the baseline's hold: hold_file, or hold_file_at_version
+// when version is not nil, an update that assigns updated_at to itself
+// where the row is not deleting (and sits at the version). The update takes
+// the row's lock and changes no value, and a row affected is a row held. See
+// Variant.
+func (v *Standard) HoldFile(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (bool, error) {
+	args := query.Args{"id": id}
+	hold := v.holdFile
+	if version != nil {
+		args["version"] = *version
+		hold = v.holdFileAt
+	}
+	n, err := hold.Exec(ctx, tx, args)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }

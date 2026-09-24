@@ -152,7 +152,8 @@ func TestMoveClassifies(t *testing.T) {
 
 // TestIsWithin proves the tree predicate: a count of zero is false and any
 // other count true, bound to the start of the walk and the directory
-// looked for.
+// looked for, over a walk that combines its steps with UNION so that it
+// terminates on a cycle.
 func TestIsWithin(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, within(0), within(2))
@@ -164,5 +165,9 @@ func TestIsWithin(t *testing.T) {
 	}
 	if args := rec.Calls()[0].Args; !slices.Equal(args, []any{"P", "D"}) {
 		t.Errorf("IsWithin bound %v, want the start of the walk and the directory looked for", args)
+	}
+	// The walk discards a row it has produced, so it terminates on a cycle.
+	if text := rec.Calls()[0].SQL; !strings.Contains(text, "UNION\n") || strings.Contains(text, "UNION ALL") {
+		t.Errorf("the walk does not combine its steps with UNION:\n%s", text)
 	}
 }

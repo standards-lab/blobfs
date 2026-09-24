@@ -109,8 +109,10 @@ func (s *suite) moveFile(t *testing.T) {
 // each leaving the row unchanged: a name held in the target by a row of
 // any status, a deleting one included, is ErrNameTaken under the unique
 // constraint; a missing directory is ErrNotFound under the foreign key; a
-// stale version is ErrVersionMismatch; a deleting row is ErrDeleting; a
-// missing file is ErrNotFound; and a refused name is a NameError.
+// stale version is ErrVersionMismatch; a deleting row is ErrDeleting, at
+// its own version and at the version the mover read before a concurrent
+// Delete advanced it, and never a version mismatch; a missing file is
+// ErrNotFound; and a refused name is a NameError.
 func (s *suite) moveFileRefusals(t *testing.T) {
 	src := s.mkdir(t, "refuse-src-"+t.Name())
 	dst := s.mkdir(t, "refuse-dst-"+t.Name())
@@ -118,6 +120,10 @@ func (s *suite) moveFileRefusals(t *testing.T) {
 	s.insertFile(t, dst.ID, "held.txt", blobfs.StatusAvailable)
 	s.insertFile(t, dst.ID, "held-deleting.txt", blobfs.StatusDeleting)
 	deleting := s.insertFile(t, src.ID, "deleting.txt", blobfs.StatusDeleting)
+	// A row the mover read at version 1 before a concurrent Delete, which
+	// advanced it to version 2.
+	deleted := s.insertFile(t, src.ID, "deleted.txt", blobfs.StatusAvailable)
+	s.beginDelete(t, deleted)
 	missing := blobfs.NewID()
 	for _, c := range []struct {
 		name       string
@@ -134,6 +140,7 @@ func (s *suite) moveFileRefusals(t *testing.T) {
 		{"MissingDirectory", mover, blobfs.NewID(), "mover.txt", 1, blobfs.ErrNotFound, blobfs.ConstraintForeignKeyFileDirectory, nil},
 		{"StaleVersion", mover, dst.ID, "stale.txt", 2, query.ErrVersionMismatch, "", blobfs.ErrDeleting},
 		{"Deleting", deleting, dst.ID, "elsewhere.txt", 1, blobfs.ErrDeleting, "", query.ErrVersionMismatch},
+		{"DeletingAtThePreDeleteVersion", deleted, dst.ID, "elsewhere.txt", 1, blobfs.ErrDeleting, "", query.ErrVersionMismatch},
 		{"MissingFile", missing, dst.ID, "ghost.txt", 1, blobfs.ErrNotFound, "", nil},
 		{"RefusedName", mover, dst.ID, "a/b", 1, blobfs.ErrInvalidName, "", nil},
 	} {

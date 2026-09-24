@@ -7,10 +7,10 @@
 -- and its read returns it unchanged, so a retry converges and the version
 -- advances once per delete. It requires a transaction because it is the
 -- delete's half of the reference-then-delete rule: the row lock this update
--- takes, or waits on behind a hold_file, holds until the caller commits, so
--- a consumer's reference to the file commits before this sees the row or
--- waits until the delete is decided, and the fallback's read sees the row as
--- this statement left it. A row that does not exist changes nothing and its
+-- takes, or waits on behind a hold (hold_file, or an engine's form of it),
+-- holds until the caller commits, so a consumer's reference to the file
+-- commits before this sees the row or waits until the delete is decided, and
+-- the fallback's read sees the row as this statement left it. A row that does not exist changes nothing and its
 -- read finds no row.
 UPDATE blobfs_file
 SET status = 'deleting', version = version + 1, updated_at = CURRENT_TIMESTAMP

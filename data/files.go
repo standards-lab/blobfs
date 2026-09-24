@@ -24,33 +24,31 @@ import (
 // object delete: Delete marks the row deleting and returns its key, and
 // Purge removes the row. Every other mutation refuses a deleting row.
 type Files struct {
+	variant  Variant
 	byID     query.Rows[blobfs.File]
 	byName   query.Rows[blobfs.File]
 	list     query.Projection[blobfs.File]
 	create   query.Returning[blobfs.File]
-	complete query.RowGuard[blobfs.File]
-	move     query.RowGuard[blobfs.File]
+	complete query.Returning[blobfs.File]
+	move     query.Returning[blobfs.File]
 	remove   query.Returning[blobfs.File]
 	purge    query.Statement
-	hold     query.Statement
-	holdAt   query.Statement
 }
 
-// newFiles binds the file statements of a compiled set.
-func newFiles(stmts *query.Statements) *Files {
+// newFiles binds the file statements of a compiled set, forwarding the
+// hold to variant.
+func newFiles(stmts *query.Statements, variant Variant) *Files {
 	file := query.Scanner[blobfs.File]()
-	version := func(f blobfs.File) int64 { return f.Version }
 	return &Files{
+		variant:  variant,
 		byID:     stmts.Statement("file_by_id").Scan(file),
 		byName:   stmts.Statement("file_by_name").Scan(file),
 		list:     stmts.Statement("directory_files").Project(file),
 		create:   stmts.Statement("create_file").Returning(file),
-		complete: stmts.Statement("complete_file").Returning(file).Guarded("version", version),
-		move:     stmts.Statement("move_file").Returning(file).Guarded("version", version),
+		complete: stmts.Statement("complete_file").Returning(file),
+		move:     stmts.Statement("move_file").Returning(file),
 		remove:   stmts.Statement("delete_file").Returning(file),
 		purge:    stmts.Statement("purge_file"),
-		hold:     stmts.Statement("hold_file"),
-		holdAt:   stmts.Statement("hold_file_at_version"),
 	}
 }
 
@@ -225,48 +223,52 @@ func (f *Files) insert(ctx context.Context, sess sqlate.Session, id, directoryID
 // id to blobfs.StatusAvailable, records what the consumer's store reported
 // about the object, advances the version, and returns the row as the
 // database holds it afterward. The update is guarded by version, the value
-// the caller read from the pending row, through the query library's
-// optimistic-concurrency protocol, and by the row's status: only a pending
-// row completes.
+// the caller read from the pending row, with the query library's guard
+// predicate, and by the row's status: only a pending row completes.
 //
-// A row that does not exist is blobfs.ErrNotFound. A row whose version moved
-// on is query.ErrVersionMismatch, with the expected and current versions in
-// the text. A row at the expected version that is no longer pending is a
-// blobfs.TransitionError from its status to available, which matches
-// blobfs.ErrDeleting when a delete began in the meantime and
-// blobfs.ErrInvalidTransition when the write was completed already. The
-// update is a returning command: the single-statement form where the dialect
+// A row that does not exist is blobfs.ErrNotFound. A row that is deleting
+// is a blobfs.TransitionError from deleting to available, which matches
+// blobfs.ErrDeleting, whatever its version: Delete advances the version, so
+// a writer that read the pending row before a delete began holds a version
+// the deleting row no longer carries, and no version will make the row
+// complete. Any other row whose version moved on is
+// query.ErrVersionMismatch, with the expected and current versions in the
+// text. A row at the expected version that is available already is a
+// blobfs.TransitionError from available to available, which matches
+// blobfs.ErrInvalidTransition: the write was completed already. The update
+// is a returning command: the single-statement form where the dialect
 // renders RETURNING, and otherwise the fallback, the update and a read of
 // the row. The refusals are told apart from the row that read returns, with
 // no further statement. One statement changes the row, so the session may be
 // the pool or a transaction.
 func (f *Files) Complete(ctx context.Context, sess sqlate.Session, id string, version int64, obj blobfs.Object) (blobfs.File, error) {
-	file, err := f.complete.Run(ctx, sess, version, query.Args{
-		"id": id, "size": obj.Size, "content_type": obj.ContentType, "etag": obj.ETag,
+	file, changed, err := f.complete.One(ctx, sess, query.Args{
+		"id": id, "size": obj.Size, "content_type": obj.ContentType, "etag": obj.ETag, "version": version,
 	})
-	var refused *query.RefusedError[blobfs.File]
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return blobfs.File{}, fmt.Errorf("data: complete file %s: %w", id, blobfs.ErrNotFound)
-	case errors.As(err, &refused):
-		// The row is at the expected version and the status predicate
-		// refused it: the row is no longer pending.
-		if terr := blobfs.Transition(refused.Row.Status, blobfs.StatusAvailable); terr != nil {
-			return blobfs.File{}, fmt.Errorf("data: complete file %s: %w", id, terr)
-		}
-		return blobfs.File{}, fmt.Errorf("data: complete file %s: the update matched no row, yet the row is %s at version %d", id, refused.Row.Status, refused.Row.Version)
 	case err != nil:
 		return blobfs.File{}, fmt.Errorf("data: complete file %s: %w", id, err)
+	case changed:
+		return file, nil
+	case file.Status == blobfs.StatusDeleting || file.Version == version:
+		// A deleting row outranks a stale version, as in Hold; a row at the
+		// expected version was refused by the status predicate: the row is
+		// no longer pending.
+		if terr := blobfs.Transition(file.Status, blobfs.StatusAvailable); terr != nil {
+			return blobfs.File{}, fmt.Errorf("data: complete file %s: %w", id, terr)
+		}
+		return blobfs.File{}, fmt.Errorf("data: complete file %s: the update matched no row, yet the row is %s at version %d", id, file.Status, file.Version)
 	}
-	return file, nil
+	return blobfs.File{}, fmt.Errorf("data: complete file %s: %w", id, versionMismatch(version, file.Version))
 }
 
 // Move moves the file with id into the directory with directoryID as name,
 // which also renames it when the name differs, and returns the row as the
 // database holds it afterward. The update is guarded by version, the value
-// the caller read from the file's row, through the query library's
-// optimistic-concurrency protocol, and by the row's status: a deleting row
-// is left as it is. The key is untouched, so the object stays where it is
+// the caller read from the file's row, with the query library's guard
+// predicate, and by the row's status: a deleting row is left as it is. The key is untouched, so the object stays where it is
 // and a rename moves nothing in the store. A pending row may move: its key
 // is fixed at the insert, and a retry of its write finds it by its new name.
 // No lock and no cycle check precede the update, because a file cannot be
@@ -278,25 +280,42 @@ func (f *Files) Complete(ctx context.Context, sess sqlate.Session, id string, ve
 // A file that does not exist is blobfs.ErrNotFound, and so is a directory
 // that does not exist, through the foreign key blobfs_fk_file_directory. A
 // name already held by a file in the directory, by a row of any status, is
-// blobfs.ErrNameTaken. A row whose version moved on is
-// query.ErrVersionMismatch. A row at the expected version that is deleting
-// is blobfs.ErrDeleting. A refused name is a blobfs.NameError.
+// blobfs.ErrNameTaken. A row that is deleting is blobfs.ErrDeleting, whatever
+// its version, as in Hold: Delete advances the version, so a mover that read
+// the row before the delete began holds a version the deleting row no longer
+// carries. Any other row whose version moved on is query.ErrVersionMismatch,
+// with the expected and current versions in the text. A refused name is a
+// blobfs.NameError.
 func (f *Files) Move(ctx context.Context, sess sqlate.Session, id, directoryID, name string, version int64) (blobfs.File, error) {
 	name, err := validName(name)
 	if err != nil {
 		return blobfs.File{}, fmt.Errorf("data: move file %s: %w", id, err)
 	}
-	file, err := f.move.Run(ctx, sess, version, query.Args{"id": id, "directory_id": directoryID, "name": name})
-	var refused *query.RefusedError[blobfs.File]
+	file, changed, err := f.move.One(ctx, sess, query.Args{"id": id, "directory_id": directoryID, "name": name, "version": version})
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return blobfs.File{}, fmt.Errorf("data: move file %s: %w", id, blobfs.ErrNotFound)
-	case errors.As(err, &refused):
-		// The row is at the expected version and the status predicate
-		// refused it: the row is deleting.
-		return blobfs.File{}, fmt.Errorf("data: move file %s: the row is %s: %w", id, refused.Row.Status, blobfs.ErrDeleting)
 	case err != nil:
 		return blobfs.File{}, fmt.Errorf("data: move file %s into %s as %q: %w", id, directoryID, name, classifyWrite(err))
+	case changed:
+		return file, nil
+	case file.Status == blobfs.StatusDeleting:
+		// The status predicate refused the row, or would have at any
+		// version: a deleting row outranks a stale version.
+		return blobfs.File{}, fmt.Errorf("data: move file %s: the row is %s: %w", id, file.Status, blobfs.ErrDeleting)
+	case file.Version == version:
+		return blobfs.File{}, fmt.Errorf("data: move file %s: the update matched no row, yet the row is %s at version %d", id, file.Status, file.Version)
 	}
-	return file, nil
+	return blobfs.File{}, fmt.Errorf("data: move file %s: %w", id, versionMismatch(version, file.Version))
+}
+
+// versionMismatch is the optimistic-concurrency conflict of a guarded
+// command whose row sits at current when the caller expected expected:
+// query.ErrVersionMismatch with both versions in the text, as the query
+// library's own guards spell it. The file commands classify it themselves,
+// from the row their read returned, because a deleting row outranks the
+// version: the library's guard reports a mismatch before it looks at the
+// row.
+func versionMismatch(expected, current int64) error {
+	return fmt.Errorf("%w: expected %d, current %d", query.ErrVersionMismatch, expected, current)
 }

@@ -447,3 +447,52 @@ func TestConsumerEngineSwapsOneMethod(t *testing.T) {
 		t.Errorf("the move ran %q after its lock failed", got)
 	}
 }
+
+// holdOverride is a consumer's variant that embeds the baseline and
+// overrides the file hold alone, recording what it was asked.
+type holdOverride struct {
+	data.Variant
+	held    bool
+	id      string
+	version *int64
+}
+
+func (v *holdOverride) HoldFile(_ context.Context, _ *sqlate.Tx, id string, version *int64) (bool, error) {
+	v.id, v.version = id, version
+	return v.held, nil
+}
+
+// TestHoldIsAVariationPoint proves Files.Hold forwards to the variant's
+// HoldFile with the id and, under AtVersion, the version: a row the
+// variant held ends the call with no statement of the store's own, and a
+// row it did not hold is read once to classify, as over the baseline.
+func TestHoldIsAVariationPoint(t *testing.T) {
+	ctx := context.Background()
+	v := &holdOverride{held: true}
+	s := newStore(t, fallback, data.WithEngine(func(_ *query.Catalog, _ sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+		v.Variant = base
+		return v, nil
+	}))
+	pool, rec := sqltest.Open(t, fileResponse("F", "a.txt", blobfs.StatusDeleting, 2))
+	tx := begin(t, sqlate.Wrap(pool, sqltest.Dialect{}))
+	defer func() { _ = tx.Rollback() }()
+	if err := s.Files.Hold(ctx, tx, "F", data.AtVersion(1)); err != nil {
+		t.Fatalf("Hold over a variant that holds = %v", err)
+	}
+	if v.id != "F" || v.version == nil || *v.version != 1 {
+		t.Errorf("HoldFile got %q and %v, want F and the version 1", v.id, v.version)
+	}
+	if got := ops(rec); got != "begin" {
+		t.Errorf("the held hold ran %q, want no statement of the store's own", got)
+	}
+	v.held = false
+	if err := s.Files.Hold(ctx, tx, "F"); !errors.Is(err, blobfs.ErrDeleting) {
+		t.Errorf("Hold the variant refused over a deleting row = %v, want ErrDeleting", err)
+	}
+	if v.version != nil {
+		t.Errorf("HoldFile got the version %v without AtVersion, want nil", *v.version)
+	}
+	if got := ops(rec); got != "begin query" {
+		t.Errorf("the refused hold ran %q, want the one classifying read", got)
+	}
+}

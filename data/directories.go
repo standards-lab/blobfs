@@ -26,10 +26,11 @@ type Directories struct {
 	remove    query.Statement
 }
 
-// ancestor is one row of directory_ancestors: a directory's parent and
-// name on the chain up to the root, whose parent is nil and whose name
-// is /.
+// ancestor is one row of directory_ancestors: a directory's id, parent,
+// and name on the chain up to the root, whose parent is nil and whose
+// name is /.
 type ancestor struct {
+	ID       string  `json:"id"`
 	ParentID *string `json:"parent_id"`
 	Name     string  `json:"name"`
 }

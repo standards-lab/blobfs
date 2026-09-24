@@ -13,7 +13,10 @@ import (
 // counted in runes. It is the per-component limit the common file systems
 // share (ext4, NTFS, and APFS all stop at 255), so a name copied from a
 // local disk always fits. A key built from the longest name is 292 runes,
-// well under the 1024 that Azure Blob Storage and S3 accept.
+// within Azure Blob Storage's limit of 1024 characters. S3 counts its limit
+// of 1024 in bytes of UTF-8, and a name of 255 four-byte runes makes a key
+// of 1057 bytes, so the longest names can exceed it: the store's validator
+// then refuses the key, and the write is a KeyError before any SQL.
 const MaxNameLength = 255
 
 // NormalizeName returns name in Unicode normalization form C. Uniqueness is

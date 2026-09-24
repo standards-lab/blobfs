@@ -57,11 +57,11 @@ func newStore(t *testing.T, dialect sqlate.Dialect) (*data.Store, *postgres.Vari
 }
 
 // TestEngine proves the engine compiles against the consumer's catalog
-// under the engine's dialect: two statements, both native tier, each with
-// a port note, the lock requiring a transaction and the resolution not;
-// the variant reporting that it serializes; the store's Verify preparing
-// both beside its own; and the engine refusing a catalog without the
-// blobfs namespace.
+// under the engine's dialect: four statements, all native tier, each with
+// a port note, the tree lock and the two file locks requiring a
+// transaction and the resolution not; the variant reporting that it
+// serializes; the store's Verify preparing each beside its own; and the
+// engine refusing a catalog without the blobfs namespace.
 func TestEngine(t *testing.T) {
 	s, v := newStore(t, sqlatepg.Dialect{})
 	var names []string
@@ -73,11 +73,11 @@ func TestEngine(t *testing.T) {
 		if !strings.Contains(st.Native(), "Port:") {
 			t.Errorf("%s carries no port note: %q", st.Name(), st.Native())
 		}
-		if st.TransactionRequired() != (st.Name() == "lock_tree") {
-			t.Errorf("%s: TransactionRequired = %v; only lock_tree requires one", st.Name(), st.TransactionRequired())
+		if st.TransactionRequired() != (st.Name() != "resolve_path") {
+			t.Errorf("%s: TransactionRequired = %v; every lock requires one and resolve_path none", st.Name(), st.TransactionRequired())
 		}
 	}
-	if want := []string{"lock_tree", "resolve_path"}; !slices.Equal(names, want) {
+	if want := []string{"lock_file", "lock_file_at_version", "lock_tree", "resolve_path"}; !slices.Equal(names, want) {
 		t.Errorf("Statements = %v, want %v", names, want)
 	}
 	if !v.Serializes() {
@@ -125,8 +125,12 @@ func TestStoreForms(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s, _ := newStore(t, c.dialect)
 			stmts := s.Statements()
-			if n := len(stmts); n < 3 || stmts[n-2].Name() != "lock_tree" || stmts[n-1].Name() != "resolve_path" {
-				t.Fatalf("the store's inventory does not end with the variant's two statements: %d statements", n)
+			var tail []string
+			for _, st := range stmts[max(len(stmts)-4, 0):] {
+				tail = append(tail, st.Name())
+			}
+			if want := []string{"lock_file", "lock_file_at_version", "lock_tree", "resolve_path"}; !slices.Equal(tail, want) {
+				t.Fatalf("the store's inventory ends with %v, want the variant's four statements %v", tail, want)
 			}
 			var got []string
 			for _, st := range stmts {
@@ -183,6 +187,78 @@ func TestLockTreeSQL(t *testing.T) {
 		if c.Op == sqltest.OpExec && !slices.Equal(c.Args, []any{postgres.TreeLockKey}) {
 			t.Errorf("LockTree bound %v, want the key %d", c.Args, postgres.TreeLockKey)
 		}
+	}
+}
+
+// TestHoldFileSQL proves Hold through the variant is the locking read and
+// no write: SELECT ... FOR NO KEY UPDATE bound to the id, with the version
+// predicate and its binding only under AtVersion, a row returned ending the
+// call with no further statement; and no row returned followed by the
+// store's read of the row, which classifies the refusal as over the
+// baseline: a deleting row ErrDeleting whatever its version, a row at
+// another version ErrVersionMismatch, and a missing row ErrNotFound.
+func TestHoldFileSQL(t *testing.T) {
+	ctx := context.Background()
+	fileColumns := []string{"id", "directory_id", "name", "status", "key", "size", "content_type", "etag", "version", "created_at", "updated_at"}
+	fileRow := func(status blobfs.Status, version int64) sqltest.Response {
+		now := time.Now()
+		return sqltest.Response{Columns: fileColumns, Rows: [][]driver.Value{{"F", blobfs.RootID, "a", string(status), "F/a", nil, "text/plain", nil, version, now, now}}}
+	}
+	locked := sqltest.Response{Columns: []string{"id"}, Rows: [][]driver.Value{{"F"}}}
+	none := sqltest.Response{Columns: []string{"id"}}
+	hold := func(t *testing.T, responses []sqltest.Response, opts ...data.HoldOption) (*sqltest.Recorder, error) {
+		t.Helper()
+		s, db, rec := openStore(t, responses...)
+		_, err := db.Transact(ctx, func(tx *sqlate.Tx) (struct{}, error) {
+			return struct{}{}, s.Files.Hold(ctx, tx, "F", opts...)
+		})
+		return rec, err
+	}
+
+	rec, err := hold(t, []sqltest.Response{locked})
+	if err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+	if ops := rec.Ops(); !slices.Equal(ops, []sqltest.Op{sqltest.OpBegin, sqltest.OpQuery, sqltest.OpCommit}) {
+		t.Errorf("ops = %v, want the one locking read and no write", ops)
+	}
+	c := rec.Calls()[1]
+	if c.SQL != "SELECT f.id\nFROM blobfs_file f\nWHERE f.id = CAST($1 AS uuid) AND f.status <> 'deleting'\nFOR NO KEY UPDATE" {
+		t.Errorf("the hold is not the locking read:\n%s", c.SQL)
+	}
+	if !slices.Equal(c.Args, []any{"F"}) {
+		t.Errorf("the hold bound %v, want the id alone", c.Args)
+	}
+
+	rec, err = hold(t, []sqltest.Response{locked}, data.AtVersion(4))
+	if err != nil {
+		t.Fatalf("Hold at a version: %v", err)
+	}
+	c = rec.Calls()[1]
+	if !strings.HasSuffix(c.SQL, "AND f.version = CAST($2 AS bigint)\nFOR NO KEY UPDATE") || !slices.Equal(c.Args, []any{"F", int64(4)}) {
+		t.Errorf("the hold at a version is %q bound to %v, want the version predicate and binding", c.SQL, c.Args)
+	}
+
+	for _, r := range []struct {
+		name string
+		read sqltest.Response
+		opts []data.HoldOption
+		want error
+		not  error
+	}{
+		{"Deleting", fileRow(blobfs.StatusDeleting, 2), []data.HoldOption{data.AtVersion(1)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
+		{"StaleVersion", fileRow(blobfs.StatusAvailable, 3), []data.HoldOption{data.AtVersion(1)}, query.ErrVersionMismatch, blobfs.ErrDeleting},
+		{"Missing", sqltest.Response{Columns: fileColumns}, nil, blobfs.ErrNotFound, blobfs.ErrDeleting},
+	} {
+		t.Run(r.name, func(t *testing.T) {
+			rec, err := hold(t, []sqltest.Response{none, r.read}, r.opts...)
+			if !errors.Is(err, r.want) || errors.Is(err, r.not) {
+				t.Errorf("Hold = %v, want %v and not %v", err, r.want, r.not)
+			}
+			if ops := rec.Ops(); !slices.Equal(ops, []sqltest.Op{sqltest.OpBegin, sqltest.OpQuery, sqltest.OpQuery, sqltest.OpRollback}) {
+				t.Errorf("ops = %v, want the locking read, the classifying read, and no write", ops)
+			}
+		})
 	}
 }
 

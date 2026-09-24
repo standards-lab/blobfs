@@ -54,26 +54,79 @@ func (d *Directories) FindByPath(ctx context.Context, sess sqlate.Session, start
 // directory that does not exist is blobfs.ErrNotFound. The path is for
 // display; its text after the leading slash is the relative path
 // FindByPath resolves from blobfs.RootID.
+//
+// A directory whose chain of parents loops, which two opposing concurrent
+// moves on a variant whose Serializes reports false can leave, has no path:
+// the walk stops once it returns to a directory it has visited, and Path
+// reports blobfs.ErrCycle. A Move of a directory on the loop back under
+// the root repairs the tree.
 func (d *Directories) Path(ctx context.Context, sess sqlate.Session, id string) (string, error) {
-	chain, err := d.ancestors.All(ctx, sess, query.Args{"id": id})
+	rows, err := d.ancestors.All(ctx, sess, query.Args{"id": id})
 	if err != nil {
 		return "", fmt.Errorf("data: path of %s: %w", id, err)
 	}
-	if len(chain) == 0 {
+	if len(rows) == 0 {
 		return "", fmt.Errorf("data: path of %s: %w", id, blobfs.ErrNotFound)
 	}
-	if chain[0].ParentID != nil {
-		return "", fmt.Errorf("data: path of %s: the chain of %d ancestors does not reach the root", id, len(chain))
+	chain, err := ancestry(rows)
+	if err != nil {
+		return "", fmt.Errorf("data: path of %s: %w", id, err)
 	}
 	var b strings.Builder
-	for _, a := range chain[1:] {
+	for i := len(chain) - 2; i >= 0; i-- {
 		b.WriteString("/")
-		b.WriteString(a.Name)
+		b.WriteString(chain[i].Name)
 	}
 	if b.Len() == 0 {
 		return "/", nil
 	}
 	return b.String(), nil
+}
+
+// ancestry orders the rows directory_ancestors returned, in no set order,
+// into the chain from the directory the walk started at up to the root.
+// The start is the one row no other row names as its parent, found by the
+// rows alone, so the id's spelling in the caller's argument does not
+// matter; from it the chain follows parent_id and ends at the row without
+// a parent. When every row is another's parent, or a parent is met twice,
+// the tree loops: blobfs.ErrCycle. A parent the rows do not carry means
+// the chain does not reach the root.
+func ancestry(rows []ancestor) ([]ancestor, error) {
+	byID := make(map[string]ancestor, len(rows))
+	parents := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		byID[r.ID] = r
+		if r.ParentID != nil {
+			parents[*r.ParentID] = true
+		}
+	}
+	start := ""
+	for _, r := range rows {
+		if !parents[r.ID] {
+			start = r.ID
+			break
+		}
+	}
+	if start == "" {
+		return nil, fmt.Errorf("every directory on the chain is another's parent, so the chain loops: %w", blobfs.ErrCycle)
+	}
+	chain := make([]ancestor, 0, len(rows))
+	seen := make(map[string]bool, len(rows))
+	for next := start; ; {
+		r, ok := byID[next]
+		if !ok {
+			return nil, fmt.Errorf("the chain of %d ancestors does not reach the root", len(chain))
+		}
+		if seen[next] {
+			return nil, fmt.Errorf("the chain of parents returns to %s and never reaches the root: %w", next, blobfs.ErrCycle)
+		}
+		seen[next] = true
+		chain = append(chain, r)
+		if r.ParentID == nil {
+			return chain, nil
+		}
+		next = *r.ParentID
+	}
 }
 
 // splitPath checks that path is relative and returns its normalized,

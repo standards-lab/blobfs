@@ -29,16 +29,20 @@ const TreeLockName = "blobfs_directory.tree"
 const TreeLockKey int64 = -8521165719926625175
 
 // Variant is the PostgreSQL implementation of data.Variant, the variant
-// Engine builds. It embeds the store's standard baseline, so a variation
-// point this package does not override runs as the baseline does, and it
-// binds the compiled native statements to their handles. It overrides two:
-// the tree lock, which the baseline cannot take, and path resolution in one
-// statement. It holds no session; every method takes one.
+// Engine builds. It embeds the store's standard baseline, as the
+// data.Variant contract requires, so a variation point this package does
+// not override runs as the baseline does, and it binds the compiled native
+// statements to their handles. It overrides all three: the tree lock, which
+// the baseline cannot take; path resolution in one statement; and the file
+// hold, taken without writing a row version. It holds no session; every
+// method takes one.
 type Variant struct {
 	*data.Standard
 	stmts       *query.Statements
 	lockTree    query.Statement
 	resolvePath query.Rows[resolved]
+	lockFile    query.Rows[string]
+	lockFileAt  query.Rows[string]
 }
 
 // resolved is one row of resolve_path: the deepest directory reached and
@@ -56,7 +60,7 @@ var (
 )
 
 // Engine is the PostgreSQL engine for data.WithEngine: it compiles the
-// variant's own two statements against catalog for dialect, binds them, and
+// variant's own four statements against catalog for dialect, binds them, and
 // returns a *Variant over base, the baseline data.New compiled, so the data
 // package's statements are compiled once. A consumer selects it at its
 // composition root with data.New(catalog, dialect, data.WithEngine(Engine)).
@@ -74,6 +78,8 @@ func Engine(catalog *query.Catalog, dialect sqlate.Dialect, base *data.Standard)
 		stmts:       stmts,
 		lockTree:    stmts.Statement("lock_tree"),
 		resolvePath: stmts.Statement("resolve_path").Scan(query.Scanner[resolved]()),
+		lockFile:    stmts.Statement("lock_file").Scan(query.Scalar[string]),
+		lockFileAt:  stmts.Statement("lock_file_at_version").Scan(query.Scalar[string]),
 	}, nil
 }
 
@@ -86,7 +92,7 @@ func (v *Variant) Statements() []query.Statement {
 
 // Verify prepares the variant's statements against the schema the session
 // reaches. The store's Verify runs it in the same pass as its own, so a
-// startup Verify covers lock_tree and resolve_path.
+// startup Verify covers the variant's statements.
 func (v *Variant) Verify(ctx context.Context, sess sqlate.Session) error {
 	return v.stmts.Verify(ctx, sess)
 }
@@ -124,4 +130,28 @@ func (v *Variant) ResolvePath(ctx context.Context, sess sqlate.Session, startID 
 		return blobfs.Directory{}, 0, err
 	}
 	return r.Directory, r.Depth, nil
+}
+
+// HoldFile takes the file row's lock with lock_file, or
+// lock_file_at_version when version is not nil: SELECT ... FOR NO KEY
+// UPDATE, the lock the baseline's self-assigning update takes and
+// delete_file waits on, without writing a row version. A row returned is a
+// row held; no row, whether missing, deleting, or at another version, is
+// false with no lock taken, and the store reads the row to classify, as it
+// does over the baseline. See data.Variant.
+func (v *Variant) HoldFile(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (bool, error) {
+	args := query.Args{"id": id}
+	lock := v.lockFile
+	if version != nil {
+		args["version"] = *version
+		lock = v.lockFileAt
+	}
+	_, err := lock.One(ctx, tx, args)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }

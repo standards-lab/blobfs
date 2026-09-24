@@ -375,10 +375,11 @@ func TestEnsureFileRefusals(t *testing.T) {
 // guarded update binds the object's facts, the id, and the expected
 // version, carries the status predicate, and returns the available row.
 // When it changes no row, the row its read returned classifies the
-// refusal with no further statement: no row is ErrNotFound, a row at
-// another version query.ErrVersionMismatch naming both versions, and a
-// row at the expected version that is not pending a TransitionError from
-// its status, which matches ErrDeleting for a deleting row only.
+// refusal with no further statement: no row is ErrNotFound; a deleting
+// row, at any version, a TransitionError from deleting, which matches
+// ErrDeleting; any other row at another version query.ErrVersionMismatch
+// naming both versions; and an available row at the expected version a
+// TransitionError from available.
 func TestCompleteFile(t *testing.T) {
 	ctx := context.Background()
 	obj := blobfs.Object{Size: 42, ContentType: "text/plain", ETag: `"abc"`}
@@ -439,6 +440,22 @@ func TestCompleteFile(t *testing.T) {
 					t.Errorf("Complete of a %s row = %v; ErrDeleting should match for deleting only", status, err)
 				}
 			}
+			// A deleting row outranks a stale version: Delete advanced the
+			// version past the one the writer read, and no version will
+			// complete the row. An available row at another version is the
+			// plain conflict.
+			got, err = complete(fileResponse("F", "a.txt", blobfs.StatusDeleting, 2))
+			var te *blobfs.TransitionError
+			if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !errors.As(err, &te) || te.From != blobfs.StatusDeleting {
+				t.Errorf("Complete of a deleting row at a later version = %v, want the TransitionError from deleting and no version mismatch", err)
+			}
+			if got != refusedOps {
+				t.Errorf("ops = %q, want %q: the refusal classifies from the returning read alone", got, refusedOps)
+			}
+			_, err = complete(fileResponse("F", "a.txt", blobfs.StatusAvailable, 2))
+			if !errors.Is(err, query.ErrVersionMismatch) || errors.Is(err, blobfs.ErrInvalidTransition) || !strings.Contains(err.Error(), "expected 1, current 2") {
+				t.Errorf("Complete of an available row at another version = %v, want ErrVersionMismatch", err)
+			}
 			// A pending row at the expected version the update did not
 			// change is no state the statement can leave; it is reported,
 			// not taken for success.
@@ -455,7 +472,7 @@ func TestCompleteFile(t *testing.T) {
 // expected version, with the status predicate in its text and the key
 // untouched, returning the moved row; a refused name before any SQL; and
 // the outcomes of the guard: a missing row is ErrNotFound, a moved version
-// ErrVersionMismatch, a deleting row at the expected version ErrDeleting,
+// ErrVersionMismatch, a deleting row ErrDeleting at any version,
 // a missing directory ErrNotFound through the foreign key, and a taken name
 // ErrNameTaken through the unique constraint.
 func TestMoveFile(t *testing.T) {
@@ -495,9 +512,20 @@ func TestMoveFile(t *testing.T) {
 			if !errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "expected 1, current 3") {
 				t.Errorf("Move at a stale version = %v, want ErrVersionMismatch naming both versions", err)
 			}
-			err = move(unchangedFile(f, fileResponse("F", "a", blobfs.StatusDeleting, 1))...)
-			if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "the row is deleting") {
-				t.Errorf("Move of a deleting row = %v, want ErrDeleting and not a version mismatch", err)
+			for _, version := range []int64{1, 2} {
+				// A deleting row outranks a stale version: Delete advanced
+				// the version past the one the mover read.
+				err = move(unchangedFile(f, fileResponse("F", "a", blobfs.StatusDeleting, version))...)
+				if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "the row is deleting") {
+					t.Errorf("Move of a deleting row at version %d = %v, want ErrDeleting and not a version mismatch", version, err)
+				}
+			}
+			// An available row at the expected version the update did not
+			// change is no state the statement can leave; it is reported,
+			// not taken for success.
+			err = move(unchangedFile(f, fileResponse("F", "a", blobfs.StatusAvailable, 1))...)
+			if err == nil || errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "available at version 1") {
+				t.Errorf("Move refused over an available row = %v, want an error naming the row's state", err)
 			}
 			for _, c := range []struct {
 				constraint string

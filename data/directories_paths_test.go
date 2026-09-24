@@ -96,19 +96,22 @@ func TestFindByPathWalks(t *testing.T) {
 	}
 }
 
-// TestPathComposes proves the path is composed from the ancestor chain
-// root first: the root alone is /, a chain is the names below the root
-// joined by slashes, no chain is ErrNotFound, and a chain that does not
-// reach the root is refused. The statement runs once per call, whatever
-// the depth.
+// TestPathComposes proves the path is composed from the ancestor chain,
+// whatever order its rows arrive in: the root alone is /, a chain is the
+// names below the root joined by slashes, no chain is ErrNotFound, a
+// chain that does not reach the root is refused, and a chain that loops,
+// with the start on the loop or below it, is ErrCycle. The statement runs
+// once per call, whatever the depth.
 func TestPathComposes(t *testing.T) {
 	ctx := context.Background()
-	cols := []string{"parent_id", "name"}
+	cols := []string{"id", "parent_id", "name"}
 	s, db, rec := openStore(t, fallback,
-		sqltest.Response{Columns: cols, Rows: [][]driver.Value{{nil, "/"}}},
-		sqltest.Response{Columns: cols, Rows: [][]driver.Value{{nil, "/"}, {blobfs.RootID, "a"}, {"a", "b"}, {"b", nfcName}}},
+		sqltest.Response{Columns: cols, Rows: [][]driver.Value{{blobfs.RootID, nil, "/"}}},
+		sqltest.Response{Columns: cols, Rows: [][]driver.Value{{"b", "a", "b"}, {blobfs.RootID, nil, "/"}, {"c", "b", nfcName}, {"a", blobfs.RootID, "a"}}},
 		sqltest.Response{Columns: cols},
-		sqltest.Response{Columns: cols, Rows: [][]driver.Value{{"x", "a"}}},
+		sqltest.Response{Columns: cols, Rows: [][]driver.Value{{"a", "x", "a"}}},
+		sqltest.Response{Columns: cols, Rows: [][]driver.Value{{"x", "y", "x"}, {"y", "x", "y"}}},
+		sqltest.Response{Columns: cols, Rows: [][]driver.Value{{"x", "y", "x"}, {"c", "x", "c"}, {"y", "x", "y"}}},
 	)
 	for i, want := range []string{"/", "/a/b/" + nfcName} {
 		got, err := s.Directories.Path(ctx, db, "id")
@@ -119,10 +122,18 @@ func TestPathComposes(t *testing.T) {
 	if _, err := s.Directories.Path(ctx, db, "missing"); !errors.Is(err, blobfs.ErrNotFound) {
 		t.Errorf("Path of a missing directory = %v, want ErrNotFound", err)
 	}
-	if _, err := s.Directories.Path(ctx, db, "detached"); err == nil || !strings.Contains(err.Error(), "does not reach the root") {
+	if _, err := s.Directories.Path(ctx, db, "detached"); err == nil || errors.Is(err, blobfs.ErrCycle) || !strings.Contains(err.Error(), "does not reach the root") {
 		t.Errorf("Path of a detached chain = %v, want the refusal", err)
 	}
-	if n := len(rec.SQL(sqltest.OpQuery)); n != 4 {
-		t.Errorf("four paths ran %d queries, want 4 (one recursive statement each)", n)
+	for _, start := range []string{"x", "c"} {
+		if _, err := s.Directories.Path(ctx, db, start); !errors.Is(err, blobfs.ErrCycle) {
+			t.Errorf("Path of %s on a looping chain = %v, want ErrCycle", start, err)
+		}
+	}
+	if text := rec.SQL(sqltest.OpQuery)[0]; !strings.Contains(text, "UNION\n") || strings.Contains(text, "UNION ALL") {
+		t.Errorf("the walk does not combine its steps with UNION, so it would not terminate on a cycle:\n%s", text)
+	}
+	if n := len(rec.SQL(sqltest.OpQuery)); n != 6 {
+		t.Errorf("six paths ran %d queries, want 6 (one recursive statement each)", n)
 	}
 }

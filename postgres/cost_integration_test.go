@@ -335,8 +335,8 @@ func TestPathPlans(t *testing.T) {
 // TestProtocolStepPlans proves every step of the write, delete, hold, and
 // move protocols finds its row through the primary key: each returning
 // command in the single-statement form sqlate's postgres dialect renders
-// (create excepted, which has no lookup to plan), each hold and the
-// purge, and the read by id plan an index scan on blobfs_pk_file or
+// (create excepted, which has no lookup to plan), each hold, the baseline's
+// and the variant's locking reads, and the purge, and the read by id plan an index scan on blobfs_pk_file or
 // blobfs_pk_directory with the id as the index condition, with no
 // sequential scan, each reading at most 32 buffers. The regression is a
 // predicate the primary key cannot serve, which scans the table on every
@@ -372,6 +372,8 @@ func TestProtocolStepPlans(t *testing.T) {
 		{"delete_file", "blobfs_pk_file", query.Args{"id": available}},
 		{"hold_file", "blobfs_pk_file", query.Args{"id": available}},
 		{"hold_file_at_version", "blobfs_pk_file", query.Args{"id": available, "version": int64(1)}},
+		{"lock_file", "blobfs_pk_file", query.Args{"id": available}},
+		{"lock_file_at_version", "blobfs_pk_file", query.Args{"id": available, "version": int64(1)}},
 		{"purge_file", "blobfs_pk_file", query.Args{"id": deleting}},
 		{"file_by_id", "blobfs_pk_file", query.Args{"id": available}},
 		{"move_directory", "blobfs_pk_directory", query.Args{"id": dir.ID, "version": int64(1), "parent_id": blobfs.RootID, "name": "moved"}},

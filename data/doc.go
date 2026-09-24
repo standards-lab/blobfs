@@ -73,15 +73,18 @@
 // before it pages. The listing of blobfs.RootID is the depth-one
 // directories; the root itself is in no listing.
 //
-// Two operations are variation points, where an engine may do better than
-// standard SQL: the tree lock that serializes directory moves, and path
-// resolution. The Variant interface names them. Standard is the baseline, a
-// no-op lock that reports it does not serialize and one child read per path
-// segment, and a store runs it unless New installs another variant through
+// Three operations are variation points, where an engine may do better than
+// standard SQL: the tree lock that serializes directory moves, path
+// resolution, and a file's hold. The Variant interface names them. Standard
+// is the baseline, a no-op lock that reports it does not serialize, one
+// child read per path segment, and a hold that is a self-assigning update,
+// and a store runs it unless New installs another variant through
 // WithEngine. An Engine builds its variant over the baseline New compiled
 // and bound, so the statements are compiled once. The Engine is an engine
 // sub-module's, or a consumer's own, whose variant embeds the baseline or an
-// engine's variant and overrides the methods it needs. The Store validates
+// engine's variant and overrides the methods it needs; embedding is the
+// contract, so a variation point a later release adds reaches every variant
+// through it. The Store validates
 // every input and classifies every error itself, so a variant binds what it
 // is given and returns what the session mapped.
 //
@@ -91,7 +94,7 @@
 // *sqlate.Tx: the directory move, the tree lock, a file's hold, and a file's
 // Delete. A guarded step whose row moved on is query.ErrVersionMismatch,
 // with the expected and current versions in the text; a step a deleting row
-// refuses is blobfs.ErrDeleting, and a status change the transition table
+// refuses is blobfs.ErrDeleting, whatever version the caller holds, and a status change the transition table
 // refuses is a blobfs.TransitionError. A violation of one of blobfs's own
 // constraints becomes blobfs.ErrNameTaken, blobfs.ErrIDTaken,
 // blobfs.ErrNotFound, blobfs.ErrRootDirectory, or, on a directory delete,

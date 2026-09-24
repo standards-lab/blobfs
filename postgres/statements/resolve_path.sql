@@ -20,7 +20,11 @@
 -- segments bind as one parameter, so a name is never spliced into the
 -- text, whatever characters it carries. The row is selected by the
 -- maximum depth rather than sorted and cut, which saves the buffers of a
--- sort the walk does not need.
+-- sort the walk does not need. The walk is bounded by the segments whatever
+-- the tree's shape: a step past the last segment compares a name with NULL
+-- and matches nothing, so a walk runs at most len(segments) steps and a
+-- cycle in the tree, which the variant's lock prevents but a consumer's own
+-- writes could leave, cannot extend it.
 WITH RECURSIVE walk (id, parent_id, name, version, created_at, updated_at, depth) AS (
     SELECT {{> blobfs.directory_columns}}, CAST(0 AS integer)
     FROM blobfs_directory d

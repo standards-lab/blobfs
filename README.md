@@ -22,9 +22,8 @@ leaves each key opaque: the file's id and its name at upload, never changed and 
 Because the rows and the objects live in two systems with no shared transaction, blobfs exposes
 each protocol that touches an object as steps: the two-phase write inserts a pending row before
 the put, the two-phase delete marks the row deleting before the object delete, and the consumer
-runs its own store's call between the steps. The library never
-calls the object store, so it depends on none, and a consumer keeps its own store, its own
-lifecycle, and its own credentials.
+runs its own store's call between the steps. The library never calls the object store, so it
+depends on none, and a consumer keeps its own store, its own lifecycle, and its own credentials.
 
 ## Documentation
 
@@ -96,7 +95,8 @@ Four conventions the library keeps are stricter than a reader might expect:
 - `data/datatest` is the conformance suite, `Run`, which an engine or a consumer's own variant
   runs against a live database.
 - `postgres` (sub-module) is the PostgreSQL engine: `Engine`, whose variant takes an advisory
-  tree lock and resolves a path in one statement, and `Migrations`, the schema's migration set.
+  tree lock, resolves a path in one statement, and holds a file without writing a row version,
+  and `Migrations`, the schema's migration set.
 - `example` (module) composes the library with PostgreSQL and `go-storage`'s Azure Blob provider
   through one adapter, and runs one file's whole life.
 

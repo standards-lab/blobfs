@@ -13,10 +13,11 @@ import (
 // package.
 //
 // The interface carries no maximum key length. The store's own validation
-// enforces its limit, counted the way the store counts, and MaxNameLength
-// keeps every key blobfs builds far below the limits of the providers it
-// targets (a key of the longest name is 292 runes), so a second length
-// check in blobfs never fires against a real store.
+// enforces its limit, counted the way the store counts, so blobfs keeps no
+// second length check of its own. A key of the longest name is 292 runes,
+// within Azure Blob Storage's 1024 characters; S3 counts its 1024 in bytes
+// of UTF-8, and a key of 255 four-byte runes is 1057 bytes, which the
+// store's validation refuses as a KeyError before any row is written.
 type KeyValidator interface {
 	// ValidateKey returns a non-nil error that says why when the store
 	// refuses key.

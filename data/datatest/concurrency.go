@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,7 +31,8 @@ import (
 // waits on A's row locks and runs once A commits, both commit, and X and
 // Y are each other's ancestor and unreachable from the root, which the
 // suite asserts with a walk down from the root and a bounded walk up from
-// each, and then repairs.
+// each. It then checks that IsWithin and Path terminate on the cycle with
+// their defined answers, and repairs it through Move.
 func (s *suite) opposingMoves(t *testing.T) {
 	x := s.mkdir(t, "x-"+t.Name())
 	y := s.mkdir(t, "y-"+t.Name())
@@ -116,12 +118,57 @@ func (s *suite) opposingMoves(t *testing.T) {
 	if !s.ownAncestor(t, x.ID) || !s.ownAncestor(t, y.ID) {
 		t.Error("the two directories are not each their own ancestor; no cycle formed")
 	}
-	// Repair, so the rest of the database stays walkable: Y goes back
-	// under the root, and X stays under Y.
-	ph := s.db.Dialect().Placeholder
-	s.exec(t, "UPDATE blobfs_directory SET parent_id = "+ph(1)+" WHERE id = "+ph(2), blobfs.RootID, y.ID)
+	s.walksTerminate(t, x.ID, y.ID)
+	// Repair through the store, so the rest of the database stays
+	// walkable: Y goes back under the root, which is not within the loop,
+	// so the cycle check passes; X stays under Y.
+	if _, err := s.move(t, y.ID, blobfs.RootID, y.Name, yr.Version); err != nil {
+		t.Fatalf("the repairing move of y under the root: %v", err)
+	}
 	if n := s.reachable(t, x.ID, y.ID); n != 2 {
 		t.Errorf("after the repair %d of the two directories are reachable, want both", n)
+	}
+	s.wantPath(t, y.ID, "/"+y.Name)
+	s.wantPath(t, x.ID, "/"+y.Name+"/moved")
+}
+
+// walksTerminate checks the upward walks on the detached cycle x and y
+// form, each parent of the other, through the store under test and the
+// baseline, each call under a deadline so a walk that never terminates
+// fails the check rather than hanging it. IsWithin terminates with a
+// defined answer: each directory on the loop is within the other and
+// within itself, and within nothing off the loop, the root among them.
+// Path terminates with ErrCycle, for a directory on the loop and for one
+// below it.
+func (s *suite) walksTerminate(t *testing.T, x, y string) {
+	t.Helper()
+	child := s.mkdirUnder(t, x, "below-the-loop")
+	for _, tier := range []struct {
+		name  string
+		store *data.Store
+	}{{"UnderTest", s.store}, {"Baseline", s.baseline}} {
+		ctx, cancel := context.WithTimeout(s.ctx, unblocked)
+		for _, c := range []struct {
+			id, ancestor string
+			want         bool
+		}{
+			{x, y, true}, {y, x, true}, {x, x, true}, {child.ID, y, true},
+			{x, blobfs.RootID, false}, {child.ID, blobfs.RootID, false},
+		} {
+			within, err := tier.store.Directories.IsWithin(ctx, s.db, c.id, c.ancestor)
+			if err != nil || within != c.want {
+				t.Errorf("%s: IsWithin(%s, %s) on the cycle = %v, %v, want %v", tier.name, c.id, c.ancestor, within, err, c.want)
+			}
+		}
+		for _, id := range []string{x, y, child.ID} {
+			if p, err := tier.store.Directories.Path(ctx, s.db, id); !errors.Is(err, blobfs.ErrCycle) {
+				t.Errorf("%s: Path(%s) on the cycle = %q, %v, want ErrCycle", tier.name, id, p, err)
+			}
+		}
+		cancel()
+	}
+	if err := s.store.Directories.Delete(s.ctx, s.db, child.ID); err != nil {
+		t.Fatalf("Delete of the directory below the loop: %v", err)
 	}
 }
 
@@ -342,5 +389,77 @@ func awaitOrFail(t *testing.T, done <-chan error, msg string) error {
 	case <-time.After(unblocked):
 		t.Fatal(msg)
 		return nil
+	}
+}
+
+// racingPool is the pool with the first two runs of one lookup gated:
+// each, once its lookup has run, waits until the other's has run too, so
+// two concurrent Ensure calls through it both find no row before either
+// inserts. That forces the race Ensure recovers from on the pool: both
+// insert, the engine blocks the second insert on the unique constraint
+// until the first commits and then refuses it, and the second caller looks
+// the row up once more. It embeds the pool, so it is a sqlate.Beginner and
+// reports errors as the pool does, and every other statement passes
+// through; the fallback's own transaction runs on the pool itself.
+type racingPool struct {
+	*sqlate.DB
+	lookup string
+	mu     sync.Mutex
+	runs   int
+	both   chan struct{}
+	forced bool
+}
+
+// racingPool gates the store's statement named lookup.
+func (s *suite) racingPool(t *testing.T, lookup string) *racingPool {
+	t.Helper()
+	for _, st := range s.store.Statements() {
+		if st.Name() == lookup {
+			return &racingPool{DB: s.db, lookup: st.Text(), both: make(chan struct{})}
+		}
+	}
+	t.Fatalf("the store has no %s statement", lookup)
+	return nil
+}
+
+// QueryContext runs the query on the pool and, for the first two runs of
+// the lookup, waits at the gate before it hands the rows back. The rows
+// already reflect the statement's snapshot, taken when it ran.
+func (p *racingPool) QueryContext(ctx context.Context, text string, args ...any) (*sql.Rows, error) {
+	rows, err := p.DB.QueryContext(ctx, text, args...)
+	if text != p.lookup {
+		return rows, err
+	}
+	p.mu.Lock()
+	p.runs++
+	run := p.runs
+	p.mu.Unlock()
+	switch run {
+	case 1:
+		select {
+		case <-p.both:
+		case <-time.After(unblocked):
+		}
+	case 2:
+		p.mu.Lock()
+		p.forced = true
+		p.mu.Unlock()
+		close(p.both)
+	}
+	return rows, err
+}
+
+// wantRecovered fails the test unless the race was forced and resolved
+// by the recovery: both lookups ran before either insert, and a third ran
+// after the refused insert.
+func (p *racingPool) wantRecovered(t *testing.T) {
+	t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.forced {
+		t.Error("the second caller's lookup never arrived at the gate; the race was not forced")
+	}
+	if p.runs != 3 {
+		t.Errorf("the lookup ran %d times, want 3: the two gated lookups and the recovery's after the refused insert", p.runs)
 	}
 }
