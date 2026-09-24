@@ -7,6 +7,8 @@ the `postgres` sub-module keeps its own.
 
 ## [Unreleased]
 
+## [v0.1.0] - 2026-09-24
+
 The first release: a SQL-backed tree of directories and file metadata over an object store the
 library never calls.
 
@@ -45,4 +47,5 @@ library never calls.
 - `data/datatest`, the conformance suite: `Run` checks a store over any engine against the
   baseline on a live database, the hold's refusals and interleavings with a delete included.
 
-[Unreleased]: https://github.com/standards-lab/blobfs/commits/main
+[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.1.0...HEAD
+[v0.1.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.1.0

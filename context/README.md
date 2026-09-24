@@ -20,4 +20,5 @@ sub-module (its variant, native statements, migration set, and integration tier)
 
 ## Notes
 
-None.
+- `deferred.md`: what the library leaves out on purpose, each with its trigger, and the
+  assumptions its design rests on.

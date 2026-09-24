@@ -7,6 +7,8 @@ changelog covers this sub-module only; the base module keeps its own.
 
 ## [Unreleased]
 
+## [v0.1.0] - 2026-09-24
+
 The first release of the PostgreSQL engine.
 
 ### Added
@@ -29,4 +31,5 @@ The first release of the PostgreSQL engine.
 
 Requires `github.com/standards-lab/blobfs v0.1.0` and `github.com/standards-lab/sqlate v0.4.0`.
 
-[Unreleased]: https://github.com/standards-lab/blobfs/commits/main/postgres
+[Unreleased]: https://github.com/standards-lab/blobfs/compare/postgres/v0.1.0...HEAD
+[v0.1.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.1.0
