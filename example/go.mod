@@ -2,13 +2,6 @@ module github.com/standards-lab/blobfs/example
 
 go 1.27
 
-// Transient bridges while the example builds against the unreleased blobfs
-// v0.1.0 and blobfs/postgres v0.1.0; the release pins them and drops these.
-replace (
-	github.com/standards-lab/blobfs => ../
-	github.com/standards-lab/blobfs/postgres => ../postgres
-)
-
 require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/standards-lab/blobfs v0.1.0
