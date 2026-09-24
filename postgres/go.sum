@@ -13,6 +13,8 @@ github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo
 github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/standards-lab/blobfs v0.1.0 h1:pQhY1l5B8waEb9pINbDFe67uumKpcArUx86dxvzxowo=
+github.com/standards-lab/blobfs v0.1.0/go.mod h1:1ZytfeiASYRgsYchN2aFv2HGnKug5gysmmpAsm6PFl8=
 github.com/standards-lab/sqlate v0.4.0 h1:1k0pCj9j8wAWlZTNeD9e/XjFWHrzQHUDuUjbQ+zV1pw=
 github.com/standards-lab/sqlate v0.4.0/go.mod h1:pikNmGf/z3x46SBWFXgt/xKIDZuquSgCoXy5OWBFFR4=
 github.com/standards-lab/sqlate/postgres v0.4.0 h1:AJioiMq+EagjxOA4Mcu/SQLFHcZoW5T3VPbF3WtZgfQ=

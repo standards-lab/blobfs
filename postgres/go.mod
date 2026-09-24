@@ -20,7 +20,3 @@ require (
 )
 
 tool github.com/standards-lab/sqlate/sqlint/cmd/sqlint
-
-// Transient bridge while this module builds against the base module's
-// unreleased v0.1.0; the v0.1.0 release drops this.
-replace github.com/standards-lab/blobfs => ../
