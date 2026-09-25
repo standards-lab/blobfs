@@ -24,6 +24,7 @@ type Directories struct {
 	create    query.Returning[blobfs.Directory]
 	move      query.RowGuard[blobfs.Directory]
 	remove    query.Statement
+	removeAt  query.Statement
 }
 
 // ancestor is one row of directory_ancestors: a directory's id, parent,
@@ -48,7 +49,8 @@ func newDirectories(stmts *query.Statements, variant Variant) *Directories {
 		create:    stmts.Statement("create_directory").Returning(directory),
 		move: stmts.Statement("move_directory").Returning(directory).
 			Guarded("version", func(d blobfs.Directory) int64 { return d.Version }),
-		remove: stmts.Statement("delete_directory"),
+		remove:   stmts.Statement("delete_directory"),
+		removeAt: stmts.Statement("delete_directory_at_version"),
 	}
 }
 
@@ -179,17 +181,34 @@ func (d *Directories) insert(ctx context.Context, sess sqlate.Session, id, paren
 // directory that does not exist is blobfs.ErrNotFound. Delete runs one
 // statement, so the session may be the pool or a transaction; a consumer
 // that keeps a row of its own about the directory removes both in one
-// transaction.
-func (d *Directories) Delete(ctx context.Context, sess sqlate.Session, id string) error {
+// transaction. With AtVersion, the directory is removed only at that
+// version, in the same statement; a directory at another version is
+// query.ErrVersionMismatch, told apart from a missing one by a read.
+func (d *Directories) Delete(ctx context.Context, sess sqlate.Session, id string, opts ...DeleteOption) error {
 	if id == blobfs.RootID {
 		return fmt.Errorf("data: delete directory %s: %w", id, blobfs.ErrRootDirectory)
 	}
-	n, err := d.remove.Exec(ctx, sess, query.Args{"id": id})
+	var o holdOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	stmt, args := d.remove, query.Args{"id": id}
+	if o.hasVersion {
+		stmt, args = d.removeAt, args.With("version", o.version)
+	}
+	n, err := stmt.Exec(ctx, sess, args)
 	if err != nil {
 		return fmt.Errorf("data: delete directory %s: %w", id, classifyDelete(err))
 	}
-	if n == 0 {
+	if n > 0 {
+		return nil
+	}
+	if !o.hasVersion {
 		return fmt.Errorf("data: delete directory %s: %w", id, blobfs.ErrNotFound)
 	}
-	return nil
+	dir, err := d.byID.One(ctx, sess, query.Args{"id": id})
+	if err != nil {
+		return fmt.Errorf("data: delete directory %s: %w", id, notFound(err))
+	}
+	return fmt.Errorf("data: delete directory %s: %w", id, versionMismatch(o.version, dir.Version))
 }

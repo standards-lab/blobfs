@@ -73,7 +73,10 @@ func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...Hold
 // version advances once per delete. The transition is allowed from pending
 // and available alike, so an abandoned write is removed the same way. A
 // file that does not exist is blobfs.ErrNotFound, whether the id never
-// existed or a concurrent delete purged it first.
+// existed or a concurrent delete purged it first. With AtVersion, the row
+// moves to deleting only at that version, in the same statement; a row at
+// another version is query.ErrVersionMismatch and is left as it is, while a
+// row already deleting is returned as a retry is, whatever the version.
 //
 // It takes a *sqlate.Tx because it is the delete's half of the
 // reference-then-delete rule: its update takes the row's lock and waits on a
@@ -84,10 +87,26 @@ func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...Hold
 // Purge while one remains. The update is a returning command: the
 // single-statement form where the dialect renders RETURNING, and otherwise
 // the fallback, the update and a read of the row.
-func (f *Files) Delete(ctx context.Context, tx *sqlate.Tx, id string) (blobfs.File, error) {
-	file, _, err := f.remove.One(ctx, tx, query.Args{"id": id})
+func (f *Files) Delete(ctx context.Context, tx *sqlate.Tx, id string, opts ...DeleteOption) (blobfs.File, error) {
+	var o holdOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if !o.hasVersion {
+		file, _, err := f.remove.One(ctx, tx, query.Args{"id": id})
+		if err != nil {
+			return blobfs.File{}, fmt.Errorf("data: delete file %s: %w", id, notFound(err))
+		}
+		return file, nil
+	}
+	file, _, err := f.removeAt.One(ctx, tx, query.Args{"id": id, "version": o.version})
 	if err != nil {
 		return blobfs.File{}, fmt.Errorf("data: delete file %s: %w", id, notFound(err))
+	}
+	if file.Status != blobfs.StatusDeleting {
+		// The update matched nothing and the row is not deleting: it is at
+		// another version, and is returned as it stands.
+		return blobfs.File{}, fmt.Errorf("data: delete file %s: %w", id, versionMismatch(o.version, file.Version))
 	}
 	return file, nil
 }

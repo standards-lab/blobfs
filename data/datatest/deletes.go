@@ -2,6 +2,8 @@ package datatest
 
 import (
 	"errors"
+	"github.com/standards-lab/blobfs/data"
+	"github.com/standards-lab/sqlate/query"
 	"strings"
 	"testing"
 
@@ -18,6 +20,7 @@ func (s *suite) deletes(t *testing.T) {
 	t.Run("RetryConverges", func(t *testing.T) { s.deleteRetryConverges(t, dir.ID) })
 	t.Run("RollbackUndoesIt", func(t *testing.T) { s.deleteRollback(t, dir.ID) })
 	t.Run("MissingIsNotFound", s.deleteMissing)
+	t.Run("AtVersion", func(t *testing.T) { s.deleteAtVersion(t, dir.ID) })
 	t.Run("PurgeRefusesARowNotDeleting", func(t *testing.T) { s.purgeNotDeleting(t, dir.ID) })
 	t.Run("ReferencedRowStaysDeleting", func(t *testing.T) { s.purgeReferenced(t, dir.ID) })
 }
@@ -89,6 +92,43 @@ func (s *suite) deleteRollback(t *testing.T, dir string) {
 	}
 	if after := s.file(t, id); !equalFile(before, after) {
 		t.Errorf("after the rollback the row is\n%+v\nwant it unchanged\n%+v", after, before)
+	}
+}
+
+// deleteAtVersion checks the version-guarded Delete: a stale version is
+// query.ErrVersionMismatch with the row left as it was, the current version
+// moves the row to deleting as the plain Delete does, and a retry of a
+// delete already begun converges whatever version it names.
+func (s *suite) deleteAtVersion(t *testing.T, dir string) {
+	id := s.insertFile(t, dir, "guarded.txt", blobfs.StatusAvailable)
+	before := s.file(t, id)
+	_, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
+		return s.store.Files.Delete(s.ctx, tx, id, data.AtVersion(before.Version+1))
+	})
+	if !errors.Is(err, query.ErrVersionMismatch) {
+		t.Errorf("Delete at a stale version = %v, want ErrVersionMismatch", err)
+	}
+	if after := s.file(t, id); !equalFile(before, after) {
+		t.Errorf("a refused Delete changed the row to\n%+v\nfrom\n%+v", after, before)
+	}
+	got, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
+		return s.store.Files.Delete(s.ctx, tx, id, data.AtVersion(before.Version))
+	})
+	if err != nil {
+		t.Fatalf("Delete at the current version: %v", err)
+	}
+	wantDeleting(t, before, got)
+	again, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
+		return s.store.Files.Delete(s.ctx, tx, id, data.AtVersion(before.Version))
+	})
+	if err != nil || !equalFile(got, again) {
+		t.Errorf("the retried guarded Delete = %+v, %v, want the deleting row\n%+v", again, err, got)
+	}
+	s.purge(t, id)
+	if _, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
+		return s.store.Files.Delete(s.ctx, tx, id, data.AtVersion(before.Version))
+	}); !errors.Is(err, blobfs.ErrNotFound) {
+		t.Errorf("a guarded Delete after the Purge = %v, want ErrNotFound", err)
 	}
 }
 

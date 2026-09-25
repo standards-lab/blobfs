@@ -32,6 +32,7 @@ type Files struct {
 	complete query.Returning[blobfs.File]
 	move     query.Returning[blobfs.File]
 	remove   query.Returning[blobfs.File]
+	removeAt query.Returning[blobfs.File]
 	purge    query.Statement
 }
 
@@ -48,6 +49,7 @@ func newFiles(stmts *query.Statements, variant Variant) *Files {
 		complete: stmts.Statement("complete_file").Returning(file),
 		move:     stmts.Statement("move_file").Returning(file),
 		remove:   stmts.Statement("delete_file").Returning(file),
+		removeAt: stmts.Statement("delete_file_at_version").Returning(file),
 		purge:    stmts.Statement("purge_file"),
 	}
 }

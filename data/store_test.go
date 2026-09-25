@@ -122,26 +122,26 @@ func ops(rec *sqltest.Recorder) string {
 }
 
 // TestNew proves the catalog builds with the two sources, every statement
-// compiles, and the inventory: eighteen statements, all standard tier; the
-// directory move, the file delete, and the two file holds the ones
-// requiring a transaction; and the six returning commands, the directory
+// compiles, and the inventory: twenty statements, all standard tier; the
+// directory move, the two file deletes, and the two file holds the ones
+// requiring a transaction; and the seven returning commands, the directory
 // ones reading their row back through directory_by_id and the file ones
 // through file_by_id. The fallback's dialect renders no single-statement
 // form and the returning dialect renders one per command.
 func TestNew(t *testing.T) {
 	want := []string{
-		"complete_file", "create_directory", "create_file", "delete_directory", "delete_file",
-		"directory_ancestors", "directory_by_id", "directory_by_name", "directory_children",
+		"complete_file", "create_directory", "create_file", "delete_directory", "delete_directory_at_version",
+		"delete_file", "delete_file_at_version", "directory_ancestors", "directory_by_id", "directory_by_name", "directory_children",
 		"directory_files", "directory_is_within", "file_by_id", "file_by_name", "hold_file", "hold_file_at_version", "move_directory",
 		"move_file", "purge_file",
 	}
 	returning := map[string]string{
 		"create_directory": "directory_by_id", "move_directory": "directory_by_id",
 		"create_file": "file_by_id", "complete_file": "file_by_id",
-		"move_file": "file_by_id", "delete_file": "file_by_id",
+		"move_file": "file_by_id", "delete_file": "file_by_id", "delete_file_at_version": "file_by_id",
 	}
 	txRequired := map[string]bool{
-		"move_directory": true, "delete_file": true, "hold_file": true, "hold_file_at_version": true,
+		"move_directory": true, "delete_file": true, "delete_file_at_version": true, "hold_file": true, "hold_file_at_version": true,
 	}
 	for _, f := range forms {
 		t.Run(f.name, func(t *testing.T) {
@@ -221,14 +221,14 @@ func TestVerify(t *testing.T) {
 	for _, c := range []struct {
 		form      form
 		returning int
-	}{{forms[0], 0}, {forms[1], 6}} {
+	}{{forms[0], 0}, {forms[1], 7}} {
 		t.Run(c.form.name, func(t *testing.T) {
 			s, db, rec := openStore(t, c.form)
 			if err := s.Verify(context.Background(), db); err != nil {
 				t.Fatalf("Verify: %v", err)
 			}
 			prepared := rec.SQL(sqltest.OpPrepare)
-			if want := 18 + c.returning + 6; len(prepared) != want {
+			if want := 20 + c.returning + 6; len(prepared) != want {
 				t.Errorf("Verify prepared %d statements, want %d", len(prepared), want)
 			}
 			returning, contracts, cursors, counted := 0, 0, 0, 0
@@ -282,7 +282,7 @@ func probeEngine(c *query.Catalog, d sqlate.Dialect, base *data.Standard) (data.
 }
 
 // TestEngineSharesTheBaseline proves an Engine runs over the statements
-// New compiled: the store's inventory is the package's 18 once and then
+// New compiled: the store's inventory is the package's 20 once and then
 // the engine's own, Verify prepares every baseline statement exactly as
 // often as a store without an engine does, and the engine's statement
 // beside them, so no baseline statement is compiled or verified twice and
@@ -296,8 +296,8 @@ func TestEngineSharesTheBaseline(t *testing.T) {
 	for _, st := range s.Statements() {
 		names = append(names, st.Name())
 	}
-	if len(names) != 19 || names[18] != "probe_engine" || slices.Contains(names[:18], "probe_engine") {
-		t.Errorf("Statements() = %v, want the package's 18 and then probe_engine", names)
+	if len(names) != 21 || names[20] != "probe_engine" || slices.Contains(names[:20], "probe_engine") {
+		t.Errorf("Statements() = %v, want the package's 20 and then probe_engine", names)
 	}
 	if distinct := slices.Compact(slices.Sorted(slices.Values(names))); len(distinct) != len(names) {
 		t.Errorf("Statements() = %v lists a statement twice", names)
@@ -430,8 +430,8 @@ func TestConsumerEngineSwapsOneMethod(t *testing.T) {
 	if n := len(rec.SQL(sqltest.OpQuery)); n != 2 {
 		t.Errorf("the walk ran %d queries, want the baseline's 2", n)
 	}
-	if n := len(s.Statements()); n != 18 {
-		t.Errorf("Statements() lists %d, want the persistence package's 18", n)
+	if n := len(s.Statements()); n != 20 {
+		t.Errorf("Statements() lists %d, want the persistence package's 20", n)
 	}
 
 	failing := func(_ *query.Catalog, _ sqlate.Dialect, base *data.Standard) (data.Variant, error) {

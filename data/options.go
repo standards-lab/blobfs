@@ -43,21 +43,32 @@ func WithID(id string) CreateOption {
 	}
 }
 
+// VersionOption configures a call that acts on a row the caller read, beyond
+// its required arguments: Files.Hold, Files.Delete, and Directories.Delete.
+type VersionOption func(*holdOptions)
+
 // HoldOption configures one call of Files.Hold beyond its required
 // arguments.
-type HoldOption func(*holdOptions)
+type HoldOption = VersionOption
 
-// holdOptions collects what the hold options set.
+// DeleteOption configures one call of Files.Delete or Directories.Delete
+// beyond its required arguments.
+type DeleteOption = VersionOption
+
+// holdOptions collects what the version options set.
 type holdOptions struct {
 	version    int64
 	hasVersion bool
 }
 
-// AtVersion makes Files.Hold match the row only at version, the value the
+// AtVersion makes the call act on the row only at version, the value the
 // caller read from a listing or an earlier read, so a caller that acts on a
-// row it has not read inside its transaction learns that the row moved on.
-// A row at another version is query.ErrVersionMismatch.
-func AtVersion(version int64) HoldOption {
+// row it has not read inside its transaction learns that the row moved on:
+// a Files.Hold or a Directories.Delete matches nothing, and a Files.Delete
+// leaves the row as it is, unless the row is still at version. A row at
+// another version is query.ErrVersionMismatch. A file that is already
+// deleting is Files.Delete's retry, which converges whatever the version.
+func AtVersion(version int64) VersionOption {
 	return func(o *holdOptions) {
 		o.version = version
 		o.hasVersion = true

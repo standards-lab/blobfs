@@ -2,6 +2,7 @@ package datatest
 
 import (
 	"errors"
+	"github.com/standards-lab/sqlate/query"
 	"sync"
 	"testing"
 
@@ -285,6 +286,18 @@ func (s *suite) findDirectoryByName(t *testing.T) {
 // missing directory ErrNotFound; and an empty directory removed, after
 // which its name is free again.
 func (s *suite) deleteDirectory(t *testing.T) {
+	guarded := s.mkdir(t, "delete-guarded-"+t.Name())
+	if err := s.store.Directories.Delete(s.ctx, s.db, guarded.ID, data.AtVersion(guarded.Version+1)); !errors.Is(err, query.ErrVersionMismatch) {
+		t.Errorf("Delete at a stale version = %v, want ErrVersionMismatch", err)
+	}
+	s.directory(t, guarded.ID)
+	if err := s.store.Directories.Delete(s.ctx, s.db, guarded.ID, data.AtVersion(guarded.Version)); err != nil {
+		t.Errorf("Delete at the current version = %v", err)
+	}
+	if err := s.store.Directories.Delete(s.ctx, s.db, guarded.ID, data.AtVersion(guarded.Version)); !errors.Is(err, blobfs.ErrNotFound) {
+		t.Errorf("a guarded Delete of a removed directory = %v, want ErrNotFound", err)
+	}
+
 	if err := s.store.Directories.Delete(s.ctx, s.db, blobfs.RootID); !errors.Is(err, blobfs.ErrRootDirectory) {
 		t.Errorf("Delete(root) = %v, want ErrRootDirectory", err)
 	}

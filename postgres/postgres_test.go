@@ -113,7 +113,7 @@ func TestEngine(t *testing.T) {
 // RETURNING over the read's columns, under the engine's dialect and none
 // under the other, which runs the fallback.
 func TestStoreForms(t *testing.T) {
-	returning := []string{"complete_file", "create_directory", "create_file", "delete_file", "move_directory", "move_file"}
+	returning := []string{"complete_file", "create_directory", "create_file", "delete_file", "delete_file_at_version", "move_directory", "move_file"}
 	for _, c := range []struct {
 		name    string
 		dialect sqlate.Dialect
