@@ -97,20 +97,16 @@ type Engine func(catalog *query.Catalog, dialect sqlate.Dialect, base *Standard)
 // it to the Engine, if any, so a variant that overrides some of its methods
 // embeds that one and compiles no baseline of its own.
 type Standard struct {
-	directoryByID   query.Rows[blobfs.Directory]
-	directoryByName query.Rows[blobfs.Directory]
-	holdFile        query.Statement
-	holdFileAt      query.Statement
+	dirs     directoryReads
+	holdFile query.Statement
 }
 
-// newStandard binds the baseline over an already compiled set.
-func newStandard(stmts *query.Statements) *Standard {
-	directory := query.Scanner[blobfs.Directory]()
+// newStandard binds the baseline over an already compiled set and the
+// shared directory reads.
+func newStandard(stmts *query.Statements, dirs directoryReads) *Standard {
 	return &Standard{
-		directoryByID:   stmts.Statement("directory_by_id").Scan(directory),
-		directoryByName: stmts.Statement("directory_by_name").Scan(directory),
-		holdFile:        stmts.Statement("hold_file"),
-		holdFileAt:      stmts.Statement("hold_file_at_version"),
+		dirs:     dirs,
+		holdFile: stmts.Statement("hold_file"),
 	}
 }
 
@@ -133,12 +129,12 @@ func (*Standard) Serializes() bool {
 // the segments run out, so a resolved path of n segments is n+1
 // statements. See Variant.
 func (v *Standard) ResolvePath(ctx context.Context, sess sqlate.Session, startID string, segments []string) (blobfs.Directory, int, error) {
-	dir, err := v.directoryByID.One(ctx, sess, query.Args{"id": startID})
+	dir, err := v.dirs.byID.One(ctx, sess, query.Args{"id": startID})
 	if err != nil {
 		return blobfs.Directory{}, 0, notFound(err)
 	}
 	for depth, name := range segments {
-		child, err := v.directoryByName.One(ctx, sess, query.Args{"parent_id": dir.ID, "name": name})
+		child, err := v.dirs.byName.One(ctx, sess, query.Args{"parent_id": dir.ID, "name": name})
 		if errors.Is(err, sql.ErrNoRows) {
 			return dir, depth, nil
 		}
@@ -150,19 +146,12 @@ func (v *Standard) ResolvePath(ctx context.Context, sess sqlate.Session, startID
 	return dir, len(segments), nil
 }
 
-// HoldFile runs the baseline's hold: hold_file, or hold_file_at_version
-// when version is not nil, an update that assigns updated_at to itself
-// where the row is not deleting (and sits at the version). The update takes
-// the row's lock and changes no value, and a row affected is a row held. See
-// Variant.
+// HoldFile runs the baseline's hold, hold_file: an update that assigns
+// updated_at to itself where the row is not deleting and, when version is
+// not nil, sits at the version. The update takes the row's lock and
+// changes no value, and a row affected is a row held. See Variant.
 func (v *Standard) HoldFile(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (bool, error) {
-	args := query.Args{"id": id}
-	hold := v.holdFile
-	if version != nil {
-		args["version"] = *version
-		hold = v.holdFileAt
-	}
-	n, err := hold.Exec(ctx, tx, args)
+	n, err := v.holdFile.Exec(ctx, tx, withVersion(query.Args{"id": id}, version))
 	if err != nil {
 		return false, err
 	}

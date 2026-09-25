@@ -32,6 +32,9 @@ The schema for the delete of a branch.
   rest of the set.
 - `resolve_path` returns the directory's status with its other columns, as
   `blobfs.directory_columns` now lists them.
+- **Breaking:** `lock_file` takes a nullable `version`, which `data.AtVersion` binds and which
+  guards nothing when NULL, and `lock_file_at_version` is folded into it: the variant's
+  inventory no longer lists it.
 
 Requires `github.com/standards-lab/blobfs v0.2.0` and `github.com/standards-lab/sqlate v0.4.0`.
 

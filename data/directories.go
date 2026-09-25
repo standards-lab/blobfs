@@ -18,15 +18,13 @@ import (
 // takes a *sqlate.Tx instead of a session.
 type Directories struct {
 	variant   Variant
-	byID      query.Rows[blobfs.Directory]
-	byName    query.Rows[blobfs.Directory]
-	list      query.Projection[blobfs.Directory]
+	dirs      directoryReads
+	list      listing[blobfs.Directory]
 	ancestors query.Rows[ancestor]
 	isWithin  query.Rows[int64]
 	create    query.Returning[blobfs.Directory]
 	move      query.Returning[blobfs.Directory]
 	remove    query.Statement
-	removeAt  query.Statement
 	markDirs  query.Statement
 	markFiles query.Statement
 	deleting  query.Rows[blobfs.Directory]
@@ -41,20 +39,25 @@ type ancestor struct {
 	Name     string  `json:"name"`
 }
 
-// newDirectories binds the directory statements of a compiled set.
-func newDirectories(stmts *query.Statements, variant Variant) *Directories {
+// newDirectories binds the directory statements of a compiled set over the
+// shared directory reads.
+func newDirectories(stmts *query.Statements, dirs directoryReads, variant Variant) *Directories {
 	directory := query.Scanner[blobfs.Directory]()
 	return &Directories{
-		variant:   variant,
-		byID:      stmts.Statement("directory_by_id").Scan(directory),
-		byName:    stmts.Statement("directory_by_name").Scan(directory),
-		list:      stmts.Statement("directory_children").Project(directory),
+		variant: variant,
+		dirs:    dirs,
+		list: listing[blobfs.Directory]{
+			projection: stmts.Statement("directory_children").Project(directory),
+			anchor:     "parent_id",
+			deleting:   string(blobfs.DirectoryStatusDeleting),
+			what:       "directories under",
+			dirs:       dirs,
+		},
 		ancestors: stmts.Statement("directory_ancestors").Scan(query.Scanner[ancestor]()),
 		isWithin:  stmts.Statement("directory_is_within").Scan(query.Scalar[int64]),
 		create:    stmts.Statement("create_directory").Returning(directory),
 		move:      stmts.Statement("move_directory").Returning(directory),
 		remove:    stmts.Statement("delete_directory"),
-		removeAt:  stmts.Statement("delete_directory_at_version"),
 		markDirs:  stmts.Statement("mark_directory_deleting"),
 		markFiles: stmts.Statement("mark_directory_files_deleting"),
 		deleting:  stmts.Statement("deleting_branches").Scan(directory),
@@ -64,7 +67,7 @@ func newDirectories(stmts *query.Statements, variant Variant) *Directories {
 // Find returns the directory with id, or blobfs.ErrNotFound. The root is
 // Find of blobfs.RootID.
 func (d *Directories) Find(ctx context.Context, sess sqlate.Session, id string) (blobfs.Directory, error) {
-	dir, err := d.byID.One(ctx, sess, query.Args{"id": id})
+	dir, err := d.dirs.byID.One(ctx, sess, query.Args{"id": id})
 	if err != nil {
 		return blobfs.Directory{}, fmt.Errorf("data: find directory %s: %w", id, notFound(err))
 	}
@@ -91,7 +94,7 @@ func (d *Directories) FindByName(ctx context.Context, sess sqlate.Session, paren
 // findByName reads the child of parentID named name, already normalized,
 // returning sql.ErrNoRows unmapped when there is none.
 func (d *Directories) findByName(ctx context.Context, sess sqlate.Session, parentID, name string) (blobfs.Directory, error) {
-	return d.byName.One(ctx, sess, query.Args{"parent_id": parentID, "name": name})
+	return d.dirs.byName.One(ctx, sess, query.Args{"parent_id": parentID, "name": name})
 }
 
 // Create creates a directory named name under the directory with parentID
@@ -161,11 +164,11 @@ func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID,
 		func(ctx context.Context, sess sqlate.Session) (blobfs.Directory, error) {
 			return d.insert(ctx, sess, id, parentID, name)
 		})
-	switch {
-	case err != nil:
+	if err == nil {
+		err = closed(dir)
+	}
+	if err != nil {
 		return blobfs.Directory{}, false, fmt.Errorf("data: ensure directory %q under %s: %w", name, parentID, err)
-	case !dir.Status.Mutable():
-		return blobfs.Directory{}, false, fmt.Errorf("data: ensure directory %q under %s: the directory %s is %s: %w", name, parentID, dir.ID, dir.Status, blobfs.ErrDeleting)
 	}
 	return dir, created, nil
 }
@@ -184,7 +187,7 @@ func (d *Directories) insert(ctx context.Context, sess sqlate.Session, id, paren
 	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		return blobfs.Directory{}, classifyWrite(err)
 	case err != nil || !changed:
-		return blobfs.Directory{}, refusedUnder(ctx, sess, d.byID, parentID)
+		return blobfs.Directory{}, d.dirs.refusedUnder(ctx, sess, parentID)
 	}
 	return dir, nil
 }
@@ -210,29 +213,22 @@ func (d *Directories) Delete(ctx context.Context, sess sqlate.Session, id string
 	if id == blobfs.RootID {
 		return fmt.Errorf("data: delete directory %s: %w", id, blobfs.ErrRootDirectory)
 	}
-	var o versionOptions
-	for _, opt := range opts {
-		opt(&o)
-	}
-	stmt, args := d.remove, query.Args{"id": id}
-	if o.hasVersion {
-		stmt, args = d.removeAt, args.With("version", o.version)
-	}
-	n, err := stmt.Exec(ctx, sess, args)
+	version := atVersion(opts)
+	n, err := d.remove.Exec(ctx, sess, withVersion(query.Args{"id": id}, version))
 	if err != nil {
 		return fmt.Errorf("data: delete directory %s: %w", id, classifyDelete(err))
 	}
 	if n > 0 {
 		return nil
 	}
-	if !o.hasVersion {
+	if version == nil {
 		return fmt.Errorf("data: delete directory %s: %w", id, blobfs.ErrNotFound)
 	}
-	dir, err := d.byID.One(ctx, sess, query.Args{"id": id})
+	dir, err := d.dirs.byID.One(ctx, sess, query.Args{"id": id})
 	if err != nil {
 		return fmt.Errorf("data: delete directory %s: %w", id, notFound(err))
 	}
-	return fmt.Errorf("data: delete directory %s: %w", id, versionMismatch(o.version, dir.Version))
+	return fmt.Errorf("data: delete directory %s: %w", id, versionMismatch(*version, dir.Version))
 }
 
 // Marked counts the rows Directories.MarkDeleting moved to deleting:
@@ -277,21 +273,18 @@ func (d *Directories) MarkDeleting(ctx context.Context, tx *sqlate.Tx, id string
 	if id == blobfs.RootID {
 		return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, blobfs.ErrRootDirectory)
 	}
-	var o versionOptions
-	for _, opt := range opts {
-		opt(&o)
-	}
+	version := atVersion(opts)
 	if err := d.LockTree(ctx, tx); err != nil {
 		return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, err)
 	}
 	args := query.Args{"id": id}
-	if o.hasVersion {
-		dir, err := d.byID.One(ctx, tx, args)
+	if version != nil {
+		dir, err := d.dirs.byID.One(ctx, tx, args)
 		switch {
 		case err != nil:
 			return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, notFound(err))
-		case dir.Status.Mutable() && dir.Version != o.version:
-			return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, versionMismatch(o.version, dir.Version))
+		case dir.Status.Mutable() && dir.Version != *version:
+			return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, versionMismatch(*version, dir.Version))
 		}
 	}
 	dirs, err := d.markDirs.Exec(ctx, tx, args)
@@ -301,7 +294,7 @@ func (d *Directories) MarkDeleting(ctx context.Context, tx *sqlate.Tx, id string
 	if dirs == 0 {
 		// Nothing was marked: the directory is missing, or its branch was
 		// marked already, which the read tells apart.
-		if _, err := d.byID.One(ctx, tx, args); err != nil {
+		if _, err := d.dirs.byID.One(ctx, tx, args); err != nil {
 			return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, notFound(err))
 		}
 	}

@@ -24,37 +24,41 @@ import (
 // object delete: Delete marks the row deleting and returns its key, and
 // Purge removes the row. Every other mutation refuses a deleting row.
 type Files struct {
-	variant   Variant
-	directory query.Rows[blobfs.Directory]
-	byID      query.Rows[blobfs.File]
-	byName    query.Rows[blobfs.File]
-	list      query.Projection[blobfs.File]
-	create    query.Returning[blobfs.File]
-	complete  query.Returning[blobfs.File]
-	move      query.Returning[blobfs.File]
-	remove    query.Returning[blobfs.File]
-	removeAt  query.Returning[blobfs.File]
-	purge     query.Statement
-	stale     query.Rows[blobfs.File]
+	variant  Variant
+	dirs     directoryReads
+	byID     query.Rows[blobfs.File]
+	byName   query.Rows[blobfs.File]
+	list     listing[blobfs.File]
+	create   query.Returning[blobfs.File]
+	complete query.Returning[blobfs.File]
+	move     query.Returning[blobfs.File]
+	remove   query.Returning[blobfs.File]
+	purge    query.Statement
+	stale    query.Rows[blobfs.File]
 }
 
-// newFiles binds the file statements of a compiled set, forwarding the
-// hold to variant.
-func newFiles(stmts *query.Statements, variant Variant) *Files {
+// newFiles binds the file statements of a compiled set over the shared
+// directory reads, forwarding the hold to variant.
+func newFiles(stmts *query.Statements, dirs directoryReads, variant Variant) *Files {
 	file := query.Scanner[blobfs.File]()
 	return &Files{
-		variant:   variant,
-		directory: stmts.Statement("directory_by_id").Scan(query.Scanner[blobfs.Directory]()),
-		byID:      stmts.Statement("file_by_id").Scan(file),
-		byName:    stmts.Statement("file_by_name").Scan(file),
-		list:      stmts.Statement("directory_files").Project(file),
-		create:    stmts.Statement("create_file").Returning(file),
-		complete:  stmts.Statement("complete_file").Returning(file),
-		move:      stmts.Statement("move_file").Returning(file),
-		remove:    stmts.Statement("delete_file").Returning(file),
-		removeAt:  stmts.Statement("delete_file_at_version").Returning(file),
-		purge:     stmts.Statement("purge_file"),
-		stale:     stmts.Statement("stale_files_before").Scan(file),
+		variant: variant,
+		dirs:    dirs,
+		byID:    stmts.Statement("file_by_id").Scan(file),
+		byName:  stmts.Statement("file_by_name").Scan(file),
+		list: listing[blobfs.File]{
+			projection: stmts.Statement("directory_files").Project(file),
+			anchor:     "directory_id",
+			deleting:   string(blobfs.StatusDeleting),
+			what:       "files in",
+			dirs:       dirs,
+		},
+		create:   stmts.Statement("create_file").Returning(file),
+		complete: stmts.Statement("complete_file").Returning(file),
+		move:     stmts.Statement("move_file").Returning(file),
+		remove:   stmts.Statement("delete_file").Returning(file),
+		purge:    stmts.Statement("purge_file"),
+		stale:    stmts.Statement("stale_files_before").Scan(file),
 	}
 }
 
@@ -231,7 +235,7 @@ func (f *Files) insert(ctx context.Context, sess sqlate.Session, id, directoryID
 	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		return blobfs.File{}, classifyWrite(err)
 	case err != nil || !changed:
-		return blobfs.File{}, refusedUnder(ctx, sess, f.directory, directoryID)
+		return blobfs.File{}, f.dirs.refusedUnder(ctx, sess, directoryID)
 	}
 	return file, nil
 }
@@ -269,7 +273,7 @@ func (f *Files) Complete(ctx context.Context, sess sqlate.Session, id string, ve
 		return blobfs.File{}, fmt.Errorf("data: complete file %s: %w", id, err)
 	case changed:
 		return file, nil
-	case file.Status == blobfs.StatusDeleting || file.Version == version:
+	case !file.Status.Mutable() || file.Version == version:
 		// A deleting row outranks a stale version, as in Hold; a row at the
 		// expected version was refused by the status predicate: the row is
 		// no longer pending.
@@ -321,7 +325,7 @@ func (f *Files) Move(ctx context.Context, sess sqlate.Session, id, directoryID, 
 		return blobfs.File{}, fmt.Errorf("data: move file %s into %s as %q: %w", id, directoryID, name, classifyWrite(err))
 	case changed:
 		return file, nil
-	case file.Status == blobfs.StatusDeleting:
+	case !file.Status.Mutable():
 		// The status predicate refused the row, or would have at any
 		// version: a deleting row outranks a stale version.
 		return blobfs.File{}, fmt.Errorf("data: move file %s: the row is %s: %w", id, file.Status, blobfs.ErrDeleting)
@@ -329,27 +333,8 @@ func (f *Files) Move(ctx context.Context, sess sqlate.Session, id, directoryID, 
 	// The directory predicates refuse a move out of or into a deleting
 	// directory and a move into a directory that does not exist; the two
 	// directories tell those apart from a version conflict.
-	ends, err := readMoveEnds(ctx, sess, f.directory, &file.DirectoryID, directoryID)
-	switch {
-	case err != nil:
-		return blobfs.File{}, fmt.Errorf("data: move file %s: %w", id, err)
-	case ends.deleting != nil:
-		return blobfs.File{}, fmt.Errorf("data: move file %s into %s: %w", id, directoryID, ends.deleting)
-	case file.Version != version:
-		return blobfs.File{}, fmt.Errorf("data: move file %s: %w", id, versionMismatch(version, file.Version))
-	case ends.missing:
-		return blobfs.File{}, fmt.Errorf("data: move file %s into %s: the directory: %w", id, directoryID, blobfs.ErrNotFound)
+	if err := f.dirs.refusedMove(ctx, sess, &file.DirectoryID, directoryID, version, file.Version); err != nil {
+		return blobfs.File{}, fmt.Errorf("data: move file %s into %s: %w", id, directoryID, err)
 	}
 	return blobfs.File{}, fmt.Errorf("data: move file %s: the update matched no row, yet the row is %s at version %d", id, file.Status, file.Version)
-}
-
-// versionMismatch is the optimistic-concurrency conflict of a guarded
-// command whose row sits at current when the caller expected expected:
-// query.ErrVersionMismatch with both versions in the text, as the query
-// library's own guards spell it. The file commands classify it themselves,
-// from the row their read returned, because a deleting row outranks the
-// version: the library's guard reports a mismatch before it looks at the
-// row.
-func versionMismatch(expected, current int64) error {
-	return fmt.Errorf("%w: expected %d, current %d", query.ErrVersionMismatch, expected, current)
 }

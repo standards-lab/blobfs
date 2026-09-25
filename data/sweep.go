@@ -187,7 +187,7 @@ func (w *sweep) directory(ctx context.Context, dir blobfs.Directory) (bool, erro
 			return false, err
 		}
 		for _, f := range page.Items {
-			if f.Status != blobfs.StatusDeleting {
+			if f.Status.Mutable() {
 				w.result.More = true
 				return false, nil
 			}
@@ -212,7 +212,7 @@ func (w *sweep) directory(ctx context.Context, dir blobfs.Directory) (bool, erro
 			break
 		}
 		for _, child := range page.Items {
-			if child.Status != blobfs.DirectoryStatusDeleting {
+			if child.Status.Mutable() {
 				w.result.More = true
 				return false, nil
 			}

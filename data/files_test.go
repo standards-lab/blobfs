@@ -554,7 +554,7 @@ func TestMoveFile(t *testing.T) {
 				// version: the mark advanced the file's version too.
 				from := fileIn("F", "S", "a", blobfs.StatusAvailable, version)
 				err = move(append(unchangedFile(f, from), directoryIn("S", blobfs.RootID, "s", blobfs.DirectoryStatusDeleting, 2))...)
-				if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "its directory S is deleting") {
+				if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "the directory S is deleting") {
 					t.Errorf("Move out of a deleting directory at version %d = %v, want ErrDeleting", version, err)
 				}
 				err = move(append(unchangedFile(f, from), directoryResponse("S", blobfs.RootID, "s", 1), directoryIn("P", blobfs.RootID, "p", blobfs.DirectoryStatusDeleting, 2))...)

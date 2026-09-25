@@ -57,7 +57,8 @@ func New(catalog *query.Catalog, dialect sqlate.Dialect, opts ...Option) (*Store
 	if err != nil {
 		return nil, fmt.Errorf("data: %w", err)
 	}
-	base := newStandard(stmts)
+	dirs := newDirectoryReads(stmts)
+	base := newStandard(stmts, dirs)
 	var variant Variant = base
 	if o.engine != nil {
 		v, err := o.engine(catalog, dialect, base)
@@ -70,8 +71,8 @@ func New(catalog *query.Catalog, dialect sqlate.Dialect, opts ...Option) (*Store
 		variant = v
 	}
 	return &Store{
-		Directories: newDirectories(stmts, variant),
-		Files:       newFiles(stmts, variant),
+		Directories: newDirectories(stmts, dirs, variant),
+		Files:       newFiles(stmts, dirs, variant),
 		stmts:       stmts,
 		variant:     variant,
 	}, nil
@@ -97,7 +98,7 @@ func (s *Store) Statements() []query.Statement {
 // verify itself, as an Engine's variant that compiled statements of its own
 // does, is verified in the same pass (see Engine).
 func (s *Store) Verify(ctx context.Context, sess sqlate.Session) error {
-	vs := []query.Verifier{s.stmts, s.Directories.list, s.Files.list}
+	vs := []query.Verifier{s.stmts, s.Directories.list.projection, s.Files.list.projection}
 	if v, ok := s.variant.(query.Verifier); ok {
 		vs = append(vs, v)
 	}

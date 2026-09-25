@@ -4,6 +4,7 @@
 --| [native]: row waits on, held until the transaction ends; SELECT ... FOR UPDATE where no weaker
 --| [native]: row lock exists (MySQL, Oracle), SQL Server's UPDLOCK hint, or the baseline's
 --| [native]: self-assigning update, the portable form, where no locking read exists (SQLite).
+--| [native]: The nullable version predicate is standard SQL.
 --| transaction: required
 -- The hold of a file row for the rest of the caller's transaction, the
 -- PostgreSQL variant's form of the baseline's hold_file: the library's half
@@ -16,10 +17,13 @@
 -- hold. A row that is deleting yields no row and takes no lock; under read
 -- committed a hold that waited on a delete re-reads the row as the delete
 -- left it, so it refuses a row whose delete committed meanwhile. The
--- variant reports a row returned as held, and the store reads the row to
--- classify a refusal. A transaction is required because a lock autocommit
--- releases at once holds nothing.
+-- version is nullable, as in hold_file: a version the caller read makes a
+-- row at another version yield no row either. The variant reports a row
+-- returned as held, and the store reads the row to classify a refusal. A
+-- transaction is required because a lock autocommit releases at once holds
+-- nothing.
 SELECT f.id
 FROM blobfs_file f
 WHERE f.id = {{id:uuid}} AND f.status <> 'deleting'
+  AND ({{version:bigint}} IS NULL OR f.version = {{version:bigint}})
 FOR NO KEY UPDATE

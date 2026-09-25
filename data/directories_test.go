@@ -326,10 +326,10 @@ func TestEnsureRefusals(t *testing.T) {
 }
 
 // TestDelete proves the directory removal against the script: the root is
-// refused before any SQL; one exec of delete_directory bound to the id
-// removes a directory; no row affected is ErrNotFound; blobfs's two
-// foreign keys classify as ErrNotEmpty and a consumer's as ErrReferenced,
-// each with the sqlate.ConstraintError reachable.
+// refused before any SQL; one exec of delete_directory bound to the id and
+// a NULL version removes a directory; no row affected is ErrNotFound;
+// blobfs's two foreign keys classify as ErrNotEmpty and a consumer's as
+// ErrReferenced, each with the sqlate.ConstraintError reachable.
 func TestDelete(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
@@ -347,8 +347,8 @@ func TestDelete(t *testing.T) {
 	if got := rec.SQL(sqltest.OpExec); len(got) != 1 || !strings.HasPrefix(got[0], "DELETE FROM blobfs_directory") || !strings.Contains(got[0], "parent_id IS NOT NULL") {
 		t.Errorf("execs = %q, want the removal that keeps the root", got)
 	}
-	if calls := rec.Calls(); !slices.Equal(calls[0].Args, []any{"D"}) {
-		t.Errorf("the removal bound %v, want the id", calls[0].Args)
+	if calls := rec.Calls(); !slices.Equal(calls[0].Args, []any{"D", nil}) {
+		t.Errorf("the removal bound %v, want the id and no version", calls[0].Args)
 	}
 	if err := s.Directories.Delete(ctx, db, "D"); !errors.Is(err, blobfs.ErrNotFound) {
 		t.Errorf("Delete of a missing directory = %v, want ErrNotFound", err)

@@ -82,57 +82,83 @@ func insertOrFind[T any](ctx context.Context, sess sqlate.Session, find, create 
 	return row, false, nil
 }
 
+// directoryReads are the reads of one directory the handles share, bound
+// once in New: by id, the read every refusal a directory decides is
+// classified from, and by parent and name. Directories, Files, and the
+// baseline variant hold the same pair.
+type directoryReads struct {
+	byID   query.Rows[blobfs.Directory]
+	byName query.Rows[blobfs.Directory]
+}
+
+// newDirectoryReads binds the directory reads of a compiled set.
+func newDirectoryReads(stmts *query.Statements) directoryReads {
+	directory := query.Scanner[blobfs.Directory]()
+	return directoryReads{
+		byID:   stmts.Statement("directory_by_id").Scan(directory),
+		byName: stmts.Statement("directory_by_name").Scan(directory),
+	}
+}
+
+// active reads the directory with id in sess and reports whether it takes
+// a change beneath it: nil for an active directory, blobfs.ErrNotFound for
+// one that does not exist, and blobfs.ErrDeleting for one that is
+// deleting, each naming the directory. Any other error of the read is
+// returned naming the directory too.
+func (r directoryReads) active(ctx context.Context, sess sqlate.Session, id string) error {
+	dir, err := r.byID.One(ctx, sess, query.Args{"id": id})
+	if err != nil {
+		return fmt.Errorf("the directory %s: %w", id, notFound(err))
+	}
+	return closed(dir)
+}
+
+// closed is the refusal of a change beneath dir or of dir itself: nil
+// while dir is active, and blobfs.ErrDeleting naming it once its branch is
+// marked for removal.
+func closed(dir blobfs.Directory) error {
+	if dir.Status.Mutable() {
+		return nil
+	}
+	return fmt.Errorf("the directory %s is %s: %w", dir.ID, dir.Status, blobfs.ErrDeleting)
+}
+
 // refusedUnder classifies an insert that selected no row from its parent,
 // a directory the insert names by parentID and takes only while it is
 // active: a parent that does not exist is blobfs.ErrNotFound, and one that
-// is deleting blobfs.ErrDeleting. The parent is read through byID, in sess,
-// once the insert has run.
-func refusedUnder(ctx context.Context, sess sqlate.Session, byID query.Rows[blobfs.Directory], parentID string) error {
-	parent, err := byID.One(ctx, sess, query.Args{"id": parentID})
-	switch {
-	case err != nil:
-		return fmt.Errorf("the directory %s: %w", parentID, notFound(err))
-	case !parent.Status.Mutable():
-		return fmt.Errorf("the directory %s is %s: %w", parentID, parent.Status, blobfs.ErrDeleting)
+// is deleting blobfs.ErrDeleting. The parent is read in sess, once the
+// insert has run.
+func (r directoryReads) refusedUnder(ctx context.Context, sess sqlate.Session, parentID string) error {
+	if err := r.active(ctx, sess, parentID); err != nil {
+		return err
 	}
-	return fmt.Errorf("the insert selected no row, yet the directory %s is %s", parentID, parent.Status)
+	return fmt.Errorf("the insert selected no row, yet the directory %s is %s", parentID, blobfs.DirectoryStatusActive)
 }
 
-// moveEnds is what a refused move learns from the two directories it
-// joins: the row's current parent and its new one.
-type moveEnds struct {
-	// deleting is the refusal of a deleting directory among the two, nil
-	// when both are active or missing.
-	deleting error
-	// missing reports that the new parent does not exist.
-	missing bool
-}
-
-// readMoveEnds reads from, a moved row's current parent, and to, its new
-// one, through byID in sess, for a move whose update changed no row. The
+// refusedMove classifies a move whose guarded update changed no row
+// although the row exists and is not deleting itself, from the two
+// directories the move joins: from, the row's current parent, nil for the
+// root, which has no parent, and to, its new one, each read in sess. The
 // update's status predicates refuse a move out of or into a deleting
 // directory, and a move under a new parent that does not exist, before the
-// foreign key could. from is nil for the root, which has no parent.
-func readMoveEnds(ctx context.Context, sess sqlate.Session, byID query.Rows[blobfs.Directory], from *string, to string) (moveEnds, error) {
-	var ends moveEnds
+// foreign key could; its guard refuses a row at current when the caller
+// expected expected. A deleting directory outranks a stale version, since
+// a mark advances the version, and a stale version outranks a missing new
+// parent: the refusal is blobfs.ErrDeleting, then query.ErrVersionMismatch,
+// then blobfs.ErrNotFound. A current parent that does not exist is passed
+// over. nil means none of them explains the refusal.
+func (r directoryReads) refusedMove(ctx context.Context, sess sqlate.Session, from *string, to string, expected, current int64) error {
 	if from != nil {
-		dir, err := byID.One(ctx, sess, query.Args{"id": *from})
-		switch {
-		case err == nil && !dir.Status.Mutable():
-			ends.deleting = fmt.Errorf("its directory %s is %s: %w", *from, dir.Status, blobfs.ErrDeleting)
-			return ends, nil
-		case err != nil && !errors.Is(err, sql.ErrNoRows):
-			return ends, err
+		if err := r.active(ctx, sess, *from); err != nil && !errors.Is(err, blobfs.ErrNotFound) {
+			return err
 		}
 	}
-	dir, err := byID.One(ctx, sess, query.Args{"id": to})
+	target := r.active(ctx, sess, to)
 	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		ends.missing = true
-	case err != nil:
-		return ends, err
-	case !dir.Status.Mutable():
-		ends.deleting = fmt.Errorf("the directory %s is %s: %w", to, dir.Status, blobfs.ErrDeleting)
+	case target != nil && !errors.Is(target, blobfs.ErrNotFound):
+		return target
+	case current != expected:
+		return versionMismatch(expected, current)
 	}
-	return ends, nil
+	return target
 }

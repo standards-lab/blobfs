@@ -57,9 +57,9 @@ func newStore(t *testing.T, dialect sqlate.Dialect) (*data.Store, *postgres.Vari
 }
 
 // TestEngine proves the engine compiles against the consumer's catalog
-// under the engine's dialect: four statements, all native tier, each with
-// a port note, the tree lock and the two file locks requiring a
-// transaction and the resolution not; the variant reporting that it
+// under the engine's dialect: three statements, all native tier, each with
+// a port note, the tree lock and the file lock requiring a transaction and
+// the resolution not; the variant reporting that it
 // serializes; the store's Verify preparing each beside its own; and the
 // engine refusing a catalog without the blobfs namespace.
 func TestEngine(t *testing.T) {
@@ -77,7 +77,7 @@ func TestEngine(t *testing.T) {
 			t.Errorf("%s: TransactionRequired = %v; every lock requires one and resolve_path none", st.Name(), st.TransactionRequired())
 		}
 	}
-	if want := []string{"lock_file", "lock_file_at_version", "lock_tree", "resolve_path"}; !slices.Equal(names, want) {
+	if want := []string{"lock_file", "lock_tree", "resolve_path"}; !slices.Equal(names, want) {
 		t.Errorf("Statements = %v, want %v", names, want)
 	}
 	if !v.Serializes() {
@@ -113,7 +113,7 @@ func TestEngine(t *testing.T) {
 // RETURNING over the read's columns, under the engine's dialect and none
 // under the other, which runs the fallback.
 func TestStoreForms(t *testing.T) {
-	returning := []string{"complete_file", "create_directory", "create_file", "delete_file", "delete_file_at_version", "move_directory", "move_file"}
+	returning := []string{"complete_file", "create_directory", "create_file", "delete_file", "move_directory", "move_file"}
 	for _, c := range []struct {
 		name    string
 		dialect sqlate.Dialect
@@ -126,11 +126,11 @@ func TestStoreForms(t *testing.T) {
 			s, _ := newStore(t, c.dialect)
 			stmts := s.Statements()
 			var tail []string
-			for _, st := range stmts[max(len(stmts)-4, 0):] {
+			for _, st := range stmts[max(len(stmts)-3, 0):] {
 				tail = append(tail, st.Name())
 			}
-			if want := []string{"lock_file", "lock_file_at_version", "lock_tree", "resolve_path"}; !slices.Equal(tail, want) {
-				t.Fatalf("the store's inventory ends with %v, want the variant's four statements %v", tail, want)
+			if want := []string{"lock_file", "lock_tree", "resolve_path"}; !slices.Equal(tail, want) {
+				t.Fatalf("the store's inventory ends with %v, want the variant's three statements %v", tail, want)
 			}
 			var got []string
 			for _, st := range stmts {
@@ -191,9 +191,9 @@ func TestLockTreeSQL(t *testing.T) {
 }
 
 // TestHoldFileSQL proves Hold through the variant is the locking read and
-// no write: SELECT ... FOR NO KEY UPDATE bound to the id, with the version
-// predicate and its binding only under AtVersion, a row returned ending the
-// call with no further statement; and no row returned followed by the
+// no write: SELECT ... FOR NO KEY UPDATE bound to the id and the nullable
+// version, NULL without AtVersion and the version under it, a row returned
+// ending the call with no further statement; and no row returned followed by the
 // store's read of the row, which classifies the refusal as over the
 // baseline: a deleting row ErrDeleting whatever its version, a row at
 // another version ErrVersionMismatch, and a missing row ErrNotFound.
@@ -223,11 +223,11 @@ func TestHoldFileSQL(t *testing.T) {
 		t.Errorf("ops = %v, want the one locking read and no write", ops)
 	}
 	c := rec.Calls()[1]
-	if c.SQL != "SELECT f.id\nFROM blobfs_file f\nWHERE f.id = CAST($1 AS uuid) AND f.status <> 'deleting'\nFOR NO KEY UPDATE" {
+	if c.SQL != "SELECT f.id\nFROM blobfs_file f\nWHERE f.id = CAST($1 AS uuid) AND f.status <> 'deleting'\n  AND (CAST($2 AS bigint) IS NULL OR f.version = CAST($2 AS bigint))\nFOR NO KEY UPDATE" {
 		t.Errorf("the hold is not the locking read:\n%s", c.SQL)
 	}
-	if !slices.Equal(c.Args, []any{"F"}) {
-		t.Errorf("the hold bound %v, want the id alone", c.Args)
+	if !slices.Equal(c.Args, []any{"F", nil}) {
+		t.Errorf("the hold bound %v, want the id and no version", c.Args)
 	}
 
 	rec, err = hold(t, []sqltest.Response{locked}, data.AtVersion(4))
@@ -235,7 +235,7 @@ func TestHoldFileSQL(t *testing.T) {
 		t.Fatalf("Hold at a version: %v", err)
 	}
 	c = rec.Calls()[1]
-	if !strings.HasSuffix(c.SQL, "AND f.version = CAST($2 AS bigint)\nFOR NO KEY UPDATE") || !slices.Equal(c.Args, []any{"F", int64(4)}) {
+	if !strings.HasSuffix(c.SQL, "\n  AND (CAST($2 AS bigint) IS NULL OR f.version = CAST($2 AS bigint))\nFOR NO KEY UPDATE") || !slices.Equal(c.Args, []any{"F", int64(4)}) {
 		t.Errorf("the hold at a version is %q bound to %v, want the version predicate and binding", c.SQL, c.Args)
 	}
 

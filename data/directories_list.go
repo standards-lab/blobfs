@@ -2,7 +2,6 @@ package data
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"slices"
@@ -41,15 +40,7 @@ import (
 // exist lists no rows and a total of zero. See Continue for when a page
 // carries a cursor.
 func (d *Directories) List(ctx context.Context, sess sqlate.Session, parentID string, req query.Directives, page query.Page, opts ...ListOption) (query.Collection[blobfs.Directory], error) {
-	req, include := listing(req, string(blobfs.DirectoryStatusDeleting), opts)
-	c, err := d.list.List(ctx, sess, req, page, query.With("parent_id", parentID))
-	if err == nil && !include {
-		err = listable(ctx, sess, d.byID, parentID)
-	}
-	if err != nil {
-		return query.Collection[blobfs.Directory]{}, fmt.Errorf("data: list directories under %s: %w", parentID, err)
-	}
-	return c, nil
+	return d.list.list(ctx, sess, parentID, req, page, opts)
 }
 
 // Continue reads the size directories under parentID past after, the Next
@@ -70,23 +61,57 @@ func (d *Directories) List(ctx context.Context, sess sqlate.Session, parentID st
 // directories are hidden and a deleting parent is refused, as in List, so a
 // directory marked after the cursor was issued is not on the pages past it.
 func (d *Directories) Continue(ctx context.Context, sess sqlate.Session, parentID string, req query.Directives, after query.Cursor, size int, opts ...ListOption) (query.Collection[blobfs.Directory], error) {
-	req, include := listing(req, string(blobfs.DirectoryStatusDeleting), opts)
-	c, err := d.list.Continue(ctx, sess, req, after, size, query.With("parent_id", parentID))
+	return d.list.cont(ctx, sess, parentID, req, after, size, opts)
+}
+
+// listing is one of the two listings, the directories under a parent and
+// the files in a directory: a projection anchored on one directory by the
+// parameter anchor, parent_id or directory_id, whose rows spell the
+// deleting status as deleting. what names the rows and their relation to
+// the directory in an error, "directories under" or "files in". Both
+// listings hide deleting rows and refuse a deleting directory the same
+// way, through the directory reads.
+type listing[T any] struct {
+	projection query.Projection[T]
+	anchor     string
+	deleting   string
+	what       string
+	dirs       directoryReads
+}
+
+// list reads one page by number of the listing anchored on id. See
+// Directories.List and Files.List.
+func (l listing[T]) list(ctx context.Context, sess sqlate.Session, id string, req query.Directives, page query.Page, opts []ListOption) (query.Collection[T], error) {
+	req, include := l.directives(req, opts)
+	c, err := l.projection.List(ctx, sess, req, page, query.With(l.anchor, id))
 	if err == nil && !include {
-		err = listable(ctx, sess, d.byID, parentID)
+		err = l.dirs.listable(ctx, sess, id)
 	}
 	if err != nil {
-		return query.Collection[blobfs.Directory]{}, fmt.Errorf("data: continue directories under %s: %w", parentID, err)
+		return query.Collection[T]{}, fmt.Errorf("data: list %s %s: %w", l.what, id, err)
 	}
 	return c, nil
 }
 
-// listing resolves a listing's options over req: the directives the
+// cont reads the size rows past after of the listing anchored on id. See
+// Directories.Continue and Files.Continue.
+func (l listing[T]) cont(ctx context.Context, sess sqlate.Session, id string, req query.Directives, after query.Cursor, size int, opts []ListOption) (query.Collection[T], error) {
+	req, include := l.directives(req, opts)
+	c, err := l.projection.Continue(ctx, sess, req, after, size, query.With(l.anchor, id))
+	if err == nil && !include {
+		err = l.dirs.listable(ctx, sess, id)
+	}
+	if err != nil {
+		return query.Collection[T]{}, fmt.Errorf("data: continue %s %s: %w", l.what, id, err)
+	}
+	return c, nil
+}
+
+// directives resolves a listing's options over req: the directives the
 // listing runs, and whether IncludeDeleting was given. Without it the
-// directives carry one filter after the caller's, status not deleting,
-// where deleting is the listing's own spelling of the status; the caller's
-// slice is never appended to in place.
-func listing(req query.Directives, deleting string, opts []ListOption) (query.Directives, bool) {
+// directives carry one filter after the caller's, status not deleting; the
+// caller's slice is never appended to in place.
+func (l listing[T]) directives(req query.Directives, opts []ListOption) (query.Directives, bool) {
 	var o listOptions
 	for _, opt := range opts {
 		opt(&o)
@@ -94,24 +119,18 @@ func listing(req query.Directives, deleting string, opts []ListOption) (query.Di
 	if o.includeDeleting {
 		return req, true
 	}
-	req.Filters = append(slices.Clip(req.Filters), query.Filter{Field: "status", Op: query.OpNe, Value: deleting})
+	req.Filters = append(slices.Clip(req.Filters), query.Filter{Field: "status", Op: query.OpNe, Value: l.deleting})
 	return req, false
 }
 
 // listable reads the directory a listing without IncludeDeleting is
-// anchored on, through byID in sess, once the page is read: a directory
-// that is deleting is blobfs.ErrDeleting, since its branch is being
-// removed and a listing hides what is in it. A directory that does not
-// exist is no error: its listing is empty.
-func listable(ctx context.Context, sess sqlate.Session, byID query.Rows[blobfs.Directory], id string) error {
-	dir, err := byID.One(ctx, sess, query.Args{"id": id})
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return nil
-	case err != nil:
-		return fmt.Errorf("read the directory %s: %w", id, err)
-	case !dir.Status.Mutable():
-		return fmt.Errorf("the directory %s is %s: %w", id, dir.Status, blobfs.ErrDeleting)
+// anchored on, in sess, once the page is read: a directory that is
+// deleting is blobfs.ErrDeleting, since its branch is being removed and a
+// listing hides what is in it. A directory that does not exist is no
+// error: its listing is empty.
+func (r directoryReads) listable(ctx context.Context, sess sqlate.Session, id string) error {
+	if err := r.active(ctx, sess, id); err != nil && !errors.Is(err, blobfs.ErrNotFound) {
+		return err
 	}
 	return nil
 }

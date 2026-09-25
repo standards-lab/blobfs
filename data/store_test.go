@@ -128,27 +128,27 @@ func ops(rec *sqltest.Recorder) string {
 }
 
 // TestNew proves the catalog builds with the two sources, every statement
-// compiles, and the inventory: twenty-four statements, all standard tier;
-// the directory move, the two steps of a branch's mark, the two file
-// deletes, and the two file holds the ones requiring a transaction; and the
-// seven returning commands, the directory ones reading their row back
+// compiles, and the inventory: twenty-one statements, all standard tier;
+// the directory move, the two steps of a branch's mark, the file delete,
+// and the file hold the ones requiring a transaction; and the
+// six returning commands, the directory ones reading their row back
 // through directory_by_id and the file ones through file_by_id. The
 // fallback's dialect renders no single-statement form and the returning
 // dialect renders one per command.
 func TestNew(t *testing.T) {
 	want := []string{
-		"complete_file", "create_directory", "create_file", "delete_directory", "delete_directory_at_version",
-		"delete_file", "delete_file_at_version", "deleting_branches", "directory_ancestors", "directory_by_id", "directory_by_name", "directory_children",
-		"directory_files", "directory_is_within", "file_by_id", "file_by_name", "hold_file", "hold_file_at_version",
+		"complete_file", "create_directory", "create_file", "delete_directory",
+		"delete_file", "deleting_branches", "directory_ancestors", "directory_by_id", "directory_by_name", "directory_children",
+		"directory_files", "directory_is_within", "file_by_id", "file_by_name", "hold_file",
 		"mark_directory_deleting", "mark_directory_files_deleting", "move_directory", "move_file", "purge_file", "stale_files_before",
 	}
 	returning := map[string]string{
 		"create_directory": "directory_by_id", "move_directory": "directory_by_id",
 		"create_file": "file_by_id", "complete_file": "file_by_id",
-		"move_file": "file_by_id", "delete_file": "file_by_id", "delete_file_at_version": "file_by_id",
+		"move_file": "file_by_id", "delete_file": "file_by_id",
 	}
 	txRequired := map[string]bool{
-		"move_directory": true, "mark_directory_deleting": true, "mark_directory_files_deleting": true, "delete_file": true, "delete_file_at_version": true, "hold_file": true, "hold_file_at_version": true,
+		"move_directory": true, "mark_directory_deleting": true, "mark_directory_files_deleting": true, "delete_file": true, "hold_file": true,
 	}
 	for _, f := range forms {
 		t.Run(f.name, func(t *testing.T) {
@@ -228,14 +228,14 @@ func TestVerify(t *testing.T) {
 	for _, c := range []struct {
 		form      form
 		returning int
-	}{{forms[0], 0}, {forms[1], 7}} {
+	}{{forms[0], 0}, {forms[1], 6}} {
 		t.Run(c.form.name, func(t *testing.T) {
 			s, db, rec := openStore(t, c.form)
 			if err := s.Verify(context.Background(), db); err != nil {
 				t.Fatalf("Verify: %v", err)
 			}
 			prepared := rec.SQL(sqltest.OpPrepare)
-			if want := 24 + c.returning + 6; len(prepared) != want {
+			if want := 21 + c.returning + 6; len(prepared) != want {
 				t.Errorf("Verify prepared %d statements, want %d", len(prepared), want)
 			}
 			returning, contracts, cursors, counted := 0, 0, 0, 0
@@ -289,7 +289,7 @@ func probeEngine(c *query.Catalog, d sqlate.Dialect, base *data.Standard) (data.
 }
 
 // TestEngineSharesTheBaseline proves an Engine runs over the statements
-// New compiled: the store's inventory is the package's 24 once and then
+// New compiled: the store's inventory is the package's 21 once and then
 // the engine's own, Verify prepares every baseline statement exactly as
 // often as a store without an engine does, and the engine's statement
 // beside them, so no baseline statement is compiled or verified twice and
@@ -303,8 +303,8 @@ func TestEngineSharesTheBaseline(t *testing.T) {
 	for _, st := range s.Statements() {
 		names = append(names, st.Name())
 	}
-	if len(names) != 25 || names[24] != "probe_engine" || slices.Contains(names[:24], "probe_engine") {
-		t.Errorf("Statements() = %v, want the package's 24 and then probe_engine", names)
+	if len(names) != 22 || names[21] != "probe_engine" || slices.Contains(names[:21], "probe_engine") {
+		t.Errorf("Statements() = %v, want the package's 21 and then probe_engine", names)
 	}
 	if distinct := slices.Compact(slices.Sorted(slices.Values(names))); len(distinct) != len(names) {
 		t.Errorf("Statements() = %v lists a statement twice", names)
@@ -437,8 +437,8 @@ func TestConsumerEngineSwapsOneMethod(t *testing.T) {
 	if n := len(rec.SQL(sqltest.OpQuery)); n != 2 {
 		t.Errorf("the walk ran %d queries, want the baseline's 2", n)
 	}
-	if n := len(s.Statements()); n != 24 {
-		t.Errorf("Statements() lists %d, want the persistence package's 24", n)
+	if n := len(s.Statements()); n != 21 {
+		t.Errorf("Statements() lists %d, want the persistence package's 21", n)
 	}
 
 	failing := func(_ *query.Catalog, _ sqlate.Dialect, base *data.Standard) (data.Variant, error) {

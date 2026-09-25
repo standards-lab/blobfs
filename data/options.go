@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/standards-lab/sqlate"
+	"github.com/standards-lab/sqlate/query"
 
 	"github.com/standards-lab/blobfs"
 )
@@ -76,6 +77,29 @@ func AtVersion(version int64) VersionOption {
 		o.version = version
 		o.hasVersion = true
 	}
+}
+
+// atVersion resolves a call's version options: the version AtVersion
+// gave, or nil when none did.
+func atVersion(opts []VersionOption) *int64 {
+	var o versionOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if !o.hasVersion {
+		return nil
+	}
+	return &o.version
+}
+
+// withVersion binds version into args for a statement whose version
+// predicate is nullable: NULL when version is nil, which guards nothing, and
+// the version otherwise.
+func withVersion(args query.Args, version *int64) query.Args {
+	if version == nil {
+		return args.With("version", nil)
+	}
+	return args.With("version", *version)
 }
 
 // ListOption configures one call of a listing beyond its required

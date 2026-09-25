@@ -35,14 +35,16 @@ v0.2.0` ships.
 - `ListOption` and `IncludeDeleting`, which makes a listing show every status and list a
   deleting directory.
 - The statements `mark_directory_deleting`, `mark_directory_files_deleting`,
-  `deleting_branches`, `stale_files_before`, `delete_directory_at_version`, and
-  `delete_file_at_version`, in the store's inventory and its `Verify`.
+  `deleting_branches`, and `stale_files_before`, in the store's inventory and its `Verify`.
 - `data/datatest`: the groups Branches and Sweeps, which run after the others.
 
 ### Changed
 
 - **Breaking:** `HoldOption` is replaced by `VersionOption`, which `Files.Hold`,
   `Files.Delete`, `Directories.Delete`, and `Directories.MarkDeleting` take.
+- **Breaking:** the statements `delete_directory`, `delete_file`, and `hold_file` take a
+  nullable `version`, which `AtVersion` binds and which guards nothing when NULL, and
+  `hold_file_at_version` is folded into `hold_file`: the store's inventory no longer lists it.
 - **Breaking:** the published pattern `blobfs.directory_columns` includes `d.status`, so a
   consumer's statement that includes it needs the migration that adds the column, and a scan
   into a type of its own needs the field.

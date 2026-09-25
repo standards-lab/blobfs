@@ -359,8 +359,9 @@ func TestPathPlans(t *testing.T) {
 // and the variant's locking reads, and the purge, and the read by id plan an
 // index scan on blobfs_pk_file or blobfs_pk_directory with the id as the
 // index condition, with no sequential scan, each reading at most 32 buffers.
-// The regression is a predicate the primary key cannot serve, which scans
-// the table on every step. A tenth of the fixture's files are pending, as
+// A step whose version predicate is nullable, each delete and each hold, is
+// planned with no version and with one. The regression is a predicate the
+// primary key cannot serve, which scans the table on every step. A tenth of the fixture's files are pending, as
 // writes in flight and abandoned leave them, so the partial index of the
 // stale rows, which a fixture with a single pending row and a single
 // deleting row would make the cheapest path to either, is not the planner's
@@ -400,15 +401,17 @@ func TestProtocolStepPlans(t *testing.T) {
 	}{
 		{"complete_file", "blobfs_pk_file", query.Args{"id": pending, "version": int64(1), "size": int64(3), "content_type": "text/plain", "etag": "etag"}},
 		{"move_file", "blobfs_pk_file", query.Args{"id": available, "version": int64(1), "directory_id": e.tree.Chain[0].ID, "name": "moved.txt"}},
-		{"delete_file", "blobfs_pk_file", query.Args{"id": available}},
-		{"hold_file", "blobfs_pk_file", query.Args{"id": available}},
-		{"hold_file_at_version", "blobfs_pk_file", query.Args{"id": available, "version": int64(1)}},
-		{"lock_file", "blobfs_pk_file", query.Args{"id": available}},
-		{"lock_file_at_version", "blobfs_pk_file", query.Args{"id": available, "version": int64(1)}},
+		{"delete_file", "blobfs_pk_file", query.Args{"id": available, "version": nil}},
+		{"delete_file", "blobfs_pk_file", query.Args{"id": available, "version": int64(1)}},
+		{"hold_file", "blobfs_pk_file", query.Args{"id": available, "version": nil}},
+		{"hold_file", "blobfs_pk_file", query.Args{"id": available, "version": int64(1)}},
+		{"lock_file", "blobfs_pk_file", query.Args{"id": available, "version": nil}},
+		{"lock_file", "blobfs_pk_file", query.Args{"id": available, "version": int64(1)}},
 		{"purge_file", "blobfs_pk_file", query.Args{"id": deleting}},
 		{"file_by_id", "blobfs_pk_file", query.Args{"id": available}},
 		{"move_directory", "blobfs_pk_directory", query.Args{"id": dir.ID, "version": int64(1), "parent_id": blobfs.RootID, "name": "moved"}},
-		{"delete_directory", "blobfs_pk_directory", query.Args{"id": empty}},
+		{"delete_directory", "blobfs_pk_directory", query.Args{"id": empty, "version": nil}},
+		{"delete_directory", "blobfs_pk_directory", query.Args{"id": empty, "version": int64(1)}},
 		{"directory_by_id", "blobfs_pk_directory", query.Args{"id": dir.ID}},
 	} {
 		st, ok := stmts[tc.name]
@@ -422,12 +425,12 @@ func TestProtocolStepPlans(t *testing.T) {
 			}
 		}
 		p := e.ex.Explain(e.ctx, t, text, bindArgs(t, st, tc.args)...)
-		t.Logf("%s costs %d buffers", tc.name, p.Buffers)
+		t.Logf("%s with %v costs %d buffers", tc.name, tc.args, p.Buffers)
 		switch {
 		case p.Has("Seq Scan"), !p.Has("Index Scan using " + tc.index), !indexCondHas(p, "id ="):
-			t.Errorf("%s does not find the row through %s:\n%s", tc.name, tc.index, p.Text)
+			t.Errorf("%s with %v does not find the row through %s:\n%s", tc.name, tc.args, tc.index, p.Text)
 		case p.Buffers > bound:
-			t.Errorf("%s reads %d buffers, more than %d:\n%s", tc.name, p.Buffers, bound, p.Text)
+			t.Errorf("%s with %v reads %d buffers, more than %d:\n%s", tc.name, tc.args, p.Buffers, bound, p.Text)
 		}
 	}
 }

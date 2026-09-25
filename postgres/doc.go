@@ -23,10 +23,10 @@
 //     for any depth instead of one per segment. The segments bind as one
 //     parameter, which the driver encodes from the Go slice, so no name is
 //     spliced into the text. The walk is bounded by the segments.
-//   - The file hold (lock_file, and lock_file_at_version under
-//     data.AtVersion) is SELECT ... FOR NO KEY UPDATE, the row lock the
-//     baseline's self-assigning update takes and a delete waits on, taken
-//     without writing a row version: a hold leaves no dead tuple. A refused
+//   - The file hold (lock_file, at the version under data.AtVersion) is
+//     SELECT ... FOR NO KEY UPDATE, the row lock the baseline's
+//     self-assigning update takes and a delete waits on, taken without
+//     writing a row version: a hold leaves no dead tuple. A refused
 //     hold takes no lock, and the store classifies it as over the baseline.
 //
 // The returning commands need no variant: under sqlate's postgres dialect,
@@ -44,7 +44,7 @@
 //	store, err := data.New(catalog, dialect, data.WithEngine(postgres.Engine))
 //
 // data.New compiles the data package's statements once and hands the
-// baseline it bound to Engine, which compiles only its own four. The store
+// baseline it bound to Engine, which compiles only its own three. The store
 // lists the variant's statements after its own, and its Verify prepares them
 // in the same pass.
 //

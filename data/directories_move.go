@@ -134,21 +134,13 @@ func (d *Directories) Move(ctx context.Context, tx *sqlate.Tx, id, parentID, nam
 		// A deleting directory outranks a stale version: the mark advanced
 		// it, so a mover that read the row before the mark holds a version
 		// the row no longer carries.
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: the directory is %s: %w", id, dir.Status, blobfs.ErrDeleting)
+		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, closed(dir))
 	}
 	// The update's status predicates refuse a move out of or into a
 	// deleting directory and a move under a parent that does not exist; the
 	// two parents tell those apart from a version conflict.
-	ends, err := readMoveEnds(ctx, tx, d.byID, dir.ParentID, parentID)
-	switch {
-	case err != nil:
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, err)
-	case ends.deleting != nil:
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s under %s: %w", id, parentID, ends.deleting)
-	case dir.Version != version:
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, versionMismatch(version, dir.Version))
-	case ends.missing:
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s under %s: the new parent: %w", id, parentID, blobfs.ErrNotFound)
+	if err := d.dirs.refusedMove(ctx, tx, dir.ParentID, parentID, version, dir.Version); err != nil {
+		return blobfs.Directory{}, fmt.Errorf("data: move directory %s under %s: %w", id, parentID, err)
 	}
 	return blobfs.Directory{}, fmt.Errorf("data: move directory %s: the update matched no row, yet the directory is %s at version %d", id, dir.Status, dir.Version)
 }

@@ -42,7 +42,6 @@ type Variant struct {
 	lockTree    query.Statement
 	resolvePath query.Rows[resolved]
 	lockFile    query.Rows[string]
-	lockFileAt  query.Rows[string]
 }
 
 // resolved is one row of resolve_path: the deepest directory reached and
@@ -60,7 +59,7 @@ var (
 )
 
 // Engine is the PostgreSQL engine for data.WithEngine: it compiles the
-// variant's own four statements against catalog for dialect, binds them, and
+// variant's own three statements against catalog for dialect, binds them, and
 // returns a *Variant over base, the baseline data.New compiled, so the data
 // package's statements are compiled once. A consumer selects it at its
 // composition root with data.New(catalog, dialect, data.WithEngine(Engine)).
@@ -79,7 +78,6 @@ func Engine(catalog *query.Catalog, dialect sqlate.Dialect, base *data.Standard)
 		lockTree:    stmts.Statement("lock_tree"),
 		resolvePath: stmts.Statement("resolve_path").Scan(query.Scanner[resolved]()),
 		lockFile:    stmts.Statement("lock_file").Scan(query.Scalar[string]),
-		lockFileAt:  stmts.Statement("lock_file_at_version").Scan(query.Scalar[string]),
 	}, nil
 }
 
@@ -132,21 +130,20 @@ func (v *Variant) ResolvePath(ctx context.Context, sess sqlate.Session, startID 
 	return r.Directory, r.Depth, nil
 }
 
-// HoldFile takes the file row's lock with lock_file, or
-// lock_file_at_version when version is not nil: SELECT ... FOR NO KEY
+// HoldFile takes the file row's lock with lock_file: SELECT ... FOR NO KEY
 // UPDATE, the lock the baseline's self-assigning update takes and
-// delete_file waits on, without writing a row version. A row returned is a
-// row held; no row, whether missing, deleting, or at another version, is
-// false with no lock taken, and the store reads the row to classify, as it
-// does over the baseline. See data.Variant.
+// delete_file waits on, without writing a row version, of a row that is
+// not deleting and, when version is not nil, sits at the version; a nil
+// version binds NULL, which the statement's version predicate reads as no
+// guard. A row returned is a row held; no row, whether missing, deleting,
+// or at another version, is false with no lock taken, and the store reads
+// the row to classify, as it does over the baseline. See data.Variant.
 func (v *Variant) HoldFile(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (bool, error) {
-	args := query.Args{"id": id}
-	lock := v.lockFile
+	args := query.Args{"id": id, "version": nil}
 	if version != nil {
 		args["version"] = *version
-		lock = v.lockFileAt
 	}
-	_, err := lock.One(ctx, tx, args)
+	_, err := v.lockFile.One(ctx, tx, args)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

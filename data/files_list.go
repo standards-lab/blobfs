@@ -2,7 +2,6 @@ package data
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/standards-lab/sqlate"
 	"github.com/standards-lab/sqlate/query"
@@ -37,15 +36,7 @@ import (
 // deleting files, so a filter on status reaches the delete protocol's stage
 // too, and it lists a deleting directory without the read.
 func (f *Files) List(ctx context.Context, sess sqlate.Session, directoryID string, req query.Directives, page query.Page, opts ...ListOption) (query.Collection[blobfs.File], error) {
-	req, include := listing(req, string(blobfs.StatusDeleting), opts)
-	c, err := f.list.List(ctx, sess, req, page, query.With("directory_id", directoryID))
-	if err == nil && !include {
-		err = listable(ctx, sess, f.directory, directoryID)
-	}
-	if err != nil {
-		return query.Collection[blobfs.File]{}, fmt.Errorf("data: list files in %s: %w", directoryID, err)
-	}
-	return c, nil
+	return f.list.list(ctx, sess, directoryID, req, page, opts)
 }
 
 // Continue reads the size files in directoryID past after, the Next of an
@@ -67,13 +58,5 @@ func (f *Files) List(ctx context.Context, sess sqlate.Session, directoryID strin
 // refused, as in List, so a file marked after the cursor was issued is not
 // on the pages past it.
 func (f *Files) Continue(ctx context.Context, sess sqlate.Session, directoryID string, req query.Directives, after query.Cursor, size int, opts ...ListOption) (query.Collection[blobfs.File], error) {
-	req, include := listing(req, string(blobfs.StatusDeleting), opts)
-	c, err := f.list.Continue(ctx, sess, req, after, size, query.With("directory_id", directoryID))
-	if err == nil && !include {
-		err = listable(ctx, sess, f.directory, directoryID)
-	}
-	if err != nil {
-		return query.Collection[blobfs.File]{}, fmt.Errorf("data: continue files in %s: %w", directoryID, err)
-	}
-	return c, nil
+	return f.list.cont(ctx, sess, directoryID, req, after, size, opts)
 }

@@ -622,10 +622,10 @@ carry the `blobfs` namespace. `Variant` embeds `*data.Standard` and overrides al
   indexes a `text[]` parameter by depth, so a path of any depth is one round trip. The segments
   bind as one parameter the driver encodes from the Go slice; no name is spliced into the text.
   The walk is bounded by the segments, so a loop in the tree cannot extend it.
-- **The file hold.** `lock_file` and `lock_file_at_version` are `SELECT ... FOR NO KEY UPDATE`
-  of a row that is not deleting, and at the version under `AtVersion`: the lock the baseline's
-  self-assigning update takes and `delete_file` waits on, taken without writing a row version,
-  so a hold leaves the row's `ctid` and `xmin` as they were and the table gains no dead tuple.
+- **The file hold.** `lock_file` is `SELECT ... FOR NO KEY UPDATE` of a row that is not
+  deleting, and at the version under `AtVersion`: the lock the baseline's self-assigning update
+  takes and `delete_file` waits on, taken without writing a row version, so a hold leaves the
+  row's `ctid` and `xmin` as they were and the table gains no dead tuple.
   A refused hold returns no row and takes no lock, and the store reads the row to classify the
   refusal as it does over the baseline.
 

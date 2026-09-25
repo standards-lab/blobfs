@@ -37,14 +37,7 @@ import (
 // current versions in the text. When the hold holds no row, the row is
 // read once more, in tx, to classify.
 func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) error {
-	var o versionOptions
-	for _, opt := range opts {
-		opt(&o)
-	}
-	var version *int64
-	if o.hasVersion {
-		version = &o.version
-	}
+	version := atVersion(opts)
 	held, err := f.variant.HoldFile(ctx, tx, id, version)
 	if err != nil {
 		return fmt.Errorf("data: hold file %s: %w", id, err)
@@ -57,10 +50,10 @@ func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...Vers
 	switch {
 	case err != nil:
 		return fmt.Errorf("data: hold file %s: %w", id, notFound(err))
-	case file.Status == blobfs.StatusDeleting:
+	case !file.Status.Mutable():
 		return fmt.Errorf("data: hold file %s: the row is %s: %w", id, file.Status, blobfs.ErrDeleting)
-	case o.hasVersion && file.Version != o.version:
-		return fmt.Errorf("data: hold file %s: %w", id, versionMismatch(o.version, file.Version))
+	case version != nil && file.Version != *version:
+		return fmt.Errorf("data: hold file %s: %w", id, versionMismatch(*version, file.Version))
 	}
 	return fmt.Errorf("data: hold file %s: the hold matched no row, yet the row is %s at version %d", id, file.Status, file.Version)
 }
@@ -88,25 +81,15 @@ func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...Vers
 // single-statement form where the dialect renders RETURNING, and otherwise
 // the fallback, the update and a read of the row.
 func (f *Files) Delete(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) (blobfs.File, error) {
-	var o versionOptions
-	for _, opt := range opts {
-		opt(&o)
-	}
-	if !o.hasVersion {
-		file, _, err := f.remove.One(ctx, tx, query.Args{"id": id})
-		if err != nil {
-			return blobfs.File{}, fmt.Errorf("data: delete file %s: %w", id, notFound(err))
-		}
-		return file, nil
-	}
-	file, _, err := f.removeAt.One(ctx, tx, query.Args{"id": id, "version": o.version})
-	if err != nil {
+	version := atVersion(opts)
+	file, _, err := f.remove.One(ctx, tx, withVersion(query.Args{"id": id}, version))
+	switch {
+	case err != nil:
 		return blobfs.File{}, fmt.Errorf("data: delete file %s: %w", id, notFound(err))
-	}
-	if file.Status != blobfs.StatusDeleting {
+	case version != nil && file.Status.Mutable():
 		// The update matched nothing and the row is not deleting: it is at
 		// another version, and is returned as it stands.
-		return blobfs.File{}, fmt.Errorf("data: delete file %s: %w", id, versionMismatch(o.version, file.Version))
+		return blobfs.File{}, fmt.Errorf("data: delete file %s: %w", id, versionMismatch(*version, file.Version))
 	}
 	return file, nil
 }
@@ -144,7 +127,7 @@ func (f *Files) Purge(ctx context.Context, sess sqlate.Session, id string) error
 		return nil
 	case err != nil:
 		return fmt.Errorf("data: purge file %s: %w", id, err)
-	case file.Status == blobfs.StatusDeleting:
+	case !file.Status.Mutable():
 		// A concurrent Delete moved the row to deleting between the removal
 		// and this read. The removal is repeated once; a deleting row never
 		// leaves that status except by removal, so the second attempt

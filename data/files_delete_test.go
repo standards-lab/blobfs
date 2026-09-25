@@ -16,10 +16,10 @@ import (
 )
 
 // TestHoldFile proves the hold against the script, inside a transaction:
-// one exec of the self-assigning update bound to the id, with the version
-// predicate and its binding only under AtVersion, and a row affected ends
-// the call with no read. When no row is affected the row is read once, in
-// the same transaction: a missing row is ErrNotFound, a deleting row
+// one exec of the self-assigning update bound to the id and the nullable
+// version, NULL without AtVersion and the version under it, and a row
+// affected ends the call with no read. When no row is affected the row is
+// read once, in the same transaction: a missing row is ErrNotFound, a deleting row
 // ErrDeleting whatever its version, a row at another version under
 // AtVersion query.ErrVersionMismatch naming both versions, and any other
 // row an error naming its state.
@@ -44,11 +44,11 @@ func TestHoldFile(t *testing.T) {
 		t.Errorf("ops = %q, want the one exec and no read", got)
 	}
 	update := rec.Calls()[1]
-	if update.SQL != "UPDATE blobfs_file\nSET updated_at = updated_at\nWHERE id = CAST($1 AS uuid) AND status <> 'deleting'" {
+	if update.SQL != "UPDATE blobfs_file\nSET updated_at = updated_at\nWHERE id = CAST($1 AS uuid) AND status <> 'deleting'\n  AND (CAST($2 AS bigint) IS NULL OR version = CAST($2 AS bigint))" {
 		t.Errorf("the hold is not the self-assigning update:\n%s", update.SQL)
 	}
-	if !slices.Equal(update.Args, []any{"F"}) {
-		t.Errorf("the hold bound %v, want the id alone", update.Args)
+	if !slices.Equal(update.Args, []any{"F", nil}) {
+		t.Errorf("the hold bound %v, want the id and no version", update.Args)
 	}
 
 	rec, err = hold(t, []sqltest.Response{{Affected: 1}}, data.AtVersion(4))
@@ -56,7 +56,7 @@ func TestHoldFile(t *testing.T) {
 		t.Fatalf("Hold at a version: %v", err)
 	}
 	update = rec.Calls()[1]
-	if !strings.HasSuffix(update.SQL, "WHERE id = CAST($1 AS uuid) AND status <> 'deleting' AND version = CAST($2 AS bigint)") || strings.Contains(update.SQL, "version + 1") {
+	if !strings.HasSuffix(update.SQL, "WHERE id = CAST($1 AS uuid) AND status <> 'deleting'\n  AND (CAST($2 AS bigint) IS NULL OR version = CAST($2 AS bigint))") || strings.Contains(update.SQL, "version + 1") {
 		t.Errorf("the hold at a version is not the update with the version predicate and no advance:\n%s", update.SQL)
 	}
 	if !slices.Equal(update.Args, []any{"F", int64(4)}) {
@@ -95,7 +95,7 @@ func TestHoldFile(t *testing.T) {
 // TestDeleteFile proves the first step of a file delete in both forms,
 // inside the caller's transaction: the update moves the row to deleting
 // and advances its version only when it is not deleting already, bound to
-// the id, and returns the row with its key. A row already deleting is
+// the id and a NULL version, and returns the row with its key. A row already deleting is
 // returned as it is, with no error and no version change, so a retry
 // converges. A row that does not exist is ErrNotFound.
 func TestDeleteFile(t *testing.T) {
@@ -127,12 +127,12 @@ func TestDeleteFile(t *testing.T) {
 			}
 			update := callsTo(rec, "UPDATE blobfs_file")[0]
 			command, _, _ := strings.Cut(update.SQL, "\nRETURNING")
-			if command != "UPDATE blobfs_file\nSET status = 'deleting', version = version + 1, updated_at = CURRENT_TIMESTAMP\nWHERE id = CAST($1 AS uuid) AND status <> 'deleting'" ||
+			if command != "UPDATE blobfs_file\nSET status = 'deleting', version = version + 1, updated_at = CURRENT_TIMESTAMP\nWHERE id = CAST($1 AS uuid) AND status <> 'deleting'\n  AND (CAST($2 AS bigint) IS NULL OR version = CAST($2 AS bigint))" ||
 				strings.Contains(update.SQL, "RETURNING") != f.single {
 				t.Errorf("the update is %q", update.SQL)
 			}
-			if !slices.Equal(update.Args, []any{"F"}) {
-				t.Errorf("the update bound %v, want the id alone", update.Args)
+			if !slices.Equal(update.Args, []any{"F", nil}) {
+				t.Errorf("the update bound %v, want the id and no version", update.Args)
 			}
 
 			file, got, err = del(unchangedFile(f, fileResponse("F", "a.txt", blobfs.StatusDeleting, 2))...)

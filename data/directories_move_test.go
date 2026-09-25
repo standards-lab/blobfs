@@ -147,7 +147,7 @@ func TestMoveClassifies(t *testing.T) {
 					t.Errorf("Move of a deleting directory at version %d = %v, want ErrDeleting", version, err)
 				}
 				err = move(append(unchanged(directoryResponse("D", "S", "d", version)), directoryIn("S", blobfs.RootID, "s", blobfs.DirectoryStatusDeleting, 2))...)
-				if !errors.Is(err, blobfs.ErrDeleting) || !strings.Contains(err.Error(), "its directory S is deleting") {
+				if !errors.Is(err, blobfs.ErrDeleting) || !strings.Contains(err.Error(), "the directory S is deleting") {
 					t.Errorf("Move out of a deleting parent at version %d = %v, want ErrDeleting", version, err)
 				}
 				err = move(append(unchanged(directoryResponse("D", "S", "d", version)),
