@@ -118,10 +118,10 @@ type SweepOption func(*sweepOptions)
 
 // sweepOptions collects what the sweep options set.
 type sweepOptions struct {
-	batch      int
-	onRemove   func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error
-	pendingAge time.Duration
-	hasPending bool
+	batch    int
+	onRemove func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error
+	staleAge time.Duration
+	hasStale bool
 }
 
 // defaultBatch is the number of records a pass handles when Batch is not
@@ -130,7 +130,7 @@ const defaultBatch = 100
 
 // Batch bounds the records one pass of Store.Sweep handles to n: each file
 // whose object it deletes and whose row it purges, each directory it
-// removes, and each pending row it reclaims counts one. The bound is by
+// removes, and each stale row it reclaims counts one. The bound is by
 // record, not by bytes, since the pass never reads an object's size to
 // delete it. A pass that stops at the bound with work remaining reports
 // SweepResult.More. The default is 100; an n below 1 is refused before
@@ -146,7 +146,8 @@ func Batch(n int) SweepOption {
 // top-level directory to a unit, whose foreign key would otherwise refuse
 // the removal as blobfs.ErrReferenced. An error from fn rolls the
 // transaction back, so the directory stays, deleting, for the next pass,
-// and the pass stops and returns the error. fn runs once per attempt at a
+// and the pass leaves its branch and returns the error with any others.
+// fn runs once per attempt at a
 // removal, and what it wrote commits or rolls back with the removal, so a
 // removal aborted by fn or refused by the database runs it again on the
 // next pass with nothing of the first attempt left.
@@ -154,19 +155,26 @@ func OnRemoveDirectory(fn func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Di
 	return func(o *sweepOptions) { o.onRemove = fn }
 }
 
-// PendingOlderThan makes a pass of Store.Sweep also reclaim the pending
-// file rows whose updated_at is older than age: the rows of writes that
-// stopped after their first step and were never completed or deleted. Each
-// is moved to deleting at the version the pass read, so a write that
-// completed in the meantime is left as it is; then its object, which may
-// never have been stored, is deleted, and its row purged. The reclaim is
-// off without the option. A write resumed through Files.Ensure keeps its
-// row's updated_at, so age must exceed the longest write a consumer lets
-// run, and a Complete of a reclaimed row is blobfs.ErrDeleting. An age that
-// is not positive is refused before any SQL.
-func PendingOlderThan(age time.Duration) SweepOption {
+// StaleOlderThan makes a pass of Store.Sweep also reclaim the file rows
+// a caller left partway through a protocol, whose updated_at is older
+// than age: the pending rows of writes that stopped after their first
+// step and were never completed or deleted, and the deleting rows of
+// deletes that stopped after Files.Delete and before Files.Purge. Such a
+// deleting row is hidden from the listings yet still holds its name, so a
+// write of the name is refused until the row is purged, and nothing but a
+// sweep finds it. A pending row is moved to deleting at the version the
+// pass read, so a write that completed in the meantime is left as it is;
+// a deleting row is past that step already. Then the row's object, which
+// may never have been stored or may be gone already, is deleted, and the
+// row purged. The reclaim is off without the option. A write resumed
+// through Files.Ensure keeps its row's updated_at, so age must exceed the
+// longest write a consumer lets run, and a Complete of a reclaimed row is
+// blobfs.ErrDeleting; a delete its caller is still finishing is harmless
+// to finish twice, since each of its steps is idempotent. An age that is
+// not positive is refused before any SQL.
+func StaleOlderThan(age time.Duration) SweepOption {
 	return func(o *sweepOptions) {
-		o.pendingAge = age
-		o.hasPending = true
+		o.staleAge = age
+		o.hasStale = true
 	}
 }

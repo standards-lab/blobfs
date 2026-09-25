@@ -35,7 +35,7 @@ type Files struct {
 	remove    query.Returning[blobfs.File]
 	removeAt  query.Returning[blobfs.File]
 	purge     query.Statement
-	pending   query.Rows[blobfs.File]
+	stale     query.Rows[blobfs.File]
 }
 
 // newFiles binds the file statements of a compiled set, forwarding the
@@ -54,7 +54,7 @@ func newFiles(stmts *query.Statements, variant Variant) *Files {
 		remove:    stmts.Statement("delete_file").Returning(file),
 		removeAt:  stmts.Statement("delete_file_at_version").Returning(file),
 		purge:     stmts.Statement("purge_file"),
-		pending:   stmts.Statement("pending_files_before").Scan(file),
+		stale:     stmts.Statement("stale_files_before").Scan(file),
 	}
 }
 

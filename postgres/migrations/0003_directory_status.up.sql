@@ -10,14 +10,17 @@
 -- directories alone, so the read of the branches being deleted, which a
 -- sweeper repeats, costs the deleting rows and not the table; an active
 -- directory, nearly every row, is not in it. The partial index
--- blobfs_ix_file_pending does the same for the sweeper's other read, the
--- pending files an abandoned write left: it holds the pending rows alone,
--- ordered by when each was last written, so the read of the oldest costs
--- them and not the table, whose rows are nearly all available.
+-- blobfs_ix_file_stale does the same for the sweeper's other read, the
+-- files a caller left partway through a protocol: the pending rows of
+-- abandoned writes and the deleting rows of deletes that stopped before
+-- the purge. It holds those two statuses alone, under the predicate the
+-- read names, ordered by when each row was last written, so the read of
+-- the oldest costs them and not the table, whose rows are nearly all
+-- available.
 ALTER TABLE blobfs_directory
   ADD COLUMN status text NOT NULL DEFAULT 'active',
   ADD CONSTRAINT blobfs_cc_directory_status CHECK (status IN ('active', 'deleting'));
 
 CREATE INDEX blobfs_ix_directory_deleting ON blobfs_directory (id) WHERE status = 'deleting';
 
-CREATE INDEX blobfs_ix_file_pending ON blobfs_file (updated_at, id) WHERE status = 'pending';
+CREATE INDEX blobfs_ix_file_stale ON blobfs_file (updated_at, id) WHERE status IN ('pending', 'deleting');

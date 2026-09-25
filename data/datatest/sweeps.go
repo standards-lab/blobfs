@@ -30,7 +30,7 @@ func (s *suite) sweeps(t *testing.T) {
 	t.Run("Batch", s.sweepBatch)
 	t.Run("HookAborts", s.sweepHookAborts)
 	t.Run("RefusalDoesNotBlock", s.sweepRefusalDoesNotBlock)
-	t.Run("Pending", s.sweepPending)
+	t.Run("Stale", s.sweepStale)
 }
 
 // errObjectStore is what a failing objectStore reports.
@@ -160,11 +160,11 @@ func (s *suite) sweepDrains(t *testing.T) {
 		if pass == 1000 {
 			t.Fatalf("the sweep still reports More after %d passes: %+v", pass, total)
 		}
-		r, err := s.sweep(s.store, objects, data.PendingOlderThan(time.Hour))
+		r, err := s.sweep(s.store, objects, data.StaleOlderThan(time.Hour))
 		if err != nil {
 			t.Fatalf("Sweep: %v", err)
 		}
-		total.Files, total.Directories, total.Pending = total.Files+r.Files, total.Directories+r.Directories, total.Pending+r.Pending
+		total.Files, total.Directories, total.Stale = total.Files+r.Files, total.Directories+r.Directories, total.Stale+r.Stale
 		if !r.More {
 			break
 		}
@@ -175,8 +175,8 @@ func (s *suite) sweepDrains(t *testing.T) {
 	if gone := dirs - s.count(t, s.db, "SELECT COUNT(*) FROM blobfs_directory"); gone != total.Directories {
 		t.Errorf("%d directories left the table, the passes report %d", gone, total.Directories)
 	}
-	if gone := files - s.count(t, s.db, "SELECT COUNT(*) FROM blobfs_file"); gone != total.Files+total.Pending {
-		t.Errorf("%d files left the table, the passes report %d and %d pending", gone, total.Files, total.Pending)
+	if gone := files - s.count(t, s.db, "SELECT COUNT(*) FROM blobfs_file"); gone != total.Files+total.Stale {
+		t.Errorf("%d files left the table, the passes report %d and %d stale", gone, total.Files, total.Stale)
 	}
 	if n := s.count(t, s.db, "SELECT COUNT(*) FROM blobfs_directory WHERE status = 'deleting'"); n != 0 {
 		t.Errorf("%d directories are still deleting after the sweep", n)
@@ -186,17 +186,17 @@ func (s *suite) sweepDrains(t *testing.T) {
 			t.Errorf("the object %s was deleted %d times, want once", key, n)
 		}
 	}
-	if len(objects.deleted) != total.Files+total.Pending {
-		t.Errorf("the passes deleted %d objects for %d files", len(objects.deleted), total.Files+total.Pending)
+	if len(objects.deleted) != total.Files+total.Stale {
+		t.Errorf("the passes deleted %d objects for %d files", len(objects.deleted), total.Files+total.Stale)
 	}
 }
 
 // sweepNothing checks a pass over a tree with nothing to sweep, on both
-// stores and with the pending reclaim or without: a zero result, no
+// stores and with the stale reclaim or without: a zero result, no
 // object deleted, and no hook called.
 func (s *suite) sweepNothing(t *testing.T) {
 	for _, store := range []*data.Store{s.store, s.baseline} {
-		for _, opts := range [][]data.SweepOption{nil, {data.PendingOlderThan(time.Hour)}} {
+		for _, opts := range [][]data.SweepOption{nil, {data.StaleOlderThan(time.Hour)}} {
 			objects := newObjectStore()
 			h := &hooks{s: s}
 			r, err := s.sweep(store, objects, append(opts, data.OnRemoveDirectory(h.remove))...)
@@ -429,45 +429,60 @@ func (s *suite) sweepRefusalDoesNotBlock(t *testing.T) {
 	}
 }
 
-// sweepPending checks the reclaim of abandoned writes, against the
-// baseline: without PendingOlderThan a pass leaves every pending row; with
-// it, a pending row last written before the age is moved to deleting, its
-// object deleted, and its row purged, while a younger pending row and an
-// available row as old are left as they were.
-func (s *suite) sweepPending(t *testing.T) {
+// sweepStale checks the reclaim of the rows a caller left partway through
+// a protocol, against the baseline: without StaleOlderThan a pass leaves
+// every such row; with it, a pending row last written before the age is
+// moved to deleting, its object deleted, and its row purged, and a
+// deleting row whose Files.Delete ran before the age and whose purge never
+// did is finished, its object deleted and its row purged, which frees its
+// name for a new write; a younger pending row, a younger deleting row, and
+// an available row as old are left as they were.
+func (s *suite) sweepStale(t *testing.T) {
 	old := time.Now().Add(-2 * time.Hour)
 	for i, store := range []*data.Store{s.store, s.baseline} {
-		dir := s.mkdir(t, fmt.Sprintf("pending-%d-%s", i, t.Name()))
+		dir := s.mkdir(t, fmt.Sprintf("stale-%d-%s", i, t.Name()))
 		abandoned := s.insertFile(t, dir.ID, "abandoned.txt", blobfs.StatusPending)
 		young := s.insertFile(t, dir.ID, "young.txt", blobfs.StatusPending)
 		available := s.insertFile(t, dir.ID, "available.txt", blobfs.StatusAvailable)
+		stopped := s.insertFile(t, dir.ID, "stopped.txt", blobfs.StatusAvailable)
+		starting := s.insertFile(t, dir.ID, "starting.txt", blobfs.StatusAvailable)
+		s.deleteFile(t, stopped)
+		s.deleteFile(t, starting)
 		p := s.db.Dialect().Placeholder
-		for _, id := range []string{abandoned, available} {
+		for _, id := range []string{abandoned, available, stopped} {
 			s.exec(t, "UPDATE blobfs_file SET updated_at = "+p(1)+" WHERE id = "+p(2), old, id)
 		}
 		before := map[string]blobfs.File{}
-		for _, id := range []string{abandoned, young, available} {
+		for _, id := range []string{abandoned, young, available, stopped, starting} {
 			before[id] = s.file(t, id)
+		}
+		if _, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "stopped.txt", "text/plain"); !errors.Is(err, blobfs.ErrNameTaken) {
+			t.Errorf("Create over the stopped delete's name = %v, want ErrNameTaken while its row remains", err)
 		}
 
 		objects := newObjectStore()
 		if r, err := s.sweep(store, objects); err != nil || r != (data.SweepResult{}) || objects.calls != 0 {
-			t.Errorf("Sweep without PendingOlderThan = %+v, %v with %d object deletes, want nothing done", r, err, objects.calls)
+			t.Errorf("Sweep without StaleOlderThan = %+v, %v with %d object deletes, want nothing done", r, err, objects.calls)
 		}
-		if f := s.file(t, abandoned); !equalFile(f, before[abandoned]) {
-			t.Errorf("the pass without PendingOlderThan changed the abandoned row to %+v", f)
+		for _, id := range []string{abandoned, stopped} {
+			if f := s.file(t, id); !equalFile(f, before[id]) {
+				t.Errorf("the pass without StaleOlderThan changed %s to %+v", f.Name, f)
+			}
 		}
 
-		r, err := s.sweep(store, objects, data.PendingOlderThan(time.Hour))
-		if err != nil || r != (data.SweepResult{Pending: 1}) {
-			t.Errorf("Sweep with PendingOlderThan = %+v, %v, want the one abandoned row", r, err)
+		r, err := s.sweep(store, objects, data.StaleOlderThan(time.Hour))
+		if err != nil || r != (data.SweepResult{Stale: 2}) {
+			t.Errorf("Sweep with StaleOlderThan = %+v, %v, want the abandoned write and the stopped delete", r, err)
 		}
-		wantDeletedOnce(t, objects, []string{before[abandoned].Key})
-		s.wantFilesGone(t, abandoned)
-		for _, id := range []string{young, available} {
+		wantDeletedOnce(t, objects, []string{before[abandoned].Key, before[stopped].Key})
+		s.wantFilesGone(t, abandoned, stopped)
+		for _, id := range []string{young, available, starting} {
 			if f := s.file(t, id); !equalFile(f, before[id]) {
 				t.Errorf("the reclaim changed %s to\n%+v\nfrom\n%+v", f.Name, f, before[id])
 			}
+		}
+		if f, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "stopped.txt", "text/plain"); err != nil || f.Status != blobfs.StatusPending {
+			t.Errorf("Create over the finished delete's name = %+v, %v, want a new pending row", f, err)
 		}
 	}
 }

@@ -139,7 +139,7 @@ func TestNew(t *testing.T) {
 		"complete_file", "create_directory", "create_file", "delete_directory", "delete_directory_at_version",
 		"delete_file", "delete_file_at_version", "deleting_branches", "directory_ancestors", "directory_by_id", "directory_by_name", "directory_children",
 		"directory_files", "directory_is_within", "file_by_id", "file_by_name", "hold_file", "hold_file_at_version",
-		"mark_directory_deleting", "mark_directory_files_deleting", "move_directory", "move_file", "pending_files_before", "purge_file",
+		"mark_directory_deleting", "mark_directory_files_deleting", "move_directory", "move_file", "purge_file", "stale_files_before",
 	}
 	returning := map[string]string{
 		"create_directory": "directory_by_id", "move_directory": "directory_by_id",

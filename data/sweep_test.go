@@ -49,11 +49,11 @@ func remark() []sqltest.Response {
 	return []sqltest.Response{{Affected: 0}, deletingRoot(), {Affected: 0}}
 }
 
-// TestSweepRefusesBeforeSQL proves a Batch below 1 and a PendingOlderThan
+// TestSweepRefusesBeforeSQL proves a Batch below 1 and a StaleOlderThan
 // age that is not positive are refused before any SQL.
 func TestSweepRefusesBeforeSQL(t *testing.T) {
 	ctx := context.Background()
-	for _, opt := range []data.SweepOption{data.Batch(0), data.Batch(-1), data.PendingOlderThan(0), data.PendingOlderThan(-time.Hour)} {
+	for _, opt := range []data.SweepOption{data.Batch(0), data.Batch(-1), data.StaleOlderThan(0), data.StaleOlderThan(-time.Hour)} {
 		s, db, rec := openStore(t, fallback)
 		if _, err := s.Sweep(ctx, db, &objectLog{}, opt); err == nil || !strings.HasPrefix(err.Error(), "data: sweep: ") {
 			t.Errorf("Sweep with a refused option = %v, want a refusal", err)
@@ -65,8 +65,9 @@ func TestSweepRefusesBeforeSQL(t *testing.T) {
 }
 
 // TestSweepNothingToDo proves a pass with no branch being deleted is the
-// roots' read alone and a zero result; with PendingOlderThan it is that
-// read and the read of the pending rows, oldest first, before an instant
+// roots' read alone and a zero result; with StaleOlderThan it is that
+// read and the read of the stale rows, pending and deleting, oldest
+// first, before an instant
 // the age before now, from offset 0 to the batch.
 func TestSweepNothingToDo(t *testing.T) {
 	ctx := context.Background()
@@ -82,24 +83,24 @@ func TestSweepNothingToDo(t *testing.T) {
 
 	s, db, rec = openStore(t, fallback, noDirectory(), noFile())
 	start := time.Now()
-	got, err = s.Sweep(ctx, db, objects, data.PendingOlderThan(time.Hour), data.Batch(7))
+	got, err = s.Sweep(ctx, db, objects, data.StaleOlderThan(time.Hour), data.Batch(7))
 	if err != nil || got != (data.SweepResult{}) {
-		t.Errorf("Sweep with PendingOlderThan = %+v, %v, want a zero result", got, err)
+		t.Errorf("Sweep with StaleOlderThan = %+v, %v, want a zero result", got, err)
 	}
 	calls := queries(rec)
 	if len(calls) != 2 || !slices.Equal(calls[0].Args, []any{0, 7}) {
-		t.Fatalf("the pass ran %v, want the roots' read to the batch and the pending read", calls)
+		t.Fatalf("the pass ran %v, want the roots' read to the batch and the stale read", calls)
 	}
-	pending := calls[1]
-	if !strings.Contains(pending.SQL, "WHERE f.status = 'pending' AND f.updated_at < CAST($1 AS timestamp with time zone)\nORDER BY f.updated_at, f.id") {
-		t.Errorf("the pending read is not the statement over the pending rows by age:\n%s", pending.SQL)
+	stale := calls[1]
+	if !strings.Contains(stale.SQL, "WHERE f.status IN ('pending', 'deleting') AND f.updated_at < CAST($1 AS timestamp with time zone)\nORDER BY f.updated_at, f.id") {
+		t.Errorf("the stale read is not the statement over the pending and deleting rows by age:\n%s", stale.SQL)
 	}
-	if len(pending.Args) != 3 || pending.Args[1] != 0 || pending.Args[2] != 7 {
-		t.Fatalf("the pending read bound %v, want the instant, offset 0, and the batch", pending.Args)
+	if len(stale.Args) != 3 || stale.Args[1] != 0 || stale.Args[2] != 7 {
+		t.Fatalf("the stale read bound %v, want the instant, offset 0, and the batch", stale.Args)
 	}
-	before, ok := pending.Args[0].(time.Time)
+	before, ok := stale.Args[0].(time.Time)
 	if want := start.Add(-time.Hour); !ok || before.Before(want.Add(-time.Minute)) || before.After(want.Add(time.Minute)) {
-		t.Errorf("the pending read bound the instant %v, want about %v", pending.Args[0], want)
+		t.Errorf("the stale read bound the instant %v, want about %v", stale.Args[0], want)
 	}
 }
 
@@ -209,36 +210,65 @@ func TestSweepStops(t *testing.T) {
 	}
 }
 
-// TestSweepPending proves the reclaim of a pending row: moved to deleting
-// in a transaction of its own at the version read, its object deleted,
-// its row purged; a row that moved on since the read is skipped.
-func TestSweepPending(t *testing.T) {
+// TestSweepStale proves the reclaim of stale rows by status: a pending
+// row moved to deleting in a transaction of its own at the version read,
+// its object deleted, its row purged; a deleting row, a delete stopped
+// before its purge, finished at once with no delete step; a deleting row
+// purged by someone else meanwhile, which the purge finds gone, done; and
+// a pending row that moved on since the read skipped.
+func TestSweepStale(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
-	pending := sqltest.Response{Columns: fileColumns, Rows: [][]driver.Value{
-		{"P", "D", "p.txt", "pending", "P/p.txt", nil, "text/plain", nil, int64(1), now, now},
-		{"Q", "D", "q.txt", "pending", "Q/q.txt", nil, "text/plain", nil, int64(1), now, now},
+	row := func(id, status string, version int64) []driver.Value {
+		return []driver.Value{id, "D", strings.ToLower(id) + ".txt", status, id + "/" + strings.ToLower(id) + ".txt", nil, "text/plain", nil, version, now, now}
+	}
+	stale := sqltest.Response{Columns: fileColumns, Rows: [][]driver.Value{
+		row("P", "pending", 1), row("L", "deleting", 2), row("M", "deleting", 2), row("Q", "pending", 1),
 	}}
 	s, db, rec := openStore(t, fallback,
 		noDirectory(),
-		pending,
+		stale,
 		sqltest.Response{Affected: 1}, fileIn("P", "D", "p.txt", blobfs.StatusDeleting, 2),
 		sqltest.Response{Affected: 1},
+		sqltest.Response{Affected: 1},
+		sqltest.Response{Affected: 0}, noFile(),
 		sqltest.Response{Affected: 0}, fileIn("Q", "D", "q.txt", blobfs.StatusAvailable, 2),
 	)
 	objects := &objectLog{}
-	got, err := s.Sweep(ctx, db, objects, data.PendingOlderThan(time.Hour))
-	if err != nil || got != (data.SweepResult{Pending: 1}) {
-		t.Fatalf("Sweep = %+v, %v, want one pending row reclaimed", got, err)
+	got, err := s.Sweep(ctx, db, objects, data.StaleOlderThan(time.Hour))
+	if err != nil || got != (data.SweepResult{Stale: 3}) {
+		t.Fatalf("Sweep = %+v, %v, want three stale rows reclaimed", got, err)
 	}
-	if !slices.Equal(objects.keys, []string{"P/p.txt"}) {
-		t.Errorf("the pass deleted %v, want P's key alone", objects.keys)
+	if !slices.Equal(objects.keys, []string{"P/p.txt", "L/l.txt", "M/m.txt"}) {
+		t.Errorf("the pass deleted %v, want P's, L's, and M's keys", objects.keys)
 	}
 	marks := callsTo(rec, "UPDATE blobfs_file")
-	if len(marks) != 2 || !slices.Equal(marks[0].Args, []any{"P", int64(1)}) || !strings.Contains(marks[0].SQL, "version = CAST($2 AS bigint)") {
-		t.Errorf("the reclaim ran %v, want each row's delete at the version read", marks)
+	if len(marks) != 2 || !slices.Equal(marks[0].Args, []any{"P", int64(1)}) || !slices.Equal(marks[1].Args, []any{"Q", int64(1)}) || !strings.Contains(marks[0].SQL, "version = CAST($2 AS bigint)") {
+		t.Errorf("the reclaim ran %v, want the pending rows' deletes at the version read and none for the deleting rows", marks)
 	}
-	if want := "query query begin exec query commit exec begin exec query rollback"; ops(rec) != want {
+	if purges := callsTo(rec, "DELETE FROM blobfs_file"); len(purges) != 3 {
+		t.Errorf("the reclaim ran %d purges, want P's, L's, and M's", len(purges))
+	}
+	if want := "query query begin exec query commit exec exec exec query begin exec query rollback"; ops(rec) != want {
 		t.Errorf("ops = %q, want %q", ops(rec), want)
+	}
+}
+
+// TestSweepRefusedOnce proves a file the branch's walk was refused is not
+// tried again by the stale read of the same pass: its object is deleted
+// once, and its refusal is reported once.
+func TestSweepRefusedOnce(t *testing.T) {
+	ctx := context.Background()
+	errStore := errors.New("the store is down")
+	responses := append([]sqltest.Response{deletingRoot()}, remark()...)
+	responses = append(responses, files("D", "F"), files("D", "F"))
+	s, db, _ := openStore(t, fallback, responses...)
+	objects := &objectLog{err: errStore}
+	got, err := s.Sweep(ctx, db, objects, data.StaleOlderThan(time.Hour))
+	if !errors.Is(err, errStore) || got != (data.SweepResult{}) {
+		t.Errorf("Sweep = %+v, %v, want the store's error and nothing done", got, err)
+	}
+	if !slices.Equal(objects.keys, []string{"F/f.txt"}) || strings.Count(err.Error(), errStore.Error()) != 1 {
+		t.Errorf("the pass deleted %v and reported %v, want F tried once and refused once", objects.keys, err)
 	}
 }

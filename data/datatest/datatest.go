@@ -87,10 +87,11 @@ import (
 // both stores, nothing to do, a full sweep of a three-level branch with
 // its hook, a crash between an object's delete and its row's purge
 // finished by the next pass, stragglers, the batch bound's More, a hook
-// that aborts a removal, and the pending reclaim's age). Branches runs
-// after the other groups because the branches it marks stay in the tree,
-// and Deleting reads them all; Sweeps runs last because its first pass
-// removes them.
+// that aborts a removal, a refused branch that holds back none behind
+// it, and the stale reclaim's age over abandoned writes and stopped
+// deletes). Branches runs after the other groups because the branches it
+// marks stay in the tree, and Deleting reads them all; Sweeps runs last
+// because its first pass removes them.
 func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, engine data.Engine) {
 	t.Helper()
 	dialect := db.Dialect()
