@@ -1,5 +1,14 @@
 package data
 
+import (
+	"context"
+	"time"
+
+	"github.com/standards-lab/sqlate"
+
+	"github.com/standards-lab/blobfs"
+)
+
 // Option configures New beyond its required arguments.
 type Option func(*options)
 
@@ -101,4 +110,63 @@ type listOptions struct {
 // unless the option is given.
 func IncludeDeleting() ListOption {
 	return func(o *listOptions) { o.includeDeleting = true }
+}
+
+// SweepOption configures one call of Store.Sweep beyond its required
+// arguments.
+type SweepOption func(*sweepOptions)
+
+// sweepOptions collects what the sweep options set.
+type sweepOptions struct {
+	batch      int
+	onRemove   func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error
+	pendingAge time.Duration
+	hasPending bool
+}
+
+// defaultBatch is the number of records a pass handles when Batch is not
+// given.
+const defaultBatch = 100
+
+// Batch bounds the records one pass of Store.Sweep handles to n: each file
+// whose object it deletes and whose row it purges, each directory it
+// removes, and each pending row it reclaims counts one. The bound is by
+// record, not by bytes, since the pass never reads an object's size to
+// delete it. A pass that stops at the bound with work remaining reports
+// SweepResult.More. The default is 100; an n below 1 is refused before
+// any SQL.
+func Batch(n int) SweepOption {
+	return func(o *sweepOptions) { o.batch = n }
+}
+
+// OnRemoveDirectory runs fn inside the transaction that removes each
+// directory of a branch being deleted, before the removal, with the
+// directory as the pass read it, deleting. It is where a consumer removes
+// its own rows about the directory, such as the owner row that binds a
+// top-level directory to a unit, whose foreign key would otherwise refuse
+// the removal as blobfs.ErrReferenced. An error from fn rolls the
+// transaction back, so the directory stays, deleting, for the next pass,
+// and the pass stops and returns the error. fn runs once per attempt at a
+// removal, and what it wrote commits or rolls back with the removal, so a
+// removal aborted by fn or refused by the database runs it again on the
+// next pass with nothing of the first attempt left.
+func OnRemoveDirectory(fn func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error) SweepOption {
+	return func(o *sweepOptions) { o.onRemove = fn }
+}
+
+// PendingOlderThan makes a pass of Store.Sweep also reclaim the pending
+// file rows whose updated_at is older than age: the rows of writes that
+// stopped after their first step and were never completed or deleted. Each
+// is moved to deleting at the version the pass read, so a write that
+// completed in the meantime is left as it is; then its object, which may
+// never have been stored, is deleted, and its row purged. The reclaim is
+// off without the option. A write resumed through Files.Ensure keeps its
+// row's updated_at, so age must exceed the longest write a consumer lets
+// run, and a Complete of a reclaimed row is blobfs.ErrDeleting. An age that
+// is not positive is refused before any SQL.
+func PendingOlderThan(age time.Duration) SweepOption {
+	return func(o *sweepOptions) {
+		o.pendingAge = age
+		o.hasPending = true
+	}
 }

@@ -8,7 +8,8 @@ package postgres_test
 // comparison over a consumer's created_at index, the baseline's path walk
 // step and the variant's one-statement resolution, the recursive walks up
 // the tree, the protocol steps, each command in its single-statement
-// form, and the read of the roots of the branches being deleted. Each test seeds a fixture in its own throwaway database, captures
+// form, the read of the roots of the branches being deleted, and the read
+// of the pending files an abandoned write left. Each test seeds a fixture in its own throwaway database, captures
 // a statement as the store composes it or takes it from the store's
 // inventory, explains it with EXPLAIN (ANALYZE, BUFFERS) through
 // internal/dbtest, and asserts a plan shape and a buffer bound, never a
@@ -23,6 +24,7 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/standards-lab/sqlate"
 	sqlatepg "github.com/standards-lab/sqlate/postgres"
@@ -358,11 +360,21 @@ func TestPathPlans(t *testing.T) {
 // blobfs_pk_directory with the id as the index condition, with no
 // sequential scan, each reading at most 32 buffers. The regression is a
 // predicate the primary key cannot serve, which scans the table on every
-// step.
+// step. A tenth of the fixture's files are pending, as writes in flight
+// and abandoned leave them, so the partial index of the pending rows,
+// which a fixture with a single pending row would make the cheapest path
+// to that row, is not the planner's choice for a step by id.
 func TestProtocolStepPlans(t *testing.T) {
 	e := openCost(t, stepSizes)
 	stmts := statementsByName(e.store)
 	const bound = 32
+	if _, err := e.db.ExecContext(e.ctx, "UPDATE blobfs_file SET status = 'pending', size = NULL "+
+		"WHERE id IN (SELECT id FROM blobfs_file ORDER BY id LIMIT 1000)"); err != nil {
+		t.Fatalf("seed the pending rows: %v", err)
+	}
+	if _, err := e.db.ExecContext(e.ctx, "ANALYZE blobfs_file"); err != nil {
+		t.Fatalf("ANALYZE: %v", err)
+	}
 	insert := func(name, status string) string {
 		t.Helper()
 		id, err := insertFile(e.ctx, e.db, e.tree.Big.ID, name, status)
@@ -493,5 +505,45 @@ func TestDeletingPlan(t *testing.T) {
 		t.Errorf("the roots' read does not read each parent through the primary key:\n%s", p.Text)
 	case p.Buffers > bound:
 		t.Errorf("the roots' read reads %d buffers, more than %d:\n%s", p.Buffers, bound, p.Text)
+	}
+}
+
+// TestPendingPlan measures the read of the pending files an abandoned
+// write left, pending_files_before, as Store.Sweep binds it: with a
+// thousand pending rows, half last written two hours ago and half just
+// now, a page of the oldest pending rows before an hour ago reaches them
+// through the partial index blobfs_ix_file_pending, bounded by the age as
+// an index condition and in the index's own order, so no sort runs and
+// the scan stops at the page, within one buffer per row fetched plus the
+// index's pages and a fixed allowance for the index roots; the
+// regressions are a pass over the whole table and a sort of every pending
+// row before the page.
+func TestPendingPlan(t *testing.T) {
+	e := openCost(t, stepSizes)
+	for _, age := range []string{"2 hours", "0 seconds"} {
+		if _, err := e.db.ExecContext(e.ctx, "UPDATE blobfs_file SET status = 'pending', updated_at = now() - CAST($1 AS interval) "+
+			"WHERE id IN (SELECT id FROM blobfs_file WHERE status = 'available' ORDER BY id LIMIT 500)", age); err != nil {
+			t.Fatalf("seed the pending rows: %v", err)
+		}
+	}
+	if _, err := e.db.ExecContext(e.ctx, "ANALYZE blobfs_file"); err != nil {
+		t.Fatalf("ANALYZE: %v", err)
+	}
+	const fetch = 20
+	st := statementsByName(e.store)["pending_files_before"]
+	args := bindArgs(t, st, query.Args{"before": time.Now().Add(-time.Hour), "offset": 0, "fetch": fetch})
+	p := e.ex.Explain(e.ctx, t, st.Text(), args...)
+	rows := dbtest.Int(e.ctx, t, e.db, "SELECT COUNT(*) FROM blobfs_file")
+	pending := dbtest.Int(e.ctx, t, e.db, "SELECT COUNT(*) FROM blobfs_file WHERE status = 'pending'")
+	index := dbtest.RelationPages(e.ctx, t, e.db, "blobfs_ix_file_pending")
+	bound := fetch + index + 8
+	t.Logf("the pending read costs %d buffers for a page of %d over %d pending rows; the bound is %d, the table has %d rows", p.Buffers, fetch, pending, bound, rows)
+	switch {
+	case p.Has("Seq Scan"), !p.Has("Index Scan using blobfs_ix_file_pending"), !indexCondHas(p, "updated_at <"):
+		t.Errorf("the pending read does not reach the old pending rows through the partial index:\n%s", p.Text)
+	case p.Has("Sort"):
+		t.Errorf("the pending read sorts the pending rows instead of reading them in the index's order:\n%s", p.Text)
+	case p.Buffers > bound:
+		t.Errorf("the pending read reads %d buffers, more than %d:\n%s", p.Buffers, bound, p.Text)
 	}
 }

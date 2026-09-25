@@ -82,9 +82,15 @@ import (
 // same refusals as the baseline, a marked branch hidden from the listings
 // and shown by IncludeDeleting, the listing of a deleting directory
 // refused, a cursor issued before a mark continuing without the marked
-// rows, and Deleting's roots against a plain query). Branches runs last
-// because the branches it marks stay in the tree, and Deleting reads them
-// all.
+// rows, and Deleting's roots against a plain query); and Sweeps
+// (Store.Sweep draining the branches the earlier groups left, then, on
+// both stores, nothing to do, a full sweep of a three-level branch with
+// its hook, a crash between an object's delete and its row's purge
+// finished by the next pass, stragglers, the batch bound's More, a hook
+// that aborts a removal, and the pending reclaim's age). Branches runs
+// after the other groups because the branches it marks stay in the tree,
+// and Deleting reads them all; Sweeps runs last because its first pass
+// removes them.
 func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, engine data.Engine) {
 	t.Helper()
 	dialect := db.Dialect()
@@ -124,6 +130,7 @@ func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, engine data.Engine
 	t.Run("Listing", s.listing)
 	t.Run("Keyset", s.keyset)
 	t.Run("Branches", s.branches)
+	t.Run("Sweeps", s.sweeps)
 }
 
 // suite is one run's state.
