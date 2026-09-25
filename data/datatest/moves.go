@@ -192,8 +192,8 @@ func (s *suite) renameDirectory(t *testing.T) {
 // moveDirectoryRefusals checks the move's refusals against the baseline,
 // each leaving the row unchanged: a name held under the new parent is
 // ErrNameTaken under the unique constraint, while a file of that name is
-// no conflict; a missing parent is ErrNotFound under the foreign key; a
-// missing directory is ErrNotFound; a stale version is
+// no conflict; a missing parent is ErrNotFound from the read of the parent
+// the update's predicate refused; a missing directory is ErrNotFound; a stale version is
 // ErrVersionMismatch; and a refused name is a NameError.
 func (s *suite) moveDirectoryRefusals(t *testing.T) {
 	p := s.mkdir(t, "taken-"+t.Name())
@@ -211,7 +211,7 @@ func (s *suite) moveDirectoryRefusals(t *testing.T) {
 		constraint string
 	}{
 		{"NameTaken", d.ID, p.ID, "held", d.Version, blobfs.ErrNameTaken, blobfs.ConstraintUniqueDirectoryParentName},
-		{"MissingParent", d.ID, blobfs.NewID(), "d", d.Version, blobfs.ErrNotFound, blobfs.ConstraintForeignKeyDirectoryParent},
+		{"MissingParent", d.ID, blobfs.NewID(), "d", d.Version, blobfs.ErrNotFound, ""},
 		{"MissingDirectory", missing, blobfs.RootID, "ghost", 1, blobfs.ErrNotFound, ""},
 		{"StaleVersion", d.ID, blobfs.RootID, name("stale-" + t.Name()), d.Version + 1, query.ErrVersionMismatch, ""},
 		{"RefusedName", d.ID, blobfs.RootID, "a/b", d.Version, blobfs.ErrInvalidName, ""},

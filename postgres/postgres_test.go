@@ -264,12 +264,12 @@ func TestHoldFileSQL(t *testing.T) {
 
 // resolvedColumns is the resolve_path row: the directory columns then the
 // depth.
-var resolvedColumns = []string{"id", "parent_id", "name", "version", "created_at", "updated_at", "depth"}
+var resolvedColumns = []string{"id", "parent_id", "name", "status", "version", "created_at", "updated_at", "depth"}
 
 // resolvedResponse scripts the deepest row a walk reached, at depth.
 func resolvedResponse(id, parent, name string, depth int64) sqltest.Response {
 	now := time.Now()
-	return sqltest.Response{Columns: resolvedColumns, Rows: [][]driver.Value{{id, parent, name, int64(1), now, now, depth}}}
+	return sqltest.Response{Columns: resolvedColumns, Rows: [][]driver.Value{{id, parent, name, "active", int64(1), now, now, depth}}}
 }
 
 // openStore compiles the store over the engine under the stub dialect
@@ -300,7 +300,7 @@ func TestResolvePathIsOneStatement(t *testing.T) {
 		t.Fatalf("ops = %v, want one query for three segments", ops)
 	}
 	c := rec.Calls()[0]
-	if !strings.HasPrefix(c.SQL, "WITH RECURSIVE walk (id, parent_id, name, version, created_at, updated_at, depth) AS (") ||
+	if !strings.HasPrefix(c.SQL, "WITH RECURSIVE walk (id, parent_id, name, status, version, created_at, updated_at, depth) AS (") ||
 		!strings.Contains(c.SQL, "WHERE d.id = CAST($1 AS uuid)") ||
 		!strings.Contains(c.SQL, "d.name = (CAST($2 AS text[]))[w.depth + 1]") ||
 		!strings.HasSuffix(c.SQL, "WHERE w.depth = (SELECT max(x.depth) FROM walk x)") {

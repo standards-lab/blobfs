@@ -54,9 +54,10 @@ func (s *suite) createFile(t *testing.T) {
 }
 
 // createFileRefusals checks Create's and Ensure's refusals against the
-// baseline: a name taken by a row of any status, a missing directory, and
-// a taken id, each by its sentinel over its constraint in the same text
-// on both stores, Ensure finding the taken name instead of refusing it;
+// baseline: a name taken by a row of any status and a taken id, each by
+// its sentinel over its constraint, and a missing directory, ErrNotFound
+// from the read of the directory the insert did not select, in the same
+// text on both stores, Ensure finding the taken name instead of refusing it;
 // and the refusals before any SQL, a refused name, a refused id, and a
 // key the store refuses, which leave no row.
 func (s *suite) createFileRefusals(t *testing.T) {
@@ -72,12 +73,12 @@ func (s *suite) createFileRefusals(t *testing.T) {
 	}{
 		{"NameTaken", dir.ID, "taken.txt", nil, blobfs.ErrNameTaken, blobfs.ConstraintUniqueFileDirectoryName},
 		{"NameTakenByADeletingRow", dir.ID, "deleting.txt", nil, blobfs.ErrNameTaken, blobfs.ConstraintUniqueFileDirectoryName},
-		{"MissingDirectory", blobfs.NewID(), "orphan.txt", nil, blobfs.ErrNotFound, blobfs.ConstraintForeignKeyFileDirectory},
+		{"MissingDirectory", blobfs.NewID(), "orphan.txt", nil, blobfs.ErrNotFound, ""},
 		{"IDTaken", dir.ID, "twin.txt", []data.CreateOption{data.WithID(taken)}, blobfs.ErrIDTaken, blobfs.ConstraintPrimaryKeyFile},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, c.dir, c.file, "text/plain", c.opts...)
-			wantViolation(t, err, c.want, c.constraint)
+			wantRefusal(t, err, c.want, c.constraint)
 			_, base := s.baseline.Files.Create(s.ctx, s.db, acceptAll{}, c.dir, c.file, "text/plain", c.opts...)
 			wantSameError(t, err, base)
 			found, outcome, err := s.store.Files.Ensure(s.ctx, s.db, acceptAll{}, c.dir, c.file, "text/plain", c.opts...)
@@ -89,7 +90,7 @@ func (s *suite) createFileRefusals(t *testing.T) {
 				}
 				return
 			}
-			wantViolation(t, err, c.want, c.constraint)
+			wantRefusal(t, err, c.want, c.constraint)
 			wantSameError(t, err, base)
 		})
 	}

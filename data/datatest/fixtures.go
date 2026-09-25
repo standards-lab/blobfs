@@ -104,6 +104,21 @@ func (s *suite) insertFile(t *testing.T, dir, n string, status blobfs.Status) st
 	return id
 }
 
+// insertDirectory inserts an active directory row under parent through
+// plain SQL, with the dialect's placeholders, and returns its id: a
+// straggler, which a create that read its parent as active before a mark
+// committed leaves in a deleting branch.
+func (s *suite) insertDirectory(t *testing.T, parent, n string) string {
+	t.Helper()
+	id := blobfs.NewID()
+	p := s.db.Dialect().Placeholder
+	text := fmt.Sprintf("INSERT INTO blobfs_directory (id, parent_id, name) VALUES (%s, %s, %s)", p(1), p(2), p(3))
+	if _, err := s.db.ExecContext(s.ctx, text, id, parent, n); err != nil {
+		t.Fatalf("insert directory %s: %v", n, err)
+	}
+	return id
+}
+
 // insertFileAt inserts an available file row at a fixed created_at and
 // version through plain SQL and returns its id, so a sort by either has
 // ties the key must break.
@@ -246,7 +261,7 @@ func (s *suite) references(t *testing.T, id string) int {
 
 // equalDirectory compares two rows field by field, timestamps by instant.
 func equalDirectory(a, b blobfs.Directory) bool {
-	return a.ID == b.ID && equalString(a.ParentID, b.ParentID) && a.Name == b.Name &&
+	return a.ID == b.ID && equalString(a.ParentID, b.ParentID) && a.Name == b.Name && a.Status == b.Status &&
 		a.Version == b.Version && a.CreatedAt.Equal(b.CreatedAt) && a.UpdatedAt.Equal(b.UpdatedAt)
 }
 
@@ -286,6 +301,21 @@ func wantViolation(t *testing.T, err, want error, constraint string) {
 	}
 	if suffix := want.Error() + " (constraint " + constraint + ")"; !strings.HasSuffix(err.Error(), suffix) || strings.Contains(err.Error(), ce.Err.Error()) {
 		t.Errorf("the refusal reads %q, want a message ending with %q and none of the driver's text", err, suffix)
+	}
+}
+
+// wantRefusal checks err is want: over the named constraint as wantViolation
+// does, or, with no constraint, a refusal the store classified by reading a
+// row, which is no blobfs.ViolationError.
+func wantRefusal(t *testing.T, err, want error, constraint string) {
+	t.Helper()
+	if constraint != "" {
+		wantViolation(t, err, want, constraint)
+		return
+	}
+	var ve *blobfs.ViolationError
+	if !errors.Is(err, want) || errors.As(err, &ve) {
+		t.Errorf("got %v, want %v and no constraint violation", err, want)
 	}
 }
 

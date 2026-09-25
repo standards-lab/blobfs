@@ -64,7 +64,8 @@ func TestFindByName(t *testing.T) {
 // its own; under the fallback inside the caller's transaction, the same
 // two statements in it; and under the returning dialect, one statement,
 // the insert with RETURNING, on either session. The name is normalized
-// and the id is taken from WithID, bound to the insert and the read.
+// and the id is taken from WithID, bound to the insert and the read, and
+// the insert selects the row from its parent only while it is active.
 func TestCreateForms(t *testing.T) {
 	ctx := context.Background()
 	id := blobfs.NewID()
@@ -101,8 +102,8 @@ func TestCreateForms(t *testing.T) {
 				insert = call
 			}
 		}
-		if !slices.Equal(insert.Args, []any{id, blobfs.RootID, nfcName}) {
-			t.Errorf("%s: the insert bound %v, want the id, the parent, and the normalized name", c.form.name, insert.Args)
+		if !slices.Equal(insert.Args, []any{id, nfcName, blobfs.RootID}) || !strings.Contains(insert.SQL, "p.status = 'active'") {
+			t.Errorf("%s: the insert bound %v, want the id, the normalized name, and the parent it selects from:\n%s", c.form.name, insert.Args, insert.SQL)
 		}
 		if strings.Contains(insert.SQL, "RETURNING") != c.form.single {
 			t.Errorf("%s: the insert is not the form's:\n%s", c.form.name, insert.SQL)
@@ -159,6 +160,44 @@ func TestCreateRefusals(t *testing.T) {
 				t.Errorf("%s: ops = %q, want %q", f.name, got, want)
 			}
 		}
+	}
+}
+
+// TestCreateUnderAClosedParent proves an insert that selected no row from
+// its parent reads the parent to classify the refusal, in both forms: a
+// missing parent is ErrNotFound and a deleting one ErrDeleting, neither a
+// violation. A read that found a row another insert left under a
+// caller-supplied id is no success either.
+func TestCreateUnderAClosedParent(t *testing.T) {
+	ctx := context.Background()
+	for _, f := range forms {
+		unchanged := []sqltest.Response{noDirectory(), noDirectory()}
+		if !f.single {
+			unchanged = []sqltest.Response{{Affected: 0}, noDirectory()}
+		}
+		for _, c := range []struct {
+			parent sqltest.Response
+			want   error
+		}{
+			{noDirectory(), blobfs.ErrNotFound},
+			{directoryIn("P", blobfs.RootID, "p", blobfs.DirectoryStatusDeleting, 2), blobfs.ErrDeleting},
+		} {
+			s, db, rec := openStore(t, f, append(unchanged, c.parent)...)
+			_, err := s.Directories.Create(ctx, db, "P", "docs")
+			var ve *blobfs.ViolationError
+			if !errors.Is(err, c.want) || errors.As(err, &ve) {
+				t.Errorf("%s: Create under a parent the insert did not select = %v, want %v", f.name, err, c.want)
+			}
+			calls := rec.Calls()
+			if last := calls[len(calls)-1]; !strings.HasPrefix(last.SQL, "SELECT d.id") || !slices.Equal(last.Args, []any{"P"}) {
+				t.Errorf("%s: the last call is %q with %v, want the read of the parent", f.name, last.SQL, last.Args)
+			}
+		}
+	}
+	s, db, _ := openStore(t, fallback, sqltest.Response{Affected: 0}, childResponse("X", "other"),
+		directoryIn("P", blobfs.RootID, "p", blobfs.DirectoryStatusDeleting, 2))
+	if _, err := s.Directories.Create(ctx, db, "P", "docs", data.WithID(blobfs.NewID())); !errors.Is(err, blobfs.ErrDeleting) {
+		t.Errorf("Create whose read found another row = %v, want ErrDeleting", err)
 	}
 }
 
@@ -251,6 +290,20 @@ func TestEnsure(t *testing.T) {
 				t.Errorf("ops = %q, want %q: no recovery lookup after a violation that is not the name's", got, want)
 			}
 		})
+	}
+}
+
+// TestEnsureFindsADeletingDirectory proves a lookup that finds a deleting
+// directory refuses it as ErrDeleting, with no insert: its branch is being
+// removed and takes no child.
+func TestEnsureFindsADeletingDirectory(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, fallback, directoryIn("D", blobfs.RootID, "docs", blobfs.DirectoryStatusDeleting, 2))
+	if _, _, err := s.Directories.Ensure(ctx, db, blobfs.RootID, "docs"); !errors.Is(err, blobfs.ErrDeleting) {
+		t.Errorf("Ensure of a deleting directory = %v, want ErrDeleting", err)
+	}
+	if got := ops(rec); got != "query" {
+		t.Errorf("ops = %q, want the one lookup", got)
 	}
 }
 

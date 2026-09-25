@@ -72,8 +72,14 @@ import (
 // isolation refuses on every variant); Listing (both listings against a
 // plain query, the page boundaries, the counted total's rules for empty
 // and continued pages, the total under concurrent inserts, and the
-// refusals); and Keyset (every cursorable sort walked to the end against
-// the baseline and an offset walk, without and then with a sort index).
+// refusals); Keyset (every cursorable sort walked to the end against the
+// baseline and an offset walk, without and then with a sort index); and
+// Branches (MarkDeleting's counts over a three-level branch against the
+// baseline, the marked rows read back deleting, the root and a missing
+// directory refused, a repeated mark converging and reaching stragglers,
+// and every create, ensure, and move a deleting directory refuses, with
+// the same refusals as the baseline). Branches runs last because the
+// branches it marks stay in the tree.
 func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, engine data.Engine) {
 	t.Helper()
 	dialect := db.Dialect()
@@ -112,6 +118,7 @@ func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, engine data.Engine
 	t.Run("Moves", s.moves)
 	t.Run("Listing", s.listing)
 	t.Run("Keyset", s.keyset)
+	t.Run("Branches", s.branches)
 }
 
 // suite is one run's state.

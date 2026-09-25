@@ -25,7 +25,7 @@
 -- and matches nothing, so a walk runs at most len(segments) steps and a
 -- cycle in the tree, which the variant's lock prevents but a consumer's own
 -- writes could leave, cannot extend it.
-WITH RECURSIVE walk (id, parent_id, name, version, created_at, updated_at, depth) AS (
+WITH RECURSIVE walk (id, parent_id, name, status, version, created_at, updated_at, depth) AS (
     SELECT {{> blobfs.directory_columns}}, CAST(0 AS integer)
     FROM blobfs_directory d
     WHERE d.id = {{start_id:uuid}}
@@ -34,6 +34,6 @@ WITH RECURSIVE walk (id, parent_id, name, version, created_at, updated_at, depth
     FROM walk w
     JOIN blobfs_directory d ON d.parent_id = w.id AND d.name = (CAST({{segments}} AS text[]))[w.depth + 1]
 )
-SELECT w.id, w.parent_id, w.name, w.version, w.created_at, w.updated_at, w.depth
+SELECT w.id, w.parent_id, w.name, w.status, w.version, w.created_at, w.updated_at, w.depth
 FROM walk w
 WHERE w.depth = (SELECT max(x.depth) FROM walk x)

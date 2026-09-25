@@ -13,6 +13,7 @@ import (
 	"github.com/standards-lab/sqlate/sqltest"
 
 	"github.com/standards-lab/blobfs"
+	"github.com/standards-lab/blobfs/data"
 )
 
 // within scripts the cycle check's count.
@@ -78,6 +79,7 @@ func TestMoveIsThreeStepsUnderOneLock(t *testing.T) {
 			}
 			update := calls[2]
 			if !strings.HasPrefix(update.SQL, "UPDATE blobfs_directory") || !strings.Contains(update.SQL, "AND parent_id IS NOT NULL") ||
+				strings.Count(update.SQL, "status = 'active'") != 3 ||
 				strings.Contains(update.SQL, "RETURNING") != f.single {
 				t.Errorf("the update is %q", update.SQL)
 			}
@@ -99,11 +101,13 @@ func TestMoveIsThreeStepsUnderOneLock(t *testing.T) {
 
 // TestMoveClassifies proves the outcomes of the guarded update in both
 // forms: no row at all is ErrNotFound; a row at another version is
-// ErrVersionMismatch naming both versions; a row at the expected version
-// the update's own predicate refused is the root, ErrRootDirectory; a
-// missing new parent is ErrNotFound through the foreign key, and a taken
-// name ErrNameTaken through the unique constraint, each with the
-// constraint reachable.
+// ErrVersionMismatch naming both versions; a root the update's own
+// predicate refused is ErrRootDirectory; a deleting directory, or one whose
+// current or new parent is deleting, is ErrDeleting at any version, the
+// parents told by their reads; a missing new parent is ErrNotFound from
+// those reads at the expected version, or through the foreign key once the
+// predicate passed, and a taken name ErrNameTaken through the unique
+// constraint, each with the constraint reachable.
 func TestMoveClassifies(t *testing.T) {
 	ctx := context.Background()
 	for _, f := range forms {
@@ -125,12 +129,42 @@ func TestMoveClassifies(t *testing.T) {
 			if err := move(unchanged(noDirectory())...); !errors.Is(err, blobfs.ErrNotFound) {
 				t.Errorf("Move of a missing directory = %v, want ErrNotFound", err)
 			}
-			err := move(unchanged(directoryResponse("D", blobfs.RootID, "d", 3))...)
+			// parents scripts the reads of the current and the new parent.
+			parents := func(from, to sqltest.Response) []sqltest.Response { return []sqltest.Response{from, to} }
+			active := parents(directoryResponse(blobfs.RootID, "", "/", 1), directoryResponse("P", blobfs.RootID, "p", 1))
+			err := move(append(unchanged(directoryResponse("D", blobfs.RootID, "d", 3)), active...)...)
 			if !errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "expected 1, current 3") {
 				t.Errorf("Move at a stale version = %v, want ErrVersionMismatch naming both versions", err)
 			}
 			if err := move(unchanged(directoryResponse("D", "", "/", 1))...); !errors.Is(err, blobfs.ErrRootDirectory) {
 				t.Errorf("Move refused by the update's own predicate = %v, want ErrRootDirectory", err)
+			}
+			for _, version := range []int64{1, 3} {
+				// A deleting branch outranks a stale version: the mark
+				// advanced the version past the one the mover read.
+				err := move(unchanged(directoryIn("D", "S", "d", blobfs.DirectoryStatusDeleting, version))...)
+				if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) {
+					t.Errorf("Move of a deleting directory at version %d = %v, want ErrDeleting", version, err)
+				}
+				err = move(append(unchanged(directoryResponse("D", "S", "d", version)), directoryIn("S", blobfs.RootID, "s", blobfs.DirectoryStatusDeleting, 2))...)
+				if !errors.Is(err, blobfs.ErrDeleting) || !strings.Contains(err.Error(), "its directory S is deleting") {
+					t.Errorf("Move out of a deleting parent at version %d = %v, want ErrDeleting", version, err)
+				}
+				err = move(append(unchanged(directoryResponse("D", "S", "d", version)),
+					parents(directoryResponse("S", blobfs.RootID, "s", 1), directoryIn("P", blobfs.RootID, "p", blobfs.DirectoryStatusDeleting, 2))...)...)
+				if !errors.Is(err, blobfs.ErrDeleting) || !strings.Contains(err.Error(), "the directory P is deleting") {
+					t.Errorf("Move under a deleting parent at version %d = %v, want ErrDeleting", version, err)
+				}
+			}
+			missing := parents(directoryResponse(blobfs.RootID, "", "/", 1), noDirectory())
+			err = move(append(unchanged(directoryResponse("D", blobfs.RootID, "d", 1)), missing...)...)
+			var ve *blobfs.ViolationError
+			if !errors.Is(err, blobfs.ErrNotFound) || errors.As(err, &ve) {
+				t.Errorf("Move under a missing parent = %v, want ErrNotFound", err)
+			}
+			err = move(append(unchanged(directoryResponse("D", blobfs.RootID, "d", 1)), active...)...)
+			if err == nil || errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "active at version 1") {
+				t.Errorf("Move refused with every row active = %v, want an error naming the row's state", err)
 			}
 			for _, c := range []struct {
 				constraint string
@@ -169,5 +203,51 @@ func TestIsWithin(t *testing.T) {
 	// The walk discards a row it has produced, so it terminates on a cycle.
 	if text := rec.Calls()[0].SQL; !strings.Contains(text, "UNION\n") || strings.Contains(text, "UNION ALL") {
 		t.Errorf("the walk does not combine its steps with UNION:\n%s", text)
+	}
+}
+
+// TestMarkDeleting proves the mark of a branch in the caller's transaction:
+// the root refused before any SQL; the tree lock (a no-op on the baseline),
+// the directories' update, and the files' update, each bound to the id,
+// with their counts reported; a mark that changed no directory reading the
+// row to tell a missing directory, ErrNotFound with no files' update, from
+// a branch marked already, which is no error.
+func TestMarkDeleting(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, fallback)
+	if _, err := s.Directories.MarkDeleting(ctx, begin(t, db), blobfs.RootID); !errors.Is(err, blobfs.ErrRootDirectory) {
+		t.Errorf("MarkDeleting(root) = %v, want ErrRootDirectory", err)
+	}
+	if got := ops(rec); got != "begin" {
+		t.Errorf("the root's refusal reached the driver with %q", got)
+	}
+
+	s, db, rec = openStore(t, fallback, sqltest.Response{Affected: 3}, sqltest.Response{Affected: 5})
+	marked, err := s.Directories.MarkDeleting(ctx, begin(t, db), "D")
+	if err != nil || marked != (data.Marked{Directories: 3, Files: 5}) {
+		t.Fatalf("MarkDeleting = %+v, %v, want 3 directories and 5 files", marked, err)
+	}
+	execs := rec.Calls()[1:]
+	if len(execs) != 2 || !strings.HasPrefix(execs[0].SQL, "UPDATE blobfs_directory") || !strings.HasPrefix(execs[1].SQL, "UPDATE blobfs_file") {
+		t.Fatalf("MarkDeleting ran %v, want the directories' update and then the files'", execs)
+	}
+	for _, c := range execs {
+		if !slices.Equal(c.Args, []any{"D"}) || !strings.Contains(c.SQL, "WITH RECURSIVE branch") || !strings.Contains(c.SQL, "status <> 'deleting'") {
+			t.Errorf("the mark ran %q with %v, want the walk of the branch bound to the id", c.SQL, c.Args)
+		}
+	}
+
+	s, db, rec = openStore(t, fallback, sqltest.Response{Affected: 0}, noDirectory())
+	if _, err := s.Directories.MarkDeleting(ctx, begin(t, db), "D"); !errors.Is(err, blobfs.ErrNotFound) {
+		t.Errorf("MarkDeleting of a missing directory = %v, want ErrNotFound", err)
+	}
+	if got := ops(rec); got != "begin exec query" {
+		t.Errorf("ops = %q, want the directories' update and the read, and no files' update", got)
+	}
+
+	s, db, _ = openStore(t, fallback, sqltest.Response{Affected: 0}, directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusDeleting, 2), sqltest.Response{Affected: 1})
+	marked, err = s.Directories.MarkDeleting(ctx, begin(t, db), "D")
+	if err != nil || marked != (data.Marked{Files: 1}) {
+		t.Errorf("MarkDeleting of a marked branch = %+v, %v, want no directory and the one straggling file", marked, err)
 	}
 }

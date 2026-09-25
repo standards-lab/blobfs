@@ -59,7 +59,11 @@ var (
 	ErrInvalidTransition = errors.New("blobfs: invalid status transition")
 
 	// ErrDeleting reports a mutation refused because the row is deleting:
-	// a move or rename, or a status change out of deleting.
+	// a move or rename, or a status change out of deleting. It also reports
+	// a mutation refused because a directory it reaches is deleting: a
+	// create or an ensure under a deleting directory, a move into one, and a
+	// move of a directory or file whose parent is deleting, since a branch
+	// marked for removal takes nothing in and lets nothing out.
 	ErrDeleting = errors.New("blobfs: row is deleting")
 
 	// ErrNotDeleting reports a purge, the last step of the two-phase

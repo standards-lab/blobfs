@@ -108,8 +108,9 @@ func (s *suite) createDirectory(t *testing.T) {
 }
 
 // createDirectoryRefusals checks Create's and Ensure's refusals against the
-// baseline: a taken name in either spelling, a missing parent, and a taken
-// id, each by its sentinel over its constraint in the same text on both
+// baseline: a taken name in either spelling and a taken id, each by its
+// sentinel over its constraint, and a missing parent, ErrNotFound from the
+// read of the parent the insert did not select, in the same text on both
 // stores, Ensure finding the taken name instead of refusing it; and the
 // refusals before any SQL, an invalid name and an invalid id, which leave
 // no row.
@@ -126,12 +127,12 @@ func (s *suite) createDirectoryRefusals(t *testing.T) {
 	}{
 		{"NameTaken", parent.ID, composed, nil, blobfs.ErrNameTaken, blobfs.ConstraintUniqueDirectoryParentName},
 		{"NameTakenDecomposed", parent.ID, decomposed, nil, blobfs.ErrNameTaken, blobfs.ConstraintUniqueDirectoryParentName},
-		{"MissingParent", blobfs.NewID(), "orphan", nil, blobfs.ErrNotFound, blobfs.ConstraintForeignKeyDirectoryParent},
+		{"MissingParent", blobfs.NewID(), "orphan", nil, blobfs.ErrNotFound, ""},
 		{"IDTaken", parent.ID, "twin", []data.CreateOption{data.WithID(taken.ID)}, blobfs.ErrIDTaken, blobfs.ConstraintPrimaryKeyDirectory},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := s.store.Directories.Create(s.ctx, s.db, c.parent, c.dir, c.opts...)
-			wantViolation(t, err, c.want, c.constraint)
+			wantRefusal(t, err, c.want, c.constraint)
 			_, base := s.baseline.Directories.Create(s.ctx, s.db, c.parent, c.dir, c.opts...)
 			wantSameError(t, err, base)
 			found, created, err := s.store.Directories.Ensure(s.ctx, s.db, c.parent, c.dir, c.opts...)
@@ -143,7 +144,7 @@ func (s *suite) createDirectoryRefusals(t *testing.T) {
 				}
 				return
 			}
-			wantViolation(t, err, c.want, c.constraint)
+			wantRefusal(t, err, c.want, c.constraint)
 			wantSameError(t, err, base)
 		})
 	}

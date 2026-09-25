@@ -2,6 +2,8 @@ package data
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/standards-lab/sqlate"
@@ -22,9 +24,11 @@ type Directories struct {
 	ancestors query.Rows[ancestor]
 	isWithin  query.Rows[int64]
 	create    query.Returning[blobfs.Directory]
-	move      query.RowGuard[blobfs.Directory]
+	move      query.Returning[blobfs.Directory]
 	remove    query.Statement
 	removeAt  query.Statement
+	markDirs  query.Statement
+	markFiles query.Statement
 }
 
 // ancestor is one row of directory_ancestors: a directory's id, parent,
@@ -47,10 +51,11 @@ func newDirectories(stmts *query.Statements, variant Variant) *Directories {
 		ancestors: stmts.Statement("directory_ancestors").Scan(query.Scanner[ancestor]()),
 		isWithin:  stmts.Statement("directory_is_within").Scan(query.Scalar[int64]),
 		create:    stmts.Statement("create_directory").Returning(directory),
-		move: stmts.Statement("move_directory").Returning(directory).
-			Guarded("version", func(d blobfs.Directory) int64 { return d.Version }),
-		remove:   stmts.Statement("delete_directory"),
-		removeAt: stmts.Statement("delete_directory_at_version"),
+		move:      stmts.Statement("move_directory").Returning(directory),
+		remove:    stmts.Statement("delete_directory"),
+		removeAt:  stmts.Statement("delete_directory_at_version"),
+		markDirs:  stmts.Statement("mark_directory_deleting"),
+		markFiles: stmts.Statement("mark_directory_files_deleting"),
 	}
 }
 
@@ -95,8 +100,10 @@ func (d *Directories) findByName(ctx context.Context, sess sqlate.Session, paren
 // by the schema. The id is minted, or taken from WithID and checked,
 // before any SQL. A name already held by a directory under the same parent
 // is blobfs.ErrNameTaken, an id another directory carries is
-// blobfs.ErrIDTaken, and a parent that does not exist is
-// blobfs.ErrNotFound.
+// blobfs.ErrIDTaken, a parent that does not exist is blobfs.ErrNotFound,
+// and a parent that is deleting is blobfs.ErrDeleting. The insert selects
+// the row from its parent only while the parent is active, and when it
+// inserts nothing the parent is read to tell the two refusals apart.
 //
 // The insert is a returning command: it runs in the single-statement form
 // where the dialect renders RETURNING, and otherwise in the fallback, the
@@ -133,7 +140,9 @@ func (d *Directories) Create(ctx context.Context, sess sqlate.Session, parentID,
 // fail as blobfs.ErrNameTaken. On the pool the row is then looked up again
 // and returned as found. Inside a transaction the error is returned instead,
 // because on PostgreSQL the failed insert has aborted the transaction, and
-// the caller retries the transaction. The other refusals are Create's.
+// the caller retries the transaction. A found row that is deleting is
+// blobfs.ErrDeleting, since its branch is being removed and it takes no
+// child. The other refusals are Create's.
 func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (blobfs.Directory, bool, error) {
 	name, err := validName(name)
 	if err != nil {
@@ -150,20 +159,30 @@ func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID,
 		func(ctx context.Context, sess sqlate.Session) (blobfs.Directory, error) {
 			return d.insert(ctx, sess, id, parentID, name)
 		})
-	if err != nil {
+	switch {
+	case err != nil:
 		return blobfs.Directory{}, false, fmt.Errorf("data: ensure directory %q under %s: %w", name, parentID, err)
+	case !dir.Status.Mutable():
+		return blobfs.Directory{}, false, fmt.Errorf("data: ensure directory %q under %s: the directory %s is %s: %w", name, parentID, dir.ID, dir.Status, blobfs.ErrDeleting)
 	}
 	return dir, created, nil
 }
 
 // insert runs create_directory under id and returns the row as the
 // database holds it. The name is normalized and validated already. A
-// constraint violation is classified through the write mapping and
-// returned without context, so each caller adds its own.
+// constraint violation is classified through the write mapping, and an
+// insert that selected no row from its parent by reading the parent, and
+// either is returned without context, so each caller adds its own. The
+// read of an insert that selected no row finds nothing, or finds a row
+// another insert left under a caller-supplied id; either way nothing was
+// inserted, and the parent says why.
 func (d *Directories) insert(ctx context.Context, sess sqlate.Session, id, parentID, name string) (blobfs.Directory, error) {
-	dir, _, err := d.create.One(ctx, sess, query.Args{"id": id, "parent_id": parentID, "name": name})
-	if err != nil {
+	dir, changed, err := d.create.One(ctx, sess, query.Args{"id": id, "parent_id": parentID, "name": name})
+	switch {
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		return blobfs.Directory{}, classifyWrite(err)
+	case err != nil || !changed:
+		return blobfs.Directory{}, refusedUnder(ctx, sess, d.byID, parentID)
 	}
 	return dir, nil
 }
@@ -211,4 +230,80 @@ func (d *Directories) Delete(ctx context.Context, sess sqlate.Session, id string
 		return fmt.Errorf("data: delete directory %s: %w", id, notFound(err))
 	}
 	return fmt.Errorf("data: delete directory %s: %w", id, versionMismatch(o.version, dir.Version))
+}
+
+// Marked is what Directories.MarkDeleting moved to deleting: the number of
+// directories, the one named and those beneath it, and the number of files
+// in them. A row that was deleting already is not counted, so a repeated
+// mark reports only what it reached anew, and none when nothing was.
+type Marked struct {
+	Directories int64
+	Files       int64
+}
+
+// MarkDeleting is the first step of a branch's delete: it marks the
+// directory with id, every directory beneath it, and every file in them
+// blobfs.DirectoryStatusDeleting and blobfs.StatusDeleting, advancing the
+// version of each row it changes, and reports how many of each it changed.
+// From then on the branch is closed: a create, an ensure, or a move under a
+// deleting directory is blobfs.ErrDeleting, and so is a move of a directory
+// or file out of one. A mark is never undone; the branch's rows are removed
+// by the file delete's later steps and by Delete, deepest first.
+//
+// It runs in tx under the tree lock, LockTree, so the branch the two
+// statements walk is not reshaped by a move between them: one recursive
+// update marks the directories and a second one, over the same walk, marks
+// the files. The lock does not stop a create that read the parent as
+// active before the mark committed; such a straggler lands in the branch
+// active, and a repeated mark, which walks through rows already deleting,
+// reaches it. The file update takes each file's row lock, so it waits on a
+// Files.Hold another transaction took, as Files.Delete does.
+//
+// The root is blobfs.ErrRootDirectory, refused before any SQL, and neither
+// statement ever marks a row without a parent. A directory that does not
+// exist is blobfs.ErrNotFound. A branch marked already is no error: the
+// mark changes nothing it marked before and reports what it changed.
+//
+// With AtVersion, the directory is marked only at that version, read under
+// the tree lock, which every change to a directory's version takes; a
+// directory at another version is query.ErrVersionMismatch, and nothing is
+// marked. A directory that is deleting already is the mark's retry, which
+// converges whatever the version, as a file's is in Files.Delete.
+func (d *Directories) MarkDeleting(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) (Marked, error) {
+	if id == blobfs.RootID {
+		return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, blobfs.ErrRootDirectory)
+	}
+	var o holdOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if err := d.LockTree(ctx, tx); err != nil {
+		return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, err)
+	}
+	args := query.Args{"id": id}
+	if o.hasVersion {
+		dir, err := d.byID.One(ctx, tx, args)
+		switch {
+		case err != nil:
+			return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, notFound(err))
+		case dir.Status.Mutable() && dir.Version != o.version:
+			return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, versionMismatch(o.version, dir.Version))
+		}
+	}
+	dirs, err := d.markDirs.Exec(ctx, tx, args)
+	if err != nil {
+		return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, err)
+	}
+	if dirs == 0 {
+		// Nothing was marked: the directory is missing, or its branch was
+		// marked already, which the read tells apart.
+		if _, err := d.byID.One(ctx, tx, args); err != nil {
+			return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, notFound(err))
+		}
+	}
+	files, err := d.markFiles.Exec(ctx, tx, args)
+	if err != nil {
+		return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, err)
+	}
+	return Marked{Directories: dirs, Files: files}, nil
 }

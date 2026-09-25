@@ -60,9 +60,9 @@ func TestMigrationsWithAConsumerSet(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Status: %v", err)
 		}
-		if len(status) != 2 || status[0].Name != postgres.Source || status[0].Table != postgres.Table || status[0].Version != 2 ||
+		if len(status) != 2 || status[0].Name != postgres.Source || status[0].Table != postgres.Table || status[0].Version != 3 ||
 			status[1].Name != "consumer" || status[1].Version != 1 || status[0].Dirty || status[1].Dirty {
-			t.Fatalf("Status after Up = %+v, want blobfs at 2 under %s and the consumer at 1", status, postgres.Table)
+			t.Fatalf("Status after Up = %+v, want blobfs at 3 under %s and the consumer at 1", status, postgres.Table)
 		}
 		if n := dbtest.Int(ctx, t, db, "SELECT count(*) FROM blobfs_directory WHERE id = $1 AND parent_id IS NULL AND name = '/'", blobfs.RootID); n != 1 {
 			t.Errorf("the root is seeded %d times, want once", n)
@@ -83,7 +83,7 @@ func TestMigrationsWithAConsumerSet(t *testing.T) {
 	if dbtest.Exists(ctx, t, db, "consumer_bookmark") {
 		t.Error("the consumer's table survived its revert")
 	}
-	if err := blobfsLayer.Down(ctx, 2); err != nil {
+	if err := blobfsLayer.Down(ctx, 3); err != nil {
 		t.Fatalf("Down of blobfs's set: %v", err)
 	}
 	for _, table := range []string{"blobfs_directory", "blobfs_file"} {
@@ -129,8 +129,8 @@ func insertFile(ctx context.Context, db *sqlate.DB, dir, name, status string) (s
 // dialect under its class with the constraint's name: the second root
 // under blobfs_uq_directory_root, distinct from the primary key; the root
 // rule's check; a directory's empty name and its own parent; the
-// directory and file uniqueness; the file status check; and the two
-// foreign keys, on an insert and on a delete. The data package's
+// directory and file uniqueness; the directory and file status checks; and
+// the two foreign keys, on an insert and on a delete. The data package's
 // mapping of the constants to sentinels is proved through the store in
 // the conformance suite; the one constant no store operation can reach,
 // the root's index, is proved here.
@@ -163,6 +163,10 @@ func TestConstraints(t *testing.T) {
 			_, err := db.ExecContext(ctx, "INSERT INTO blobfs_directory (id, parent_id, name) VALUES ($1, $1, 'self')", blobfs.NewID())
 			return err
 		}, sqlate.ErrCheckViolation, "blobfs_cc_directory_parent_not_self"},
+		{"DirectoryStatus", func() error {
+			_, err := db.ExecContext(ctx, "INSERT INTO blobfs_directory (id, parent_id, name, status) VALUES ($1, $2, 'bogus', 'bogus')", blobfs.NewID(), root)
+			return err
+		}, sqlate.ErrCheckViolation, "blobfs_cc_directory_status"},
 		{"DirectoryNameTaken", func() error { _, err := insertDirectory(ctx, db, &root, ptr("docs")); return err }, sqlate.ErrUniqueViolation, blobfs.ConstraintUniqueDirectoryParentName},
 		{"MissingParent", func() error { _, err := insertDirectory(ctx, db, ptr(blobfs.NewID()), ptr("orphan")); return err }, sqlate.ErrForeignKeyViolation, blobfs.ConstraintForeignKeyDirectoryParent},
 		{"FileNameTaken", func() error { _, err := insertFile(ctx, db, docs, "a.txt", "pending"); return err }, sqlate.ErrUniqueViolation, blobfs.ConstraintUniqueFileDirectoryName},

@@ -73,3 +73,37 @@ func TestStatusBindsAsText(t *testing.T) {
 		t.Errorf("ConvertValue(StatusDeleting) = %#v, want \"deleting\"", v)
 	}
 }
+
+func TestDirectoryStatusValidAndMutable(t *testing.T) {
+	for _, c := range []struct {
+		status  blobfs.DirectoryStatus
+		mutable bool
+	}{
+		{blobfs.DirectoryStatusActive, true},
+		{blobfs.DirectoryStatusDeleting, false},
+	} {
+		if !c.status.Valid() {
+			t.Errorf("%s.Valid() = false", c.status)
+		}
+		if got := c.status.Mutable(); got != c.mutable {
+			t.Errorf("%s.Mutable() = %v, want %v", c.status, got, c.mutable)
+		}
+	}
+	for _, s := range []blobfs.DirectoryStatus{"", "pending", "available", "ACTIVE"} {
+		if s.Valid() {
+			t.Errorf("%q.Valid() = true", s)
+		}
+	}
+}
+
+// TestDirectoryStatusBindsAsText checks that a DirectoryStatus binds as its
+// text without a Valuer, as a Status does.
+func TestDirectoryStatusBindsAsText(t *testing.T) {
+	v, err := driver.DefaultParameterConverter.ConvertValue(blobfs.DirectoryStatusDeleting)
+	if err != nil {
+		t.Fatalf("ConvertValue: %v", err)
+	}
+	if v != "deleting" {
+		t.Errorf("ConvertValue(DirectoryStatusDeleting) = %#v, want \"deleting\"", v)
+	}
+}

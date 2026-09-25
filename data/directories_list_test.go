@@ -28,7 +28,7 @@ func children(parent string, names ...string) sqltest.Response {
 	now := time.Now()
 	r := sqltest.Response{Columns: directoryColumns}
 	for _, n := range names {
-		r.Rows = append(r.Rows, []driver.Value{"id-" + n, parent, n, int64(1), now, now})
+		r.Rows = append(r.Rows, []driver.Value{"id-" + n, parent, n, "active", int64(1), now, now})
 	}
 	return r
 }
@@ -62,7 +62,7 @@ const directoryBase = "FROM blobfs_directory d\nWHERE d.parent_id = CAST($1 AS u
 // filters, itself re-aliased as q for the keyset predicate, the order, and
 // the paging outside it. A listing's own filters, if any, close the inner
 // layer before the count's closing parenthesis.
-const directoryCounted = "SELECT * FROM (SELECT q.*, COUNT(*) OVER () AS sqlate_total FROM (SELECT d.id, d.parent_id, d.name, d.version, d.created_at, d.updated_at\n" + directoryBase
+const directoryCounted = "SELECT * FROM (SELECT q.*, COUNT(*) OVER () AS sqlate_total FROM (SELECT d.id, d.parent_id, d.name, d.status, d.version, d.created_at, d.updated_at\n" + directoryBase
 
 // TestListDirectories proves List by page number: the total counted in the
 // page's own statement, one query per page, over the base anchored on the

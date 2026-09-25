@@ -108,8 +108,8 @@ func (s *suite) moveFile(t *testing.T) {
 // moveFileRefusals checks the file move's refusals against the baseline,
 // each leaving the row unchanged: a name held in the target by a row of
 // any status, a deleting one included, is ErrNameTaken under the unique
-// constraint; a missing directory is ErrNotFound under the foreign key; a
-// stale version is ErrVersionMismatch; a deleting row is ErrDeleting, at
+// constraint; a missing directory is ErrNotFound from the read of the
+// directory the update's predicate refused; a stale version is ErrVersionMismatch; a deleting row is ErrDeleting, at
 // its own version and at the version the mover read before a concurrent
 // Delete advanced it, and never a version mismatch; a missing file is
 // ErrNotFound; and a refused name is a NameError.
@@ -137,7 +137,7 @@ func (s *suite) moveFileRefusals(t *testing.T) {
 	}{
 		{"NameTaken", mover, dst.ID, "held.txt", 1, blobfs.ErrNameTaken, blobfs.ConstraintUniqueFileDirectoryName, nil},
 		{"NameTakenByADeletingRow", mover, dst.ID, "held-deleting.txt", 1, blobfs.ErrNameTaken, blobfs.ConstraintUniqueFileDirectoryName, nil},
-		{"MissingDirectory", mover, blobfs.NewID(), "mover.txt", 1, blobfs.ErrNotFound, blobfs.ConstraintForeignKeyFileDirectory, nil},
+		{"MissingDirectory", mover, blobfs.NewID(), "mover.txt", 1, blobfs.ErrNotFound, "", nil},
 		{"StaleVersion", mover, dst.ID, "stale.txt", 2, query.ErrVersionMismatch, "", blobfs.ErrDeleting},
 		{"Deleting", deleting, dst.ID, "elsewhere.txt", 1, blobfs.ErrDeleting, "", query.ErrVersionMismatch},
 		{"DeletingAtThePreDeleteVersion", deleted, dst.ID, "elsewhere.txt", 1, blobfs.ErrDeleting, "", query.ErrVersionMismatch},

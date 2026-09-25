@@ -56,24 +56,30 @@ func (d *Directories) Serializes() bool {
 // the database holds it afterward. The move runs in tx, in three steps that
 // must see one tree lock: LockTree, then IsWithin(parentID, id), then the
 // guarded update of parent_id and name. The update is guarded by version,
-// the value the caller read from the directory's row, through the query
-// library's optimistic-concurrency protocol; the caller reads the directory
-// in the same transaction and passes its Version. The update is a returning
-// command: the single-statement form where the dialect renders RETURNING,
-// and otherwise the fallback, the update and a read of the row. The
-// directory's children and files follow it, because they reference it by id
-// and every path is computed at read time; no object moves, since no key
-// encodes a path.
+// the value the caller read from the directory's row, with the query
+// library's guard predicate, and by the status of the directory and of its
+// current and new parents; the caller reads the directory in the same
+// transaction and passes its Version. The update is a returning command:
+// the single-statement form where the dialect renders RETURNING, and
+// otherwise the fallback, the update and a read of the row. The directory's
+// children and files follow it, because they reference it by id and every
+// path is computed at read time; no object moves, since no key encodes a
+// path.
 //
 // The root is blobfs.ErrRootDirectory, refused before any SQL. A new
 // parent that is the directory itself or one of its descendants is
 // blobfs.ErrCycle, and nothing changes. A directory that does not exist,
-// or a new parent that does not, is blobfs.ErrNotFound (the parent's
-// through the foreign key blobfs_fk_directory_parent); a name already held
+// or a new parent that does not, is blobfs.ErrNotFound; a name already held
 // by a directory under the new parent is blobfs.ErrNameTaken. A file under
 // the new parent with the same name is no conflict: directories and files
-// have separate name spaces. A row whose version moved on is
-// query.ErrVersionMismatch. A refused name is a blobfs.NameError.
+// have separate name spaces. A directory that is deleting, or whose current
+// or new parent is, is blobfs.ErrDeleting, whatever its version, since
+// MarkDeleting advances the version and nothing leaves or enters a branch
+// marked for removal. Any other row whose version moved on is
+// query.ErrVersionMismatch, with the expected and current versions in the
+// text. When the update changes nothing, the row its read returns and a
+// read of each parent tell these apart. A refused name is a
+// blobfs.NameError.
 //
 // The lock is what closes the race between two opposing moves: each takes
 // it before its check, so the second one's check sees the first one's
@@ -112,17 +118,37 @@ func (d *Directories) Move(ctx context.Context, tx *sqlate.Tx, id, parentID, nam
 	if within {
 		return blobfs.Directory{}, fmt.Errorf("data: move directory %s under %s: the new parent is the directory or one of its descendants: %w", id, parentID, blobfs.ErrCycle)
 	}
-	dir, err := d.move.Run(ctx, tx, version, query.Args{"id": id, "parent_id": parentID, "name": name})
+	dir, changed, err := d.move.One(ctx, tx, query.Args{"id": id, "parent_id": parentID, "name": name, "version": version})
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, blobfs.ErrNotFound)
-	case errors.Is(err, query.ErrRefused):
-		// The row is at the expected version and the update's own
-		// predicate, parent_id IS NOT NULL, refused it: the root, which
-		// the check above already refuses by id.
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, blobfs.ErrRootDirectory)
 	case err != nil:
 		return blobfs.Directory{}, fmt.Errorf("data: move directory %s under %s as %q: %w", id, parentID, name, classifyWrite(err))
+	case changed:
+		return dir, nil
+	case dir.IsRoot():
+		// The update's own predicate, parent_id IS NOT NULL, refused the
+		// root, which the check above already refuses by id.
+		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, blobfs.ErrRootDirectory)
+	case !dir.Status.Mutable():
+		// A deleting directory outranks a stale version: the mark advanced
+		// it, so a mover that read the row before the mark holds a version
+		// the row no longer carries.
+		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: the directory is %s: %w", id, dir.Status, blobfs.ErrDeleting)
 	}
-	return dir, nil
+	// The update's status predicates refuse a move out of or into a
+	// deleting directory and a move under a parent that does not exist; the
+	// two parents tell those apart from a version conflict.
+	ends, err := readMoveEnds(ctx, tx, d.byID, dir.ParentID, parentID)
+	switch {
+	case err != nil:
+		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, err)
+	case ends.deleting != nil:
+		return blobfs.Directory{}, fmt.Errorf("data: move directory %s under %s: %w", id, parentID, ends.deleting)
+	case dir.Version != version:
+		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, versionMismatch(version, dir.Version))
+	case ends.missing:
+		return blobfs.Directory{}, fmt.Errorf("data: move directory %s under %s: the new parent: %w", id, parentID, blobfs.ErrNotFound)
+	}
+	return blobfs.Directory{}, fmt.Errorf("data: move directory %s: the update matched no row, yet the directory is %s at version %d", id, dir.Status, dir.Version)
 }

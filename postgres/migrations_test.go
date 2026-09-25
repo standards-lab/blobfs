@@ -16,7 +16,7 @@ var (
 )
 
 // TestMigrations loads the set and checks its shape: the name and the
-// history table the package exports, the two migrations in order with
+// history table the package exports, the three migrations in order with
 // strictly increasing versions, each transactional with an up and a down
 // text, so a consumer's Reset can revert the set.
 func TestMigrations(t *testing.T) {
@@ -27,11 +27,11 @@ func TestMigrations(t *testing.T) {
 	if set.Name != postgres.Source || set.Table != postgres.Table {
 		t.Errorf("set = %q under %q, want %q under %q", set.Name, set.Table, postgres.Source, postgres.Table)
 	}
-	if len(set.Migrations) != 2 {
-		t.Fatalf("Migrations returned %d migrations, want 2 (directory, file)", len(set.Migrations))
+	if len(set.Migrations) != 3 {
+		t.Fatalf("Migrations returned %d migrations, want 3 (directory, file, directory_status)", len(set.Migrations))
 	}
 	last := 0
-	for i, name := range []string{"directory", "file"} {
+	for i, name := range []string{"directory", "file", "directory_status"} {
 		m := set.Migrations[i]
 		if m.Name != name || m.Version != i+1 {
 			t.Errorf("migration %d is %d %q, want %d %q", i, m.Version, m.Name, i+1, name)

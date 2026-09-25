@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/standards-lab/sqlate"
+	"github.com/standards-lab/sqlate/query"
 
 	"github.com/standards-lab/blobfs"
 )
@@ -79,4 +80,59 @@ func insertOrFind[T any](ctx context.Context, sess sqlate.Session, find, create 
 		return zero, false, fmt.Errorf("after a concurrent create: %w", notFound(err))
 	}
 	return row, false, nil
+}
+
+// refusedUnder classifies an insert that selected no row from its parent,
+// a directory the insert names by parentID and takes only while it is
+// active: a parent that does not exist is blobfs.ErrNotFound, and one that
+// is deleting blobfs.ErrDeleting. The parent is read through byID, in sess,
+// once the insert has run.
+func refusedUnder(ctx context.Context, sess sqlate.Session, byID query.Rows[blobfs.Directory], parentID string) error {
+	parent, err := byID.One(ctx, sess, query.Args{"id": parentID})
+	switch {
+	case err != nil:
+		return fmt.Errorf("the directory %s: %w", parentID, notFound(err))
+	case !parent.Status.Mutable():
+		return fmt.Errorf("the directory %s is %s: %w", parentID, parent.Status, blobfs.ErrDeleting)
+	}
+	return fmt.Errorf("the insert selected no row, yet the directory %s is %s", parentID, parent.Status)
+}
+
+// moveEnds is what a refused move learns from the two directories it
+// joins: the row's current parent and its new one.
+type moveEnds struct {
+	// deleting is the refusal of a deleting directory among the two, nil
+	// when both are active or missing.
+	deleting error
+	// missing reports that the new parent does not exist.
+	missing bool
+}
+
+// readMoveEnds reads from, a moved row's current parent, and to, its new
+// one, through byID in sess, for a move whose update changed no row: its
+// status predicates refuse a move out of or into a deleting directory, and
+// a new parent that does not exist, before the foreign key could. from is
+// nil for the root, which has no parent.
+func readMoveEnds(ctx context.Context, sess sqlate.Session, byID query.Rows[blobfs.Directory], from *string, to string) (moveEnds, error) {
+	var ends moveEnds
+	if from != nil {
+		dir, err := byID.One(ctx, sess, query.Args{"id": *from})
+		switch {
+		case err == nil && !dir.Status.Mutable():
+			ends.deleting = fmt.Errorf("its directory %s is %s: %w", *from, dir.Status, blobfs.ErrDeleting)
+			return ends, nil
+		case err != nil && !errors.Is(err, sql.ErrNoRows):
+			return ends, err
+		}
+	}
+	dir, err := byID.One(ctx, sess, query.Args{"id": to})
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		ends.missing = true
+	case err != nil:
+		return ends, err
+	case !dir.Status.Mutable():
+		ends.deleting = fmt.Errorf("the directory %s is %s: %w", to, dir.Status, blobfs.ErrDeleting)
+	}
+	return ends, nil
 }
