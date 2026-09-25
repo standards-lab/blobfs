@@ -30,17 +30,18 @@ import (
 // the whole path in one statement. The session may be the pool or a
 // transaction. A consumer that holds a directory's id resolves below it
 // without repeating the walk from the root.
-func (d *Directories) FindByPath(ctx context.Context, sess sqlate.Session, startID, path string) (blobfs.Directory, error) {
+func (d *Directories) FindByPath(ctx context.Context, sess sqlate.Session, startID, path string) (_ blobfs.Directory, err error) {
+	defer wrap(&err, "find %q from %s", path, startID)
 	segments, err := splitPath(path)
 	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: find %q from %s: %w", path, startID, err)
+		return blobfs.Directory{}, err
 	}
 	dir, depth, err := d.variant.ResolvePath(ctx, sess, startID, segments)
-	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: find %q from %s: %w", path, startID, err)
-	}
-	if depth < len(segments) {
-		return blobfs.Directory{}, fmt.Errorf("data: find %q from %s at %s: %w", path, startID, strings.Join(segments[:depth+1], "/"), blobfs.ErrNotFound)
+	switch {
+	case err != nil:
+		return blobfs.Directory{}, err
+	case depth < len(segments):
+		return blobfs.Directory{}, fmt.Errorf("at %s: %w", strings.Join(segments[:depth+1], "/"), blobfs.ErrNotFound)
 	}
 	return dir, nil
 }
@@ -60,17 +61,18 @@ func (d *Directories) FindByPath(ctx context.Context, sess sqlate.Session, start
 // the walk stops once it returns to a directory it has visited, and Path
 // reports blobfs.ErrCycle. A Move of a directory on the loop back under
 // the root repairs the tree.
-func (d *Directories) Path(ctx context.Context, sess sqlate.Session, id string) (string, error) {
+func (d *Directories) Path(ctx context.Context, sess sqlate.Session, id string) (_ string, err error) {
+	defer wrap(&err, "path of %s", id)
 	rows, err := d.ancestors.All(ctx, sess, query.Args{"id": id})
-	if err != nil {
-		return "", fmt.Errorf("data: path of %s: %w", id, err)
-	}
-	if len(rows) == 0 {
-		return "", fmt.Errorf("data: path of %s: %w", id, blobfs.ErrNotFound)
+	switch {
+	case err != nil:
+		return "", err
+	case len(rows) == 0:
+		return "", blobfs.ErrNotFound
 	}
 	chain, err := ancestry(rows)
 	if err != nil {
-		return "", fmt.Errorf("data: path of %s: %w", id, err)
+		return "", err
 	}
 	var b strings.Builder
 	for i := len(chain) - 2; i >= 0; i-- {

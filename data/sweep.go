@@ -86,25 +86,23 @@ type SweepResult struct {
 // it, and returns every refusal joined and wrapped as "data: sweep: ...",
 // with the result counting what it did. A Batch below 1 and a StaleOlderThan age that is not positive are
 // refused before any SQL. Nothing to do is a zero result and no error.
-func (s *Store) Sweep(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, opts ...SweepOption) (SweepResult, error) {
+func (s *Store) Sweep(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, opts ...SweepOption) (_ SweepResult, err error) {
+	defer wrap(&err, "sweep")
 	o := sweepOptions{batch: defaultBatch}
 	for _, opt := range opts {
 		opt(&o)
 	}
 	switch {
 	case o.batch < 1:
-		return SweepResult{}, fmt.Errorf("data: sweep: the batch %d is below 1", o.batch)
+		return SweepResult{}, fmt.Errorf("the batch %d is below 1", o.batch)
 	case o.hasStale && o.staleAge <= 0:
-		return SweepResult{}, fmt.Errorf("data: sweep: the stale age %s is not positive", o.staleAge)
+		return SweepResult{}, fmt.Errorf("the stale age %s is not positive", o.staleAge)
 	}
 	w := &sweep{store: s, db: db, objects: objects, opts: o, budget: o.batch, refused: map[string]bool{}}
 	if o.hasStale {
 		w.before = time.Now().Add(-o.staleAge)
 	}
-	if err := w.run(ctx); err != nil {
-		return w.result, fmt.Errorf("data: sweep: %w", err)
-	}
-	return w.result, nil
+	return w.result, w.run(ctx)
 }
 
 // sweep is one pass's state: what it has done, and the budget of records
@@ -129,7 +127,7 @@ type sweep struct {
 // is left, then, when the budget is spent, the read of whether work
 // remains.
 func (w *sweep) run(ctx context.Context) error {
-	roots, err := w.store.Directories.Deleting(ctx, w.db, w.budget)
+	roots, err := w.roots(ctx, w.budget)
 	if err != nil {
 		return err
 	}
@@ -159,14 +157,14 @@ func (w *sweep) run(ctx context.Context) error {
 // budget allows: the mark repeated, then the walk from the root.
 func (w *sweep) branch(ctx context.Context, root blobfs.Directory) error {
 	_, err := w.db.Transact(ctx, func(tx *sqlate.Tx) (Marked, error) {
-		return w.store.Directories.MarkDeleting(ctx, tx, root.ID)
+		return w.store.Directories.markDeleting(ctx, tx, root.ID, nil)
 	})
 	switch {
 	case errors.Is(err, blobfs.ErrNotFound):
 		// A concurrent pass removed the root since the roots were read.
 		return nil
 	case err != nil:
-		return err
+		return fmt.Errorf("mark directory %s deleting: %w", root.ID, err)
 	}
 	_, err = w.directory(ctx, root)
 	return err
@@ -182,9 +180,9 @@ func (w *sweep) directory(ctx context.Context, dir blobfs.Directory) (bool, erro
 		if w.budget == 0 {
 			return false, nil
 		}
-		page, err := w.store.Files.List(ctx, w.db, dir.ID, query.Directives{Total: query.TotalNone}, query.Page{Number: 1, Size: w.budget}, IncludeDeleting())
+		page, err := w.store.Files.list.list(ctx, w.db, dir.ID, query.Directives{Total: query.TotalNone}, query.Page{Number: 1, Size: w.budget}, []ListOption{IncludeDeleting()})
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("list files in %s: %w", dir.ID, err)
 		}
 		for _, f := range page.Items {
 			if f.Status.Mutable() {
@@ -204,9 +202,9 @@ func (w *sweep) directory(ctx context.Context, dir blobfs.Directory) (bool, erro
 		if w.budget == 0 {
 			return false, nil
 		}
-		page, err := w.store.Directories.List(ctx, w.db, dir.ID, query.Directives{Total: query.TotalNone}, query.Page{Number: 1, Size: w.budget}, IncludeDeleting())
+		page, err := w.store.Directories.list.list(ctx, w.db, dir.ID, query.Directives{Total: query.TotalNone}, query.Page{Number: 1, Size: w.budget}, []ListOption{IncludeDeleting()})
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("list directories under %s: %w", dir.ID, err)
 		}
 		if len(page.Items) == 0 {
 			break
@@ -240,7 +238,7 @@ func (w *sweep) remove(ctx context.Context, dir blobfs.Directory) (bool, error) 
 				return struct{}{}, hookErr
 			}
 		}
-		return struct{}{}, w.store.Directories.Delete(ctx, tx, dir.ID, AtVersion(dir.Version))
+		return struct{}{}, w.store.Directories.deleteDirectory(ctx, tx, dir.ID, &dir.Version)
 	})
 	switch {
 	case hookErr != nil:
@@ -251,7 +249,7 @@ func (w *sweep) remove(ctx context.Context, dir blobfs.Directory) (bool, error) 
 		w.result.More = true
 		return false, nil
 	case err != nil:
-		return false, err
+		return false, fmt.Errorf("delete directory %s: %w", dir.ID, err)
 	}
 	w.result.Directories++
 	w.budget--
@@ -268,9 +266,9 @@ func (w *sweep) finish(ctx context.Context, f blobfs.File) error {
 		w.refused[f.ID] = true
 		return fmt.Errorf("delete the object of file %s: %w", f.ID, err)
 	}
-	if err := w.store.Files.Purge(ctx, w.db, f.ID); err != nil {
+	if err := w.store.Files.purgeFile(ctx, w.db, f.ID); err != nil {
 		w.refused[f.ID] = true
-		return err
+		return fmt.Errorf("purge file %s: %w", f.ID, err)
 	}
 	w.budget--
 	return nil
@@ -297,13 +295,13 @@ func (w *sweep) stale(ctx context.Context) []error {
 		file := f
 		if f.Status == blobfs.StatusPending {
 			file, err = w.db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
-				return w.store.Files.Delete(ctx, tx, f.ID, AtVersion(f.Version))
+				return w.store.Files.deleteFile(ctx, tx, f.ID, &f.Version)
 			})
 			switch {
 			case errors.Is(err, blobfs.ErrNotFound), errors.Is(err, query.ErrVersionMismatch):
 				continue
 			case err != nil:
-				errs = append(errs, fmt.Errorf("stale file %s: %w", f.ID, err))
+				errs = append(errs, fmt.Errorf("stale file %s: delete: %w", f.ID, err))
 				continue
 			}
 		}
@@ -319,7 +317,7 @@ func (w *sweep) stale(ctx context.Context) []error {
 // remains reports whether work is left for another pass: a branch being
 // deleted or, with StaleOlderThan, a stale row past its age.
 func (w *sweep) remains(ctx context.Context) (bool, error) {
-	roots, err := w.store.Directories.Deleting(ctx, w.db, 1)
+	roots, err := w.roots(ctx, 1)
 	if err != nil || len(roots) > 0 || !w.opts.hasStale {
 		return len(roots) > 0, err
 	}
@@ -328,4 +326,14 @@ func (w *sweep) remains(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("read the stale files: %w", err)
 	}
 	return len(rows) > 0, nil
+}
+
+// roots reads at most limit of the roots of the branches being deleted, as
+// Directories.Deleting does, with its error named for the pass.
+func (w *sweep) roots(ctx context.Context, limit int) ([]blobfs.Directory, error) {
+	roots, err := w.store.Directories.deleting.All(ctx, w.db, query.Args{"offset": 0, "fetch": limit})
+	if err != nil {
+		return nil, fmt.Errorf("read the deleting branches: %w", err)
+	}
+	return roots, nil
 }

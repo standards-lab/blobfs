@@ -141,7 +141,7 @@ the command and its read in one transaction.
 `WithEngine(e)` installs an engine. Without it the store runs the baseline. With it,
 `New` binds the baseline over the statements it compiled and calls `e(catalog, dialect, base)`
 once, and the store runs the variant `e` returns; the statements are compiled once either way.
-An engine's error is returned as `data: engine: ...`.
+An engine's error is returned as `data: new store: engine: ...`.
 
 `Store` has two handles, `Directories` and `Files`, and three methods:
 

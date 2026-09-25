@@ -50,7 +50,6 @@ func newDirectories(stmts *query.Statements, dirs directoryReads, variant Varian
 			projection: stmts.Statement("directory_children").Project(directory),
 			anchor:     "parent_id",
 			deleting:   string(blobfs.DirectoryStatusDeleting),
-			what:       "directories under",
 			dirs:       dirs,
 		},
 		ancestors: stmts.Statement("directory_ancestors").Scan(query.Scanner[ancestor]()),
@@ -66,10 +65,11 @@ func newDirectories(stmts *query.Statements, dirs directoryReads, variant Varian
 
 // Find returns the directory with id, or blobfs.ErrNotFound. The root is
 // Find of blobfs.RootID.
-func (d *Directories) Find(ctx context.Context, sess sqlate.Session, id string) (blobfs.Directory, error) {
+func (d *Directories) Find(ctx context.Context, sess sqlate.Session, id string) (_ blobfs.Directory, err error) {
+	defer wrap(&err, "find directory %s", id)
 	dir, err := d.dirs.byID.One(ctx, sess, query.Args{"id": id})
 	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: find directory %s: %w", id, notFound(err))
+		return blobfs.Directory{}, notFound(err)
 	}
 	return dir, nil
 }
@@ -79,14 +79,14 @@ func (d *Directories) Find(ctx context.Context, sess sqlate.Session, id string) 
 // a name ValidateName refuses is a blobfs.NameError before any SQL, since
 // no row can hold it. Directories and files have separate name spaces: a
 // file of the same name is not found here.
-func (d *Directories) FindByName(ctx context.Context, sess sqlate.Session, parentID, name string) (blobfs.Directory, error) {
-	name, err := validName(name)
-	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: find directory by name: %w", err)
+func (d *Directories) FindByName(ctx context.Context, sess sqlate.Session, parentID, name string) (_ blobfs.Directory, err error) {
+	defer wrap(&err, "find directory %q under %s", name, parentID)
+	if name, err = validName(name); err != nil {
+		return blobfs.Directory{}, err
 	}
 	dir, err := d.findByName(ctx, sess, parentID, name)
 	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: find directory %q under %s: %w", name, parentID, notFound(err))
+		return blobfs.Directory{}, notFound(err)
 	}
 	return dir, nil
 }
@@ -114,20 +114,16 @@ func (d *Directories) findByName(ctx context.Context, sess sqlate.Session, paren
 // where the dialect renders RETURNING, and otherwise in the fallback, the
 // insert and a read of the row in one transaction, the caller's when sess is
 // a *sqlate.Tx and one of its own when sess is the pool.
-func (d *Directories) Create(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (blobfs.Directory, error) {
-	name, err := validName(name)
-	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: create directory: %w", err)
+func (d *Directories) Create(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (_ blobfs.Directory, err error) {
+	defer wrap(&err, "create directory %q under %s", name, parentID)
+	if name, err = validName(name); err != nil {
+		return blobfs.Directory{}, err
 	}
 	id, err := rowID(opts)
 	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: create directory %q: %w", name, err)
+		return blobfs.Directory{}, err
 	}
-	dir, err := d.insert(ctx, sess, id, parentID, name)
-	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: create directory %q under %s: %w", name, parentID, err)
-	}
-	return dir, nil
+	return d.insert(ctx, sess, id, parentID, name)
 }
 
 // Ensure returns the directory named name under the directory with parentID,
@@ -148,14 +144,14 @@ func (d *Directories) Create(ctx context.Context, sess sqlate.Session, parentID,
 // the caller retries the transaction. A found row that is deleting is
 // blobfs.ErrDeleting, since its branch is being removed and it takes no
 // child. The other refusals are Create's.
-func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (blobfs.Directory, bool, error) {
-	name, err := validName(name)
-	if err != nil {
-		return blobfs.Directory{}, false, fmt.Errorf("data: ensure directory: %w", err)
+func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (_ blobfs.Directory, _ bool, err error) {
+	defer wrap(&err, "ensure directory %q under %s", name, parentID)
+	if name, err = validName(name); err != nil {
+		return blobfs.Directory{}, false, err
 	}
 	id, err := rowID(opts)
 	if err != nil {
-		return blobfs.Directory{}, false, fmt.Errorf("data: ensure directory %q: %w", name, err)
+		return blobfs.Directory{}, false, err
 	}
 	dir, created, err := insertOrFind(ctx, sess,
 		func(ctx context.Context, sess sqlate.Session) (blobfs.Directory, error) {
@@ -168,7 +164,7 @@ func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID,
 		err = closed(dir)
 	}
 	if err != nil {
-		return blobfs.Directory{}, false, fmt.Errorf("data: ensure directory %q under %s: %w", name, parentID, err)
+		return blobfs.Directory{}, false, err
 	}
 	return dir, created, nil
 }
@@ -209,26 +205,31 @@ func (d *Directories) insert(ctx context.Context, sess sqlate.Session, id, paren
 // transaction. With AtVersion, the directory is removed only at that
 // version, in the same statement; a directory at another version is
 // query.ErrVersionMismatch, told apart from a missing one by a read.
-func (d *Directories) Delete(ctx context.Context, sess sqlate.Session, id string, opts ...VersionOption) error {
+func (d *Directories) Delete(ctx context.Context, sess sqlate.Session, id string, opts ...VersionOption) (err error) {
+	defer wrap(&err, "delete directory %s", id)
+	return d.deleteDirectory(ctx, sess, id, atVersion(opts))
+}
+
+// deleteDirectory is Delete's body, at version when it is not nil, with
+// its errors bare, for the sweep, which names the removal itself.
+func (d *Directories) deleteDirectory(ctx context.Context, sess sqlate.Session, id string, version *int64) error {
 	if id == blobfs.RootID {
-		return fmt.Errorf("data: delete directory %s: %w", id, blobfs.ErrRootDirectory)
+		return blobfs.ErrRootDirectory
 	}
-	version := atVersion(opts)
 	n, err := d.remove.Exec(ctx, sess, withVersion(query.Args{"id": id}, version))
-	if err != nil {
-		return fmt.Errorf("data: delete directory %s: %w", id, classifyDelete(err))
-	}
-	if n > 0 {
+	switch {
+	case err != nil:
+		return classifyDelete(err)
+	case n > 0:
 		return nil
-	}
-	if version == nil {
-		return fmt.Errorf("data: delete directory %s: %w", id, blobfs.ErrNotFound)
+	case version == nil:
+		return blobfs.ErrNotFound
 	}
 	dir, err := d.dirs.byID.One(ctx, sess, query.Args{"id": id})
 	if err != nil {
-		return fmt.Errorf("data: delete directory %s: %w", id, notFound(err))
+		return notFound(err)
 	}
-	return fmt.Errorf("data: delete directory %s: %w", id, versionMismatch(*version, dir.Version))
+	return versionMismatch(*version, dir.Version)
 }
 
 // Marked counts the rows Directories.MarkDeleting moved to deleting:
@@ -269,38 +270,44 @@ type Marked struct {
 // directory at another version is query.ErrVersionMismatch, and nothing is
 // marked. A directory that is deleting already is the mark's retry, which
 // converges whatever the version, as a file's is in Files.Delete.
-func (d *Directories) MarkDeleting(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) (Marked, error) {
+func (d *Directories) MarkDeleting(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) (_ Marked, err error) {
+	defer wrap(&err, "mark directory %s deleting", id)
+	return d.markDeleting(ctx, tx, id, atVersion(opts))
+}
+
+// markDeleting is MarkDeleting's body, at version when it is not nil, with
+// its errors bare, for the sweep, which names the mark itself.
+func (d *Directories) markDeleting(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (Marked, error) {
 	if id == blobfs.RootID {
-		return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, blobfs.ErrRootDirectory)
+		return Marked{}, blobfs.ErrRootDirectory
 	}
-	version := atVersion(opts)
-	if err := d.LockTree(ctx, tx); err != nil {
-		return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, err)
+	if err := d.variant.LockTree(ctx, tx); err != nil {
+		return Marked{}, fmt.Errorf("lock tree: %w", err)
 	}
 	args := query.Args{"id": id}
 	if version != nil {
 		dir, err := d.dirs.byID.One(ctx, tx, args)
 		switch {
 		case err != nil:
-			return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, notFound(err))
+			return Marked{}, notFound(err)
 		case dir.Status.Mutable() && dir.Version != *version:
-			return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, versionMismatch(*version, dir.Version))
+			return Marked{}, versionMismatch(*version, dir.Version)
 		}
 	}
 	dirs, err := d.markDirs.Exec(ctx, tx, args)
 	if err != nil {
-		return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, err)
+		return Marked{}, err
 	}
 	if dirs == 0 {
 		// Nothing was marked: the directory is missing, or its branch was
 		// marked already, which the read tells apart.
 		if _, err := d.dirs.byID.One(ctx, tx, args); err != nil {
-			return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, notFound(err))
+			return Marked{}, notFound(err)
 		}
 	}
 	files, err := d.markFiles.Exec(ctx, tx, args)
 	if err != nil {
-		return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, err)
+		return Marked{}, err
 	}
 	return Marked{Directories: dirs, Files: files}, nil
 }
@@ -315,13 +322,14 @@ func (d *Directories) MarkDeleting(ctx context.Context, tx *sqlate.Tx, id string
 // returns no rows and no error. A limit below 1 is refused before any SQL.
 // Its cost is the deleting rows where the engine indexes them, as the
 // postgres migrations do, and the directory table where it does not.
-func (d *Directories) Deleting(ctx context.Context, sess sqlate.Session, limit int) ([]blobfs.Directory, error) {
+func (d *Directories) Deleting(ctx context.Context, sess sqlate.Session, limit int) (_ []blobfs.Directory, err error) {
+	defer wrap(&err, "deleting directories")
 	if limit < 1 {
-		return nil, fmt.Errorf("data: deleting directories: the limit %d is below 1", limit)
+		return nil, fmt.Errorf("the limit %d is below 1", limit)
 	}
 	dirs, err := d.deleting.All(ctx, sess, query.Args{"offset": 0, "fetch": limit})
 	if err != nil {
-		return nil, fmt.Errorf("data: deleting directories: %w", err)
+		return nil, err
 	}
 	return dirs, nil
 }

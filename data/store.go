@@ -44,18 +44,19 @@ type Store struct {
 // Without WithEngine the store runs the baseline; with it, New passes the
 // baseline to the Engine and runs the variant the Engine returns. The
 // statements are compiled once either way. An Engine's error is returned
-// wrapped as "data: engine: ...".
-func New(catalog *query.Catalog, dialect sqlate.Dialect, opts ...Option) (*Store, error) {
+// wrapped as "data: new store: engine: ...".
+func New(catalog *query.Catalog, dialect sqlate.Dialect, opts ...Option) (_ *Store, err error) {
+	defer wrap(&err, "new store")
 	var o options
 	for _, opt := range opts {
 		opt(&o)
 	}
 	if !slices.Contains(catalog.Namespaces(), Namespace) {
-		return nil, fmt.Errorf("data: the catalog has no %q namespace; register data.Patterns() in it", Namespace)
+		return nil, fmt.Errorf("the catalog has no %q namespace; register data.Patterns() in it", Namespace)
 	}
 	stmts, err := catalog.Compile(statementFiles, "statements", dialect)
 	if err != nil {
-		return nil, fmt.Errorf("data: %w", err)
+		return nil, err
 	}
 	dirs := newDirectoryReads(stmts)
 	base := newStandard(stmts, dirs)
@@ -63,10 +64,10 @@ func New(catalog *query.Catalog, dialect sqlate.Dialect, opts ...Option) (*Store
 	if o.engine != nil {
 		v, err := o.engine(catalog, dialect, base)
 		if err != nil {
-			return nil, fmt.Errorf("data: engine: %w", err)
+			return nil, fmt.Errorf("engine: %w", err)
 		}
 		if v == nil {
-			return nil, errors.New("data: engine: returned no variant")
+			return nil, errors.New("engine: returned no variant")
 		}
 		variant = v
 	}

@@ -72,7 +72,7 @@ func TestFindByPathWalks(t *testing.T) {
 		t.Errorf("FindByPath(F, b) = %v, want ErrNotFound with no prefix", err)
 	}
 	_, err = s.Directories.FindByPath(ctx, db, "A", "b/missing/deeper")
-	if !errors.Is(err, blobfs.ErrNotFound) || !strings.HasSuffix(err.Error(), "from A at b/missing: "+blobfs.ErrNotFound.Error()) {
+	if !errors.Is(err, blobfs.ErrNotFound) || !strings.HasSuffix(err.Error(), "from A: at b/missing: "+blobfs.ErrNotFound.Error()) {
 		t.Errorf("FindByPath(A, b/missing/deeper) = %v, want ErrNotFound naming the failing prefix", err)
 	}
 

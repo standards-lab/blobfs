@@ -353,8 +353,8 @@ func TestEngineSharesTheBaseline(t *testing.T) {
 	_, err := data.New(catalog(t), sqltest.Dialect{}, data.WithEngine(func(*query.Catalog, sqlate.Dialect, data.Variant) (data.Variant, error) {
 		return nil, errEngine
 	}))
-	if !errors.Is(err, errEngine) || !strings.HasPrefix(err.Error(), "data: engine: ") {
-		t.Errorf("New with a failing engine = %v, want the engine's error wrapped as data: engine", err)
+	if !errors.Is(err, errEngine) || !strings.HasPrefix(err.Error(), "data: new store: engine: ") {
+		t.Errorf("New with a failing engine = %v, want the engine's error wrapped as data: new store: engine", err)
 	}
 	_, err = data.New(catalog(t), sqltest.Dialect{}, data.WithEngine(func(*query.Catalog, sqlate.Dialect, data.Variant) (data.Variant, error) {
 		return nil, nil
@@ -514,5 +514,74 @@ func TestHoldIsAVariationPoint(t *testing.T) {
 	}
 	if got := ops(rec); got != "begin query" {
 		t.Errorf("the refused hold ran %q, want the one classifying read", got)
+	}
+}
+
+// TestErrorsNamedOnce proves each exported method names its operation once:
+// a sample of refusals, from the checks before any SQL, the scripted
+// statements, a variant's lock, a nested cycle check, the engine, and a
+// sweep's refusal from a step deep in a branch, each carries the package's
+// "data: " prefix exactly once, at the start, and keeps its sentinel.
+func TestErrorsNamedOnce(t *testing.T) {
+	ctx := context.Background()
+	check := func(t *testing.T, what string, err, want error) {
+		t.Helper()
+		if !errors.Is(err, want) {
+			t.Errorf("%s = %v, want %v", what, err, want)
+			return
+		}
+		if msg := err.Error(); !strings.HasPrefix(msg, "data: ") || strings.Count(msg, "data: ") != 1 {
+			t.Errorf("%s = %q, want the operation named once", what, msg)
+		}
+	}
+	s, db, _ := openStore(t, fallback, noDirectory(), noFile(), sqltest.Response{Affected: 0}, noFile())
+	_, err := s.Directories.Find(ctx, db, "D")
+	check(t, "Directories.Find of a missing row", err, blobfs.ErrNotFound)
+	_, err = s.Files.Find(ctx, db, "F")
+	check(t, "Files.Find of a missing row", err, blobfs.ErrNotFound)
+	tx := begin(t, db)
+	check(t, "Hold of a missing row", s.Files.Hold(ctx, tx, "F"), blobfs.ErrNotFound)
+	_ = tx.Rollback()
+	_, err = s.Directories.Create(ctx, db, blobfs.RootID, "a/b")
+	check(t, "Directories.Create of a refused name", err, blobfs.ErrInvalidName)
+	_, _, err = s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "", "text/plain")
+	check(t, "Files.Ensure of an empty name", err, blobfs.ErrInvalidName)
+	_, err = s.Directories.FindByPath(ctx, db, blobfs.RootID, "/a")
+	check(t, "FindByPath of an absolute path", err, blobfs.ErrInvalidPath)
+	check(t, "Directories.Delete of the root", s.Directories.Delete(ctx, db, blobfs.RootID), blobfs.ErrRootDirectory)
+	_, err = s.Directories.Deleting(ctx, db, 0)
+	check(t, "Deleting below 1", err, err)
+	_, err = s.Sweep(ctx, db, &objectLog{}, data.Batch(0))
+	check(t, "Sweep of a refused batch", err, err)
+
+	failing := newStore(t, fallback, data.WithEngine(func(_ *query.Catalog, _ sqlate.Dialect, base data.Variant) (data.Variant, error) {
+		return failingLock{Variant: base}, nil
+	}))
+	pool, _ := sqltest.Open(t)
+	tx = begin(t, sqlate.Wrap(pool, sqltest.Dialect{}))
+	_, err = failing.Directories.Move(ctx, tx, "D", "P", "d", 1)
+	check(t, "Move under a failing lock", err, errLock)
+	_, err = failing.Directories.MarkDeleting(ctx, tx, "D")
+	check(t, "MarkDeleting under a failing lock", err, errLock)
+	check(t, "LockTree that fails", failing.Directories.LockTree(ctx, tx), errLock)
+
+	s, db, _ = openStore(t, fallback, within(1))
+	_, err = s.Directories.Move(ctx, begin(t, db), "D", "P", "d", 1)
+	check(t, "Move under a descendant", err, blobfs.ErrCycle)
+
+	errEngine := errors.New("no native statements")
+	_, err = data.New(catalog(t), sqltest.Dialect{}, data.WithEngine(func(*query.Catalog, sqlate.Dialect, data.Variant) (data.Variant, error) {
+		return nil, errEngine
+	}))
+	check(t, "New with a failing engine", err, errEngine)
+
+	// A purge the consumer's key refuses, inside a branch's walk.
+	responses := append([]sqltest.Response{deletingRoot()}, remark()...)
+	responses = append(responses, files("D", "F"), violation("fk_bookmark_file", sqlate.ErrForeignKeyViolation))
+	s, db, _ = openStore(t, fallback, responses...)
+	_, err = s.Sweep(ctx, db, &objectLog{})
+	check(t, "Sweep over a referenced file", err, blobfs.ErrReferenced)
+	if err != nil && !strings.Contains(err.Error(), "branch D: purge file F: ") {
+		t.Errorf("Sweep over a referenced file = %q, want the branch and the step named", err)
 	}
 }

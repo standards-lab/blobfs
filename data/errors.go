@@ -100,3 +100,15 @@ func notFound(err error) error {
 func versionMismatch(expected, current int64) error {
 	return fmt.Errorf("%w: expected %d, current %d", query.ErrVersionMismatch, expected, current)
 }
+
+// wrap names the operation an exported method ran on the error err points
+// to, when it is not nil: "data: " and the operation, format and args, as
+// the method's identifying arguments give it, ahead of the cause. Each
+// exported method defers it once, so its body returns bare errors carrying
+// only what that return knows, and every return is named the same way.
+// The cause stays reachable through errors.Is and errors.As.
+func wrap(err *error, format string, args ...any) {
+	if *err != nil {
+		*err = fmt.Errorf("data: %s: %w", fmt.Sprintf(format, args...), *err)
+	}
+}

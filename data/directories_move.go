@@ -27,10 +27,17 @@ import (
 // its chain, the loop included, and within no directory off it, the root
 // among them, so a move of a directory on the loop back under the root
 // passes the check and repairs the tree.
-func (d *Directories) IsWithin(ctx context.Context, sess sqlate.Session, id, ancestorID string) (bool, error) {
+func (d *Directories) IsWithin(ctx context.Context, sess sqlate.Session, id, ancestorID string) (_ bool, err error) {
+	defer wrap(&err, "is %s within %s", id, ancestorID)
+	return d.isWithinTree(ctx, sess, id, ancestorID)
+}
+
+// isWithinTree is IsWithin's body, with its error bare, for Move's cycle
+// check.
+func (d *Directories) isWithinTree(ctx context.Context, sess sqlate.Session, id, ancestorID string) (bool, error) {
 	n, err := d.isWithin.One(ctx, sess, query.Args{"id": id, "ancestor_id": ancestorID})
 	if err != nil {
-		return false, fmt.Errorf("data: is %s within %s: %w", id, ancestorID, err)
+		return false, err
 	}
 	return n > 0, nil
 }
@@ -38,11 +45,9 @@ func (d *Directories) IsWithin(ctx context.Context, sess sqlate.Session, id, anc
 // LockTree takes the variant's tree lock inside tx, held until tx commits
 // or rolls back. Move takes it itself; a caller takes it directly to
 // serialize a tree-shape change of its own. See Variant.
-func (d *Directories) LockTree(ctx context.Context, tx *sqlate.Tx) error {
-	if err := d.variant.LockTree(ctx, tx); err != nil {
-		return fmt.Errorf("data: lock tree: %w", err)
-	}
-	return nil
+func (d *Directories) LockTree(ctx context.Context, tx *sqlate.Tx) (err error) {
+	defer wrap(&err, "lock tree")
+	return d.variant.LockTree(ctx, tx)
 }
 
 // Serializes reports whether LockTree serializes tree-shape changes across
@@ -100,47 +105,47 @@ func (d *Directories) Serializes() bool {
 // any engine that implements it, and at repeatable read on PostgreSQL,
 // whose foreign-key check locks the new parent the first move changed. The
 // caller retries a refused move in a new transaction.
-func (d *Directories) Move(ctx context.Context, tx *sqlate.Tx, id, parentID, name string, version int64) (blobfs.Directory, error) {
+func (d *Directories) Move(ctx context.Context, tx *sqlate.Tx, id, parentID, name string, version int64) (_ blobfs.Directory, err error) {
+	defer wrap(&err, "move directory %s under %s as %q", id, parentID, name)
 	if id == blobfs.RootID {
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, blobfs.ErrRootDirectory)
+		return blobfs.Directory{}, blobfs.ErrRootDirectory
 	}
-	name, err := validName(name)
-	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, err)
+	if name, err = validName(name); err != nil {
+		return blobfs.Directory{}, err
 	}
-	if err := d.LockTree(ctx, tx); err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, err)
+	if err := d.variant.LockTree(ctx, tx); err != nil {
+		return blobfs.Directory{}, fmt.Errorf("lock tree: %w", err)
 	}
-	within, err := d.IsWithin(ctx, tx, parentID, id)
-	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, err)
-	}
-	if within {
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s under %s: the new parent is the directory or one of its descendants: %w", id, parentID, blobfs.ErrCycle)
+	within, err := d.isWithinTree(ctx, tx, parentID, id)
+	switch {
+	case err != nil:
+		return blobfs.Directory{}, fmt.Errorf("the cycle check: %w", err)
+	case within:
+		return blobfs.Directory{}, fmt.Errorf("the new parent is the directory or one of its descendants: %w", blobfs.ErrCycle)
 	}
 	dir, changed, err := d.move.One(ctx, tx, query.Args{"id": id, "parent_id": parentID, "name": name, "version": version})
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, blobfs.ErrNotFound)
+		return blobfs.Directory{}, blobfs.ErrNotFound
 	case err != nil:
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s under %s as %q: %w", id, parentID, name, classifyWrite(err))
+		return blobfs.Directory{}, classifyWrite(err)
 	case changed:
 		return dir, nil
 	case dir.IsRoot():
 		// The update's own predicate, parent_id IS NOT NULL, refused the
 		// root, which the check above already refuses by id.
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, blobfs.ErrRootDirectory)
+		return blobfs.Directory{}, blobfs.ErrRootDirectory
 	case !dir.Status.Mutable():
 		// A deleting directory outranks a stale version: the mark advanced
 		// it, so a mover that read the row before the mark holds a version
 		// the row no longer carries.
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s: %w", id, closed(dir))
+		return blobfs.Directory{}, closed(dir)
 	}
 	// The update's status predicates refuse a move out of or into a
 	// deleting directory and a move under a parent that does not exist; the
 	// two parents tell those apart from a version conflict.
 	if err := d.dirs.refusedMove(ctx, tx, dir.ParentID, parentID, version, dir.Version); err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: move directory %s under %s: %w", id, parentID, err)
+		return blobfs.Directory{}, err
 	}
-	return blobfs.Directory{}, fmt.Errorf("data: move directory %s: the update matched no row, yet the directory is %s at version %d", id, dir.Status, dir.Version)
+	return blobfs.Directory{}, fmt.Errorf("the update matched no row, yet the directory is %s at version %d", dir.Status, dir.Version)
 }

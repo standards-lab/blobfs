@@ -35,7 +35,8 @@ import (
 // directory after the page. With IncludeDeleting the listing shows
 // deleting files, so a filter on status reaches the delete protocol's stage
 // too, and it lists a deleting directory without the read.
-func (f *Files) List(ctx context.Context, sess sqlate.Session, directoryID string, req query.Directives, page query.Page, opts ...ListOption) (query.Collection[blobfs.File], error) {
+func (f *Files) List(ctx context.Context, sess sqlate.Session, directoryID string, req query.Directives, page query.Page, opts ...ListOption) (_ query.Collection[blobfs.File], err error) {
+	defer wrap(&err, "list files in %s", directoryID)
 	return f.list.list(ctx, sess, directoryID, req, page, opts)
 }
 
@@ -57,6 +58,7 @@ func (f *Files) List(ctx context.Context, sess sqlate.Session, directoryID strin
 // directoryID in it. Deleting files are hidden and a deleting directory is
 // refused, as in List, so a file marked after the cursor was issued is not
 // on the pages past it.
-func (f *Files) Continue(ctx context.Context, sess sqlate.Session, directoryID string, req query.Directives, after query.Cursor, size int, opts ...ListOption) (query.Collection[blobfs.File], error) {
+func (f *Files) Continue(ctx context.Context, sess sqlate.Session, directoryID string, req query.Directives, after query.Cursor, size int, opts ...ListOption) (_ query.Collection[blobfs.File], err error) {
+	defer wrap(&err, "continue files in %s", directoryID)
 	return f.list.cont(ctx, sess, directoryID, req, after, size, opts)
 }

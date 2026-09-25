@@ -3,7 +3,6 @@ package data
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 
 	"github.com/standards-lab/sqlate"
@@ -39,7 +38,8 @@ import (
 // blobfs.RootID reads the depth-one directories. A parent that does not
 // exist lists no rows and a total of zero. See Continue for when a page
 // carries a cursor.
-func (d *Directories) List(ctx context.Context, sess sqlate.Session, parentID string, req query.Directives, page query.Page, opts ...ListOption) (query.Collection[blobfs.Directory], error) {
+func (d *Directories) List(ctx context.Context, sess sqlate.Session, parentID string, req query.Directives, page query.Page, opts ...ListOption) (_ query.Collection[blobfs.Directory], err error) {
+	defer wrap(&err, "list directories under %s", parentID)
 	return d.list.list(ctx, sess, parentID, req, page, opts)
 }
 
@@ -60,22 +60,21 @@ func (d *Directories) List(ctx context.Context, sess sqlate.Session, parentID st
 // parent: the library does not record parentID in it. Deleting
 // directories are hidden and a deleting parent is refused, as in List, so a
 // directory marked after the cursor was issued is not on the pages past it.
-func (d *Directories) Continue(ctx context.Context, sess sqlate.Session, parentID string, req query.Directives, after query.Cursor, size int, opts ...ListOption) (query.Collection[blobfs.Directory], error) {
+func (d *Directories) Continue(ctx context.Context, sess sqlate.Session, parentID string, req query.Directives, after query.Cursor, size int, opts ...ListOption) (_ query.Collection[blobfs.Directory], err error) {
+	defer wrap(&err, "continue directories under %s", parentID)
 	return d.list.cont(ctx, sess, parentID, req, after, size, opts)
 }
 
 // listing is one of the two listings, the directories under a parent and
 // the files in a directory: a projection anchored on one directory by the
 // parameter anchor, parent_id or directory_id, whose rows spell the
-// deleting status as deleting. what names the rows and their relation to
-// the directory in an error, "directories under" or "files in". Both
-// listings hide deleting rows and refuse a deleting directory the same
-// way, through the directory reads.
+// deleting status as deleting. Both listings hide deleting rows and refuse
+// a deleting directory the same way, through the directory reads, and
+// return their errors bare, for the exported method to name.
 type listing[T any] struct {
 	projection query.Projection[T]
 	anchor     string
 	deleting   string
-	what       string
 	dirs       directoryReads
 }
 
@@ -88,7 +87,7 @@ func (l listing[T]) list(ctx context.Context, sess sqlate.Session, id string, re
 		err = l.dirs.listable(ctx, sess, id)
 	}
 	if err != nil {
-		return query.Collection[T]{}, fmt.Errorf("data: list %s %s: %w", l.what, id, err)
+		return query.Collection[T]{}, err
 	}
 	return c, nil
 }
@@ -102,7 +101,7 @@ func (l listing[T]) cont(ctx context.Context, sess sqlate.Session, id string, re
 		err = l.dirs.listable(ctx, sess, id)
 	}
 	if err != nil {
-		return query.Collection[T]{}, fmt.Errorf("data: continue %s %s: %w", l.what, id, err)
+		return query.Collection[T]{}, err
 	}
 	return c, nil
 }

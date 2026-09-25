@@ -50,7 +50,6 @@ func newFiles(stmts *query.Statements, dirs directoryReads, variant Variant) *Fi
 			projection: stmts.Statement("directory_files").Project(file),
 			anchor:     "directory_id",
 			deleting:   string(blobfs.StatusDeleting),
-			what:       "files in",
 			dirs:       dirs,
 		},
 		create:   stmts.Statement("create_file").Returning(file),
@@ -64,10 +63,11 @@ func newFiles(stmts *query.Statements, dirs directoryReads, variant Variant) *Fi
 
 // Find returns the file with id, whatever its status, or
 // blobfs.ErrNotFound.
-func (f *Files) Find(ctx context.Context, sess sqlate.Session, id string) (blobfs.File, error) {
+func (f *Files) Find(ctx context.Context, sess sqlate.Session, id string) (_ blobfs.File, err error) {
+	defer wrap(&err, "find file %s", id)
 	file, err := f.byID.One(ctx, sess, query.Args{"id": id})
 	if err != nil {
-		return blobfs.File{}, fmt.Errorf("data: find file %s: %w", id, notFound(err))
+		return blobfs.File{}, notFound(err)
 	}
 	return file, nil
 }
@@ -79,14 +79,14 @@ func (f *Files) Find(ctx context.Context, sess sqlate.Session, id string) (blobf
 // and files have separate name spaces: a directory of the same name is not
 // found here. It is the last step of resolving a file's path, after the
 // directory's, and how a retried write finds the pending row it resumes.
-func (f *Files) FindByName(ctx context.Context, sess sqlate.Session, directoryID, name string) (blobfs.File, error) {
-	name, err := validName(name)
-	if err != nil {
-		return blobfs.File{}, fmt.Errorf("data: find file by name: %w", err)
+func (f *Files) FindByName(ctx context.Context, sess sqlate.Session, directoryID, name string) (_ blobfs.File, err error) {
+	defer wrap(&err, "find file %q in %s", name, directoryID)
+	if name, err = validName(name); err != nil {
+		return blobfs.File{}, err
 	}
 	file, err := f.findByName(ctx, sess, directoryID, name)
 	if err != nil {
-		return blobfs.File{}, fmt.Errorf("data: find file %q in %s: %w", name, directoryID, notFound(err))
+		return blobfs.File{}, notFound(err)
 	}
 	return file, nil
 }
@@ -122,16 +122,13 @@ func (f *Files) findByName(ctx context.Context, sess sqlate.Session, directoryID
 // row's ID and Version. A stop between the two steps leaves the row pending,
 // where FindByName or Ensure finds it for a retry to complete, and an
 // abandoned write is removed through Delete and Purge.
-func (f *Files) Create(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts ...CreateOption) (blobfs.File, error) {
-	name, id, key, err := newFile("create file", keys, name, opts)
+func (f *Files) Create(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts ...CreateOption) (_ blobfs.File, err error) {
+	defer wrap(&err, "create file %q in %s", name, directoryID)
+	name, id, key, err := newFile(keys, name, opts)
 	if err != nil {
 		return blobfs.File{}, err
 	}
-	file, err := f.insert(ctx, sess, id, directoryID, name, key, contentType)
-	if err != nil {
-		return blobfs.File{}, fmt.Errorf("data: create file %q in %s: %w", name, directoryID, err)
-	}
-	return file, nil
+	return f.insert(ctx, sess, id, directoryID, name, key, contentType)
 }
 
 // WriteOutcome is what Files.Ensure did with the name: inserted a pending
@@ -174,8 +171,9 @@ const (
 // the error is returned instead, because on PostgreSQL the failed insert has
 // aborted the transaction, and the caller retries the transaction. The
 // other refusals are Create's.
-func (f *Files) Ensure(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts ...CreateOption) (blobfs.File, WriteOutcome, error) {
-	name, id, key, err := newFile("ensure file", keys, name, opts)
+func (f *Files) Ensure(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts ...CreateOption) (_ blobfs.File, _ WriteOutcome, err error) {
+	defer wrap(&err, "ensure file %q in %s", name, directoryID)
+	name, id, key, err := newFile(keys, name, opts)
 	if err != nil {
 		return blobfs.File{}, "", err
 	}
@@ -188,7 +186,7 @@ func (f *Files) Ensure(ctx context.Context, sess sqlate.Session, keys blobfs.Key
 		})
 	switch {
 	case err != nil:
-		return blobfs.File{}, "", fmt.Errorf("data: ensure file %q in %s: %w", name, directoryID, err)
+		return blobfs.File{}, "", err
 	case created:
 		return file, WriteCreated, nil
 	case file.Status == blobfs.StatusPending:
@@ -200,20 +198,19 @@ func (f *Files) Ensure(ctx context.Context, sess sqlate.Session, keys blobfs.Key
 // newFile runs the checks a file's insert makes before any SQL: the name
 // normalized and validated, the id minted or taken from the options and
 // checked, and the key built from the two and validated against keys. It
-// returns the normalized name, the id, and the key, or the refusal wrapped
-// with op, the operation's own words.
-func newFile(op string, keys blobfs.KeyValidator, name string, opts []CreateOption) (string, string, string, error) {
+// returns the normalized name, the id, and the key, or the refusal bare.
+func newFile(keys blobfs.KeyValidator, name string, opts []CreateOption) (string, string, string, error) {
 	name, err := validName(name)
 	if err != nil {
-		return "", "", "", fmt.Errorf("data: %s: %w", op, err)
+		return "", "", "", err
 	}
 	id, err := rowID(opts)
 	if err != nil {
-		return "", "", "", fmt.Errorf("data: %s %q: %w", op, name, err)
+		return "", "", "", err
 	}
 	key, err := blobfs.NewKey(keys, id, name)
 	if err != nil {
-		return "", "", "", fmt.Errorf("data: %s %q: %w", op, name, err)
+		return "", "", "", err
 	}
 	return name, id, key, nil
 }
@@ -262,27 +259,28 @@ func (f *Files) insert(ctx context.Context, sess sqlate.Session, id, directoryID
 // the row. The refusals are told apart from the row that read returns, with
 // no further statement. One statement changes the row, so the session may be
 // the pool or a transaction.
-func (f *Files) Complete(ctx context.Context, sess sqlate.Session, id string, version int64, obj blobfs.Object) (blobfs.File, error) {
+func (f *Files) Complete(ctx context.Context, sess sqlate.Session, id string, version int64, obj blobfs.Object) (_ blobfs.File, err error) {
+	defer wrap(&err, "complete file %s", id)
 	file, changed, err := f.complete.One(ctx, sess, query.Args{
 		"id": id, "size": obj.Size, "content_type": obj.ContentType, "etag": obj.ETag, "version": version,
 	})
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return blobfs.File{}, fmt.Errorf("data: complete file %s: %w", id, blobfs.ErrNotFound)
+		return blobfs.File{}, blobfs.ErrNotFound
 	case err != nil:
-		return blobfs.File{}, fmt.Errorf("data: complete file %s: %w", id, err)
+		return blobfs.File{}, err
 	case changed:
 		return file, nil
 	case !file.Status.Mutable() || file.Version == version:
 		// A deleting row outranks a stale version, as in Hold; a row at the
 		// expected version was refused by the status predicate: the row is
 		// no longer pending.
-		if terr := blobfs.Transition(file.Status, blobfs.StatusAvailable); terr != nil {
-			return blobfs.File{}, fmt.Errorf("data: complete file %s: %w", id, terr)
+		if err := blobfs.Transition(file.Status, blobfs.StatusAvailable); err != nil {
+			return blobfs.File{}, err
 		}
-		return blobfs.File{}, fmt.Errorf("data: complete file %s: the update matched no row, yet the row is %s at version %d", id, file.Status, file.Version)
+		return blobfs.File{}, fmt.Errorf("the update matched no row, yet the row is %s at version %d", file.Status, file.Version)
 	}
-	return blobfs.File{}, fmt.Errorf("data: complete file %s: %w", id, versionMismatch(version, file.Version))
+	return blobfs.File{}, versionMismatch(version, file.Version)
 }
 
 // Move moves the file with id into the directory with directoryID as name,
@@ -312,29 +310,29 @@ func (f *Files) Complete(ctx context.Context, sess sqlate.Session, id string, ve
 // current versions in the text. When the update changes nothing, the row
 // its read returns and a read of each directory tell these apart. A refused
 // name is a blobfs.NameError.
-func (f *Files) Move(ctx context.Context, sess sqlate.Session, id, directoryID, name string, version int64) (blobfs.File, error) {
-	name, err := validName(name)
-	if err != nil {
-		return blobfs.File{}, fmt.Errorf("data: move file %s: %w", id, err)
+func (f *Files) Move(ctx context.Context, sess sqlate.Session, id, directoryID, name string, version int64) (_ blobfs.File, err error) {
+	defer wrap(&err, "move file %s into %s as %q", id, directoryID, name)
+	if name, err = validName(name); err != nil {
+		return blobfs.File{}, err
 	}
 	file, changed, err := f.move.One(ctx, sess, query.Args{"id": id, "directory_id": directoryID, "name": name, "version": version})
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return blobfs.File{}, fmt.Errorf("data: move file %s: %w", id, blobfs.ErrNotFound)
+		return blobfs.File{}, blobfs.ErrNotFound
 	case err != nil:
-		return blobfs.File{}, fmt.Errorf("data: move file %s into %s as %q: %w", id, directoryID, name, classifyWrite(err))
+		return blobfs.File{}, classifyWrite(err)
 	case changed:
 		return file, nil
 	case !file.Status.Mutable():
 		// The status predicate refused the row, or would have at any
 		// version: a deleting row outranks a stale version.
-		return blobfs.File{}, fmt.Errorf("data: move file %s: the row is %s: %w", id, file.Status, blobfs.ErrDeleting)
+		return blobfs.File{}, fmt.Errorf("the row is %s: %w", file.Status, blobfs.ErrDeleting)
 	}
 	// The directory predicates refuse a move out of or into a deleting
 	// directory and a move into a directory that does not exist; the two
 	// directories tell those apart from a version conflict.
 	if err := f.dirs.refusedMove(ctx, sess, &file.DirectoryID, directoryID, version, file.Version); err != nil {
-		return blobfs.File{}, fmt.Errorf("data: move file %s into %s: %w", id, directoryID, err)
+		return blobfs.File{}, err
 	}
-	return blobfs.File{}, fmt.Errorf("data: move file %s: the update matched no row, yet the row is %s at version %d", id, file.Status, file.Version)
+	return blobfs.File{}, fmt.Errorf("the update matched no row, yet the row is %s at version %d", file.Status, file.Version)
 }
