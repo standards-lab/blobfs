@@ -1,8 +1,9 @@
 # blobfs
 
-blobfs maps flat blob objects, which a consumer stores under opaque keys, onto a tree of
-directories and file-metadata rows in SQL, one directory at a time. It never calls the object store: it exposes the steps of the
-two-phase write and the two-phase delete, and the consumer runs its store's calls between them.
+blobfs maps flat blob objects, which a consumer stores under opaque keys, onto a tree of directories
+and file-metadata rows in SQL, one directory at a time. It imports no object store: it exposes the
+steps of the two-phase write and the two-phase delete, and the consumer runs its store's calls
+between them, or runs a sweep that calls the consumer's object delete.
 
 The user guide is the repository's own: `README.md` is the index, and `docs/` holds the
 documents it lists in reading order. The library is adjacent to the organization's Go Elemental

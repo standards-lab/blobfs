@@ -10,9 +10,6 @@ policy a consumer may not want, or waits for a second consumer to show its shape
   is the same walk as subtree search and is deferred with it.
 - **A lookup by storage key.** A reconciler that lists the store's keys and asks which rows they
   belong to. Its cost is a new unique index on `blobfs_file (key)`. Trigger: `v1.messaging`.
-- **The sweeper.** Finds pending rows an abandoned write left and deleting rows a stopped delete
-  left, and finishes them; the file listing's status filter is what it reads. A candidate command
-  beside the library. Trigger: `v1.messaging`.
 - **A directory rename that skips the tree lock.** A rename cannot form a cycle, so it needs no
   lock; unmeasured, and worth adding only for a consumer that renames directories at volume.
 - **A serializing standard-tier variant.** A root-row update held to commit would serialize moves
@@ -31,8 +28,14 @@ policy a consumer may not want, or waits for a second consumer to show its shape
   need.
 - **An interleaved directory-and-file listing.** Trigger: a consumer that builds a folder browser.
 - **MySQL and MariaDB.** A second engine sub-module, with its DDL and native forms; its port notes
-  are the work list. Trigger: the second SQL engine (`backlog.second-providers` in the workspace
-  roadmap).
+  are the work list. Beyond them, two standard-tier statements update `blobfs_directory` and read
+  it in a subquery of the same statement, which MySQL refuses (error 1093):
+  `mark_directory_deleting` and `move_directory`. They are base statements, not variation points,
+  so an engine cannot replace them: a port rewrites them in the base module in a form both engines
+  accept, or makes them variation points first. Their companions `mark_directory_files_deleting`
+  and `move_file` update `blobfs_file` and read `blobfs_directory` in a subquery, which the rule
+  does not reach, since the table read is not the one updated. Trigger: the second SQL engine
+  (`backlog.second-providers` in the workspace roadmap).
 
 ## Assumptions
 

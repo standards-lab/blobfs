@@ -169,8 +169,9 @@ func OnRemoveDirectory(fn func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Di
 // row purged. The reclaim is off without the option. A write resumed
 // through Files.Ensure keeps its row's updated_at, so age must exceed the
 // longest write a consumer lets run, and a Complete of a reclaimed row is
-// blobfs.ErrDeleting; a delete its caller is still finishing is harmless
-// to finish twice, since each of its steps is idempotent. An age that is
+// blobfs.ErrDeleting, or blobfs.ErrNotFound once the row is purged; a
+// delete its caller is still finishing is harmless to finish twice, since
+// each of its steps is idempotent. An age that is
 // not positive is refused before any SQL.
 func StaleOlderThan(age time.Duration) SweepOption {
 	return func(o *sweepOptions) {

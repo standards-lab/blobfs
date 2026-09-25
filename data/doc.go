@@ -29,9 +29,15 @@
 // and inserts only when it finds no row. Move moves or renames a directory
 // inside a transaction, under the variant's tree lock and a cycle check,
 // guarded by the version the caller read. Delete removes one empty
-// directory; there is no cascade and no recursive delete, and a consumer
-// that wants one walks the tree, files and then directories, deepest first.
-// No operation walks the whole tree.
+// directory; there is no cascade. A branch, a directory with everything
+// beneath it, is deleted in two stages: MarkDeleting marks the directory,
+// every directory beneath it, and every file in them deleting, in one
+// transaction under the tree lock, and Store.Sweep later removes them.
+// From the mark the branch is closed: a create or an ensure under a
+// deleting directory, and a move into or out of one, are
+// blobfs.ErrDeleting. Deleting returns the roots of the branches being
+// deleted, each a deleting directory under an active parent. No operation
+// walks the whole tree; the mark walks one branch.
 //
 // The Store's Files handle reads and writes file rows and never calls the
 // object store: the consumer runs its own put and delete between the steps
@@ -43,7 +49,7 @@
 // first step: it reports whether it created the row, resumed a pending one
 // an earlier write left, or found the name present. There is no failed
 // status: a stop leaves the row pending for a retry, and an abandoned write
-// is deleted like any file. The two-phase delete is Delete, which marks the
+// is deleted like any file, or reclaimed by a sweep. The two-phase delete is Delete, which marks the
 // row deleting and returns it with its key, and returns a row already
 // deleting as it is; then the object delete; then Purge, which removes the
 // row, succeeds on a row already gone, and refuses one that is not deleting.
@@ -53,7 +59,10 @@
 // transaction that inserts a reference to it, and Delete, which takes the
 // same row lock, waits for that transaction. Find and FindByName read a file
 // whatever its status, and Move moves or renames one, guarded by version,
-// without touching its key.
+// without touching its key. AtVersion guards the calls that act on a row
+// the caller read and take no version argument, Hold, Delete,
+// Directories.Delete, and MarkDeleting, so a row that moved on is
+// query.ErrVersionMismatch.
 //
 // Each handle lists one directory's contents, anchored on its id: List reads
 // a page by number and Continue the page past a cursor, both over a
@@ -71,7 +80,26 @@
 // and reports query.NoTotal. A caller that walks a large directory by cursor
 // passes query.TotalNone, since the counted read holds every filtered row
 // before it pages. The listing of blobfs.RootID is the depth-one
-// directories; the root itself is in no listing.
+// directories; the root itself is in no listing. A listing hides deleting
+// rows by a filter on status it appends after the caller's own, and the
+// listing of a directory that is itself deleting is blobfs.ErrDeleting;
+// IncludeDeleting lists every status and a deleting directory, which is how
+// the work of a delete is found. A directory that does not exist lists
+// empty.
+//
+// Store.Sweep runs one bounded pass that finishes the deletes callers began
+// and did not complete. For each branch root it marks the branch again,
+// which reaches a straggler a create that raced the first mark left
+// active, then walks the branch through the listings with IncludeDeleting:
+// it deletes each file's object through the consumer's ObjectDeleter,
+// purges the file's row, and removes each directory once it is empty,
+// with OnRemoveDirectory's function run in the same transaction for the
+// consumer's own rows. With StaleOlderThan it also reclaims the pending and
+// deleting file rows a stopped protocol left, older than the age. Batch
+// bounds the records a pass handles, and SweepResult.More reports work
+// remaining. The pass keeps no state and every step is idempotent, so a
+// stopped pass is finished by the next; a refusal stops the branch or row
+// it meets, not the pass.
 //
 // Three operations are variation points, where an engine may do better than
 // standard SQL: the tree lock that serializes directory moves, path
@@ -91,10 +119,13 @@
 // Every operation takes the session as an argument and passes it through
 // unwrapped, so a call runs against the pool or inside the caller's
 // transaction. An operation correct only inside a transaction takes a
-// *sqlate.Tx: the directory move, the tree lock, a file's hold, and a file's
-// Delete. A guarded step whose row moved on is query.ErrVersionMismatch,
-// with the expected and current versions in the text; a step a deleting row
-// refuses is blobfs.ErrDeleting, whatever version the caller holds, and a status change the transition table
+// *sqlate.Tx: the directory move, the tree lock, the mark of a branch, a
+// file's hold, and a file's Delete. Store.Sweep takes the *sqlate.DB, since
+// it opens transactions of its own. A guarded step whose row moved on is
+// query.ErrVersionMismatch, with the expected and current versions in the
+// text; a step a deleting row refuses, or a deleting directory it reaches,
+// is blobfs.ErrDeleting, whatever version the caller holds, and a status
+// change the transition table
 // refuses is a blobfs.TransitionError. A violation of one of blobfs's own
 // constraints becomes blobfs.ErrNameTaken, blobfs.ErrIDTaken,
 // blobfs.ErrNotFound, blobfs.ErrRootDirectory, or, on a directory delete,

@@ -57,16 +57,26 @@
 // # The migration set
 //
 // Migrations returns blobfs's migration set: the name Source, the history
-// table Table, and two migrations, directory and file, embedded from the
-// migrations directory. A consumer declares the set in migrate.New below its
-// own, so blobfs's migrations are all applied before the consumer's
-// migrations reference its tables.
+// table Table, and three migrations, directory, file, and directory_status,
+// embedded from the migrations directory. A consumer declares the set in
+// migrate.New below its own, so blobfs's migrations are all applied before
+// the consumer's migrations reference its tables.
 //
 // The directory migration seeds the one root directory, the row with no
 // parent, named /, and the id blobfs.RootID, and a partial unique index
 // allows no second row without a parent. A check constraint states that a
 // directory is named / exactly when it has no parent, so a root under
 // another name or a non-root named / is refused.
+//
+// The directory_status migration adds a directory's status, active or
+// deleting, under the check blobfs_cc_directory_status, and leaves every
+// existing row active. It adds two partial indexes for the sweeper's reads,
+// each over the few rows its predicate names, never the table:
+// blobfs_ix_directory_deleting holds the deleting directories, which the
+// read of the branches being deleted scans, and blobfs_ix_file_stale holds
+// the pending and deleting files by (updated_at, id), which the read of the
+// stale rows scans oldest first without a sort. The engine's path
+// resolution returns the status with the rest of the directory's columns.
 //
 // The set ships no index on blobfs_file (directory_id, created_at). The
 // unique constraint on (directory_id, name) orders a sort by name, and a

@@ -7,6 +7,34 @@ changelog covers this sub-module only; the base module keeps its own.
 
 ## [Unreleased]
 
+## [v0.2.0] - 2026-09-25
+
+The schema for the delete of a branch.
+
+### Added
+
+- Migration 0003, `directory_status`: the column `blobfs_directory.status`, `text NOT NULL
+  DEFAULT 'active'`, which leaves every existing row active; the check
+  `blobfs_cc_directory_status`, `status IN ('active', 'deleting')`; and two partial indexes for
+  the sweeper's reads, `blobfs_ix_directory_deleting` on `blobfs_directory (id)` of the deleting
+  directories, and `blobfs_ix_file_stale` on `blobfs_file (updated_at, id)` of the pending and
+  deleting files. The migration ships its down, and the golden test pins both files.
+- The integration tier: the conformance suite's new groups over the baseline and the engine's
+  variant; the directory status check as the engine reports its violation; and plan-shape and
+  buffer-bound assertions for the read of the branch roots through
+  `blobfs_ix_directory_deleting` and the stale read through `blobfs_ix_file_stale`, in the
+  index's order with no sort.
+
+### Changed
+
+- **Breaking:** the engine runs against blobfs v0.2.0, whose statements read the status column,
+  so a consumer applies migration 0003 before it runs the new version; `Up` applies it with the
+  rest of the set.
+- `resolve_path` returns the directory's status with its other columns, as
+  `blobfs.directory_columns` now lists them.
+
+Requires `github.com/standards-lab/blobfs v0.2.0` and `github.com/standards-lab/sqlate v0.4.0`.
+
 ## [v0.1.0] - 2026-09-24
 
 The first release of the PostgreSQL engine.
@@ -31,5 +59,6 @@ The first release of the PostgreSQL engine.
 
 Requires `github.com/standards-lab/blobfs v0.1.0` and `github.com/standards-lab/sqlate v0.4.0`.
 
-[Unreleased]: https://github.com/standards-lab/blobfs/compare/postgres/v0.1.0...HEAD
+[Unreleased]: https://github.com/standards-lab/blobfs/compare/postgres/v0.2.0...HEAD
+[v0.2.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.2.0
 [v0.1.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.1.0
