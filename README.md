@@ -13,19 +13,11 @@ imported.
 
 ## The problem
 
-An object store is flat: objects in a container, each under a key. A document service needs a
-tree its users can browse, with directories, names, renames, and moves. Encoding the tree in the
-keys fails at the first move, because an object store has no atomic rename and a key that says
-where a file sits turns a move of a directory into a copy and a delete of everything beneath it.
-
-blobfs keeps the tree in SQL, where a move is one update and a listing is one indexed read, and
-leaves each key opaque: the file's id and its name at upload, never changed and never parsed.
-Because the rows and the objects live in two systems with no shared transaction, blobfs exposes
-each protocol that touches an object as steps: the two-phase write inserts a pending row before
-the put, the two-phase delete marks the row deleting before the object delete, and the consumer
-runs its own store's call between the steps. The library calls the consumer's store only through
-two one-method interfaces, so it depends on no object store, and a consumer keeps its own store,
-its own lifecycle, and its own credentials.
+An object store is flat and has no atomic rename, so a tree encoded in its keys turns a move of
+a directory into a copy and a delete of everything beneath it. blobfs keeps the tree in SQL,
+where a move is one update, and leaves each key opaque. The rows and the objects share no
+transaction, so each protocol that touches an object is exposed as steps the consumer runs its
+own store's call between; [concepts](docs/concepts.md) explains the model.
 
 ## Documentation
 
@@ -50,8 +42,8 @@ for. An engine sub-module adds the engine's native forms and ships the schema as
 set.
 
 A consumer builds one pattern catalog, compiles the store against it with the engine installed,
-and runs the steps of the two-phase write around its own put. `keys` is the consumer's adapter over its store's
-key rule and `objects` is its store; error handling is elided.
+and runs the steps of the two-phase write around its own put. `keys` is the consumer's adapter
+over its store's key rule and `objects` is its store; error handling is elided.
 
 ```go
 catalog, err := query.NewCatalog(sqlatepg.Patterns(), data.Patterns())

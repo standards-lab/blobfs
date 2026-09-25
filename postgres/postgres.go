@@ -28,15 +28,8 @@ const TreeLockName = "blobfs_directory.tree"
 // this package's tests recompute it from the name.
 const TreeLockKey int64 = -8521165719926625175
 
-// variant is the PostgreSQL implementation of data.Variant, the variant
-// Engine builds. It embeds the variant it is given, the store's standard
-// baseline, as the data.Variant contract requires, so a variation point
-// this package does not override runs as the base does, and it binds the
-// compiled native statements to their handles. It overrides all three
-// variation points (the tree lock, which the baseline cannot take; path
-// resolution in one statement; and the file hold, taken without writing a
-// row version) and the inventory, which lists and verifies its own
-// statements. It holds no session; every method takes one.
+// variant is the PostgreSQL data.Variant Engine builds: it embeds the base
+// it is given and overrides the three variation points and the inventory.
 type variant struct {
 	data.Variant
 	stmts       *query.Statements
@@ -45,9 +38,8 @@ type variant struct {
 	lockFile    query.Rows[string]
 }
 
-// resolved is one row of resolve_path: the deepest directory reached and
-// its depth, the number of segments matched. The embedded directory's
-// columns flatten into the row, as the struct scanner maps them.
+// resolved is one row of resolve_path: the directory reached and its
+// depth.
 type resolved struct {
 	blobfs.Directory
 	Depth int `json:"depth"`
@@ -59,14 +51,10 @@ var (
 )
 
 // Engine is the PostgreSQL engine for data.WithEngine: it compiles the
-// variant's own three statements against catalog for dialect, binds them,
-// and returns the PostgreSQL variant over base, the baseline data.New
-// compiled, so the data package's statements are compiled once. A consumer selects it at its
-// composition root with data.New(catalog, dialect, data.WithEngine(Engine)).
-// The catalog must carry the blobfs namespace, registered from
-// data.Patterns(), because resolve_path returns the published directory
-// columns. The variant's statements are not returning commands, so either
-// form of the store's returning commands suits it. No I/O happens here.
+// variant's three statements against catalog for dialect, with no I/O,
+// and returns the PostgreSQL variant over base. The catalog must carry the
+// blobfs namespace, since resolve_path includes the published directory
+// columns.
 func Engine(catalog *query.Catalog, dialect sqlate.Dialect, base data.Variant) (data.Variant, error) {
 	stmts, err := catalog.Compile(statementFiles, "statements", dialect)
 	if err != nil {
@@ -109,13 +97,9 @@ func (*variant) Serializes() bool {
 	return true
 }
 
-// ResolvePath walks segments below the directory with startID in one
-// statement, the recursive query resolve_path, and returns the deepest
-// directory reached and its depth, where the baseline reads the start and
-// then one child per segment. The segments bind as one text[] parameter,
-// encoded by the driver from the Go slice, so no name is ever spliced into
-// the text; no segments bind as an empty array. No row means the start does
-// not exist and is blobfs.ErrNotFound. See data.Variant.
+// ResolvePath walks segments below startID in one statement, resolve_path,
+// with the segments bound as one text[] parameter; no segments bind as an
+// empty array. See data.Variant.
 func (v *variant) ResolvePath(ctx context.Context, sess sqlate.Session, startID string, segments []string) (blobfs.Directory, int, error) {
 	if segments == nil {
 		segments = []string{}
@@ -130,14 +114,9 @@ func (v *variant) ResolvePath(ctx context.Context, sess sqlate.Session, startID 
 	return r.Directory, r.Depth, nil
 }
 
-// HoldFile takes the file row's lock with lock_file: SELECT ... FOR NO KEY
-// UPDATE, the lock the baseline's self-assigning update takes and
-// delete_file waits on, without writing a row version, of a row that is
-// not deleting and, when version is not nil, sits at the version; a nil
-// version binds NULL, which the statement's version predicate reads as no
-// guard. A row returned is a row held; no row, whether missing, deleting,
-// or at another version, is false with no lock taken, and the store reads
-// the row to classify, as it does over the baseline. See data.Variant.
+// HoldFile takes the file row's lock with lock_file, writing no row
+// version; a nil version binds NULL, no guard. A row returned is a row
+// held. See data.Variant.
 func (v *variant) HoldFile(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (bool, error) {
 	args := query.Args{"id": id, "version": nil}
 	if version != nil {

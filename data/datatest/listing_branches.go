@@ -53,12 +53,8 @@ func (s *suite) deleteFile(t *testing.T, id string) {
 	}
 }
 
-// listingsHideTheBranch checks, on both stores alike, that a marked
-// branch vanishes from its parent's listing, which counts it no more,
-// while an active sibling stays; that a file whose own delete began
-// vanishes from its directory's listing; and that IncludeDeleting shows
-// both, and lists the marked branch's directories and files, every one
-// deleting.
+// listingsHideTheBranch checks on both stores that a marked branch and a
+// deleting file vanish from their listings, and IncludeDeleting shows them.
 func (s *suite) listingsHideTheBranch(t *testing.T) {
 	holder := s.mkdir(t, "hide-"+t.Name())
 	keep := s.mkdirUnder(t, holder.ID, "keep")
@@ -102,11 +98,9 @@ func (s *suite) listingsHideTheBranch(t *testing.T) {
 	}
 }
 
-// listingADeletingDirectory checks, against the baseline in the same text,
-// that a listing of a deleting directory, the root of a marked branch and
-// a directory inside one, is blobfs.ErrDeleting, by List and by Continue
-// with a cursor issued before the mark, for directories and files alike;
-// and that IncludeDeleting lists it.
+// listingADeletingDirectory checks, against the baseline, that List and
+// Continue of a deleting directory are ErrDeleting, and IncludeDeleting
+// lists it.
 func (s *suite) listingADeletingDirectory(t *testing.T) {
 	b := s.newBranch(t, "list-deleting-"+t.Name())
 	s.mkdirUnder(t, b.top.ID, "second")
@@ -164,11 +158,8 @@ func (s *suite) listingADeletingDirectory(t *testing.T) {
 	}
 }
 
-// cursorAcrossAMark checks that a cursor taken before a mark still
-// continues its listing, on both stores alike: the directory marked and
-// the file whose delete began after the cursor was issued are hidden from
-// the page past it, which counts the listing without them; and once the
-// listed directory is itself marked, the same cursor is ErrDeleting.
+// cursorAcrossAMark checks a cursor taken before a mark continues without
+// the rows marked since, and is ErrDeleting once its directory is marked.
 func (s *suite) cursorAcrossAMark(t *testing.T) {
 	holder := s.mkdir(t, "across-"+t.Name())
 	dirs := map[string]string{}
@@ -217,11 +208,8 @@ func (s *suite) cursorAcrossAMark(t *testing.T) {
 const deletingRoots = "SELECT d.id FROM blobfs_directory d JOIN blobfs_directory p ON p.id = d.parent_id WHERE d.status = 'deleting' AND p.status = 'active' ORDER BY d.id"
 
 // deletingFindsTheRoots checks Directories.Deleting against the baseline
-// and a plain query: after a branch marked at its top, one marked at its
-// middle, and one marked at its middle and then at its top, the roots are
-// the three directories a mark named last, each deleting under an active
-// parent, and no directory beneath one; the limit keeps the first roots
-// in id order; and a limit below 1 is refused in the same text.
+// and a plain query over branches marked at the top, the middle, and both,
+// and its limit.
 func (s *suite) deletingFindsTheRoots(t *testing.T) {
 	top := s.newBranch(t, "roots-top-"+t.Name())
 	middle := s.newBranch(t, "roots-middle-"+t.Name())

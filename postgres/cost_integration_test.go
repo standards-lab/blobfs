@@ -3,21 +3,13 @@
 package postgres_test
 
 // This file holds the plan-shape and cost regression assertions for the
-// statements the store runs: the listing under query.TotalNone and under
-// query.TotalExact, the cursor page by name and by the row-value comparison
-// over a consumer's created_at index, the baseline's path walk step and the
-// variant's one-statement resolution, the recursive walks up the tree, the
-// protocol steps, each command in its single-statement form, the read of the
-// roots of the branches being deleted, and the read of the stale files a
-// caller left partway through a protocol. Each test seeds a fixture in its
-// own throwaway database, captures a statement as the store composes it or
-// takes it from the store's inventory, explains it with EXPLAIN (ANALYZE,
-// BUFFERS) through internal/dbtest, and asserts a plan shape and a buffer
-// bound, never a time, logging the buffers it measured. The bounds carry a
-// wide margin over the measured value and sit well below what the regression
-// each test guards against would read. A plan shape is asserted only where
-// the fixture is large enough for the index to be the planner's own choice,
-// and the tests never disable a plan type.
+// statements the store runs. Each test seeds a fixture in its own
+// database, explains a statement as the store composes it with EXPLAIN
+// (ANALYZE, BUFFERS) through internal/dbtest, and asserts a plan shape and
+// a buffer bound, never a time. The bounds carry a wide margin over the
+// measured value and sit well below what the guarded regression would
+// read. A plan shape is asserted only where the fixture makes the index
+// the planner's own choice, and no test disables a plan type.
 
 import (
 	"context"
@@ -118,10 +110,9 @@ func one(t *testing.T, db *sqlate.DB, op func(sess sqlate.Session) error) call {
 	return rec.calls[0]
 }
 
-// page runs a listing through a recorder over db and returns its page:
-// the first of the two queries a listing without data.IncludeDeleting
-// runs, the second being the read of the listed directory by id, which
-// TestProtocolStepPlans covers as directory_by_id.
+// page runs a listing through a recorder over db and returns its page, the
+// first of its two queries; the second, the directory's read by id, is
+// covered by TestProtocolStepPlans.
 func page(t *testing.T, db *sqlate.DB, op func(sess sqlate.Session) error) call {
 	t.Helper()
 	rec := &recorder{DB: db}
@@ -166,22 +157,13 @@ func (e costEnv) cursorAt(t *testing.T, dir string, req query.Directives, number
 	return c.Next
 }
 
-// TestListingPlans proves the listing's plan under each total mode on the
-// big directory, each page as the store composes it by default: deleting
-// files hidden by a filter on status, which the plan applies to the rows
-// the name index reaches. Under query.TotalNone the first page and a page
-// continued by cursor from the middle, sorted by name in either
-// direction, are an index scan on blobfs_uq_file_directory_name in the
-// key's order, with no sort, no window, and no sequential scan, the
-// continued page's keyset comparison an index condition, each reading at
-// most 96 buffers; the regression is a keyset predicate the index cannot
-// serve, which reads the directory up to the cursor. Under
-// query.TotalExact the first page reads the directory once, through its
-// index, under one WindowAgg, with no subplan that would count a second
-// time, and reads at most three times the directory's own heap pages; the
-// regression is a total over the table instead of the directory, or a
-// second pass. The whole table's pages exceed that bound, and the counted
-// page exceeds the uncounted one's, so both bounds have teeth.
+// TestListingPlans checks the listing's plan on the big directory, deleting
+// files hidden: under TotalNone the first and a continued page, either
+// direction, are an index scan on blobfs_uq_file_directory_name with no
+// sort, window, or sequential scan; under TotalExact the first page reads
+// the directory once under one WindowAgg. The bounds catch a keyset
+// predicate the index cannot serve, a total over the table, and a second
+// pass.
 func TestListingPlans(t *testing.T) {
 	e := openCost(t, listingSizes)
 	big := e.tree.Big.ID
@@ -234,15 +216,10 @@ func TestListingPlans(t *testing.T) {
 	}
 }
 
-// TestRowValueCursorCost proves that a cursor page sorted by created_at
-// over the consumer's (directory_id, created_at) index, under the
-// engine's overlay of the keyset predicate, costs the same wherever the
-// cursor stands: an index scan on that index whose index condition
-// carries the created_at bound of the row-value comparison, with no
-// sequential scan; a cursor in the middle reads at most twice the buffers
-// of a cursor at the start, and each at most 100. The regression is the
-// expanded chain of disjuncts, which the planner applies as a filter over
-// the directory from its start, so the cost grows with the position.
+// TestRowValueCursorCost checks a cursor page by created_at over the
+// consumer's index, under the engine's keyset overlay, is an index scan
+// whose cost does not grow with the cursor's position; the regression is
+// the expanded disjunct chain applied as a filter.
 func TestRowValueCursorCost(t *testing.T) {
 	e := openCost(t, listingSizes)
 	for _, stmt := range []string{sortIndexDDL, "ANALYZE blobfs_file"} {
@@ -283,18 +260,10 @@ func TestRowValueCursorCost(t *testing.T) {
 	}
 }
 
-// TestPathPlans proves the tree walks cost the depth and not the table.
-// One step of the baseline's walk, directory_by_name, is an index scan on
-// blobfs_uq_directory_parent_name whose condition carries both columns,
-// at most 8 buffers. The variant's resolution of a depth-6 path is one
-// statement, a Recursive Union whose anchor is an index scan on
-// blobfs_pk_directory and whose step is one on the unique constraint,
-// with no sequential scan, at most 8 buffers per segment. The walks up
-// from the chain's deepest directory, directory_ancestors for Path and
-// directory_is_within for the move's cycle check, are each a Recursive
-// Union over blobfs_pk_directory with no sequential scan, at most 8
-// buffers per level. The regression each catches is a step an index
-// cannot serve, which scans the directory table once per level.
+// TestPathPlans checks the tree walks cost the depth and not the table:
+// the baseline's step, the variant's one-statement resolution, and the
+// upward walks of Path and the cycle check, each through an index and no
+// sequential scan, within a per-level buffer bound.
 func TestPathPlans(t *testing.T) {
 	e := openCost(t, stepSizes)
 	stmts := statementsByName(e.store)
@@ -352,20 +321,11 @@ func TestPathPlans(t *testing.T) {
 	}
 }
 
-// TestProtocolStepPlans proves every step of the write, delete, hold, and
-// move protocols finds its row through the primary key: each returning
-// command in the single-statement form sqlate's postgres dialect renders
-// (create excepted, which has no lookup to plan), each hold, the baseline's
-// and the variant's locking reads, and the purge, and the read by id plan an
-// index scan on blobfs_pk_file or blobfs_pk_directory with the id as the
-// index condition, with no sequential scan, each reading at most 32 buffers.
-// A step whose version predicate is nullable, each delete and each hold, is
-// planned with no version and with one. The regression is a predicate the
-// primary key cannot serve, which scans the table on every step. A tenth of the fixture's files are pending, as
-// writes in flight and abandoned leave them, so the partial index of the
-// stale rows, which a fixture with a single pending row and a single
-// deleting row would make the cheapest path to either, is not the planner's
-// choice for a step by id.
+// TestProtocolStepPlans checks every protocol step, in its single-statement
+// form, finds its row through the primary key, with and without a
+// nullable version, within 32 buffers. A tenth of the fixture's files are
+// pending, so the stale partial index is not the cheapest path to a row by
+// id.
 func TestProtocolStepPlans(t *testing.T) {
 	e := openCost(t, stepSizes)
 	stmts := statementsByName(e.store)
@@ -470,15 +430,9 @@ func indexCondHas(p dbtest.Plan, s string) bool {
 	return false
 }
 
-// TestDeletingPlan measures the read of the roots of the branches being
-// deleted, deleting_branches. With a directory of the chain marked, a
-// branch of hundreds of directories, the read returns the one root,
-// reaching the candidates through the partial index
-// blobfs_ix_directory_deleting and each candidate's parent through
-// blobfs_pk_directory as an index condition, within one buffer per
-// deleting directory plus the index's pages and a fixed allowance for the
-// index roots; the regressions are a pass over the whole table and a join
-// that reads the table once per candidate.
+// TestDeletingPlan checks deleting_branches reaches its candidates through
+// blobfs_ix_directory_deleting and their parents through the primary key,
+// within a bound set by the deleting directories and not the table.
 func TestDeletingPlan(t *testing.T) {
 	e := openCost(t, stepSizes)
 	if _, err := e.db.Transact(e.ctx, func(tx *sqlate.Tx) (data.Marked, error) {
@@ -512,17 +466,9 @@ func TestDeletingPlan(t *testing.T) {
 	}
 }
 
-// TestStalePlan measures the read of the files a caller left partway
-// through a protocol, stale_files_before, as Store.Sweep binds it: with a
-// thousand stale rows, pending and deleting alike, half last written two
-// hours ago and half just now, a page of the oldest stale rows before an
-// hour ago reaches them through the partial index blobfs_ix_file_stale,
-// whose predicate is the statement's, bounded by the age as an index
-// condition and in the index's own order, so no sort runs and the scan
-// stops at the page, within one buffer per row fetched plus the index's
-// pages and a fixed allowance for the index roots; the regressions are a
-// pass over the whole table, a predicate the index does not match, and a
-// sort of every stale row before the page.
+// TestStalePlan checks stale_files_before, as Store.Sweep binds it, reads
+// the oldest stale rows through blobfs_ix_file_stale in the index's order,
+// bounded by the age, with no sort, and stops at the page.
 func TestStalePlan(t *testing.T) {
 	e := openCost(t, stepSizes)
 	for _, seed := range []struct{ status, age string }{

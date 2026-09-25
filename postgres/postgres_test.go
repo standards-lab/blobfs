@@ -53,12 +53,9 @@ func newStore(t *testing.T, dialect sqlate.Dialect) (*data.Store, data.Variant) 
 	return s, v
 }
 
-// TestEngine proves the engine compiles against the consumer's catalog
-// under the engine's dialect: three statements, all native tier, each with
-// a port note, the tree lock and the file lock requiring a transaction and
-// the resolution not; the variant reporting that it
-// serializes; the store's Verify preparing each beside its own; and the
-// engine refusing a catalog without the blobfs namespace.
+// TestEngine checks the engine's three native statements, their port
+// notes and transaction requirements, Serializes, Verify, and the refusal
+// of a catalog without the blobfs namespace.
 func TestEngine(t *testing.T) {
 	s, v := newStore(t, sqlatepg.Dialect{})
 	var names []string
@@ -103,12 +100,8 @@ func TestEngine(t *testing.T) {
 	}
 }
 
-// TestStoreForms proves the store over the engine compiles under the
-// engine's dialect and under the dialect with its capabilities hidden:
-// the store lists its own statements and then the variant's, and each of
-// the six returning commands carries its single-statement form, a
-// RETURNING over the read's columns, under the engine's dialect and none
-// under the other, which runs the fallback.
+// TestStoreForms checks the store over the engine lists its statements
+// then the variant's, and the returning commands' forms under each dialect.
 func TestStoreForms(t *testing.T) {
 	returning := []string{"complete_file", "create_directory", "create_file", "delete_file", "move_directory", "move_file"}
 	for _, c := range []struct {
@@ -187,13 +180,9 @@ func TestLockTreeSQL(t *testing.T) {
 	}
 }
 
-// TestHoldFileSQL proves Hold through the variant is the locking read and
-// no write: SELECT ... FOR NO KEY UPDATE bound to the id and the nullable
-// version, NULL without AtVersion and the version under it, a row returned
-// ending the call with no further statement; and no row returned followed by the
-// store's read of the row, which classifies the refusal as over the
-// baseline: a deleting row ErrDeleting whatever its version, a row at
-// another version ErrVersionMismatch, and a missing row ErrNotFound.
+// TestHoldFileSQL checks Hold through the variant is the locking read, its
+// bindings with and without AtVersion, and the refusals classified from the
+// store's read as over the baseline.
 func TestHoldFileSQL(t *testing.T) {
 	ctx := context.Background()
 	fileColumns := []string{"id", "directory_id", "name", "status", "key", "size", "content_type", "etag", "version", "created_at", "updated_at"}
@@ -278,12 +267,9 @@ func openStore(t *testing.T, responses ...sqltest.Response) (*data.Store, *sqlat
 	return s, sqlate.Wrap(pool, sqltest.Dialect{}), rec
 }
 
-// TestResolvePathIsOneStatement proves FindByPath through the variant is
-// one query whatever the depth: the recursive statement bound to the
-// start id and the segments as one slice, in path order and normalized;
-// the empty path binding an empty slice; a walk that stops short
-// reporting the failing prefix as the baseline spells it; and no row
-// reporting ErrNotFound for the start, with no prefix.
+// TestResolvePathIsOneStatement checks FindByPath through the variant is
+// one query at any depth, its bindings, the failing prefix, and a missing
+// start.
 func TestResolvePathIsOneStatement(t *testing.T) {
 	ctx := context.Background()
 	nfd := "cafe" + string(rune(0x0301))

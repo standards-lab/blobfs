@@ -127,14 +127,8 @@ func ops(rec *sqltest.Recorder) string {
 	return strings.Join(out, " ")
 }
 
-// TestNew proves the catalog builds with the two sources, every statement
-// compiles, and the inventory: twenty-one statements, all standard tier;
-// the directory move, the two steps of a branch's mark, the file delete,
-// and the file hold the ones requiring a transaction; and the
-// six returning commands, the directory ones reading their row back
-// through directory_by_id and the file ones through file_by_id. The
-// fallback's dialect renders no single-statement form and the returning
-// dialect renders one per command.
+// TestNew checks the compiled inventory: its size, tiers, the statements
+// requiring a transaction, and the returning commands in each dialect.
 func TestNew(t *testing.T) {
 	want := []string{
 		"complete_file", "create_directory", "create_file", "delete_directory",
@@ -196,10 +190,8 @@ func TestPatterns(t *testing.T) {
 	}
 }
 
-// TestNewWithoutPatterns proves a catalog that lacks either namespace is
-// refused with an error naming what is missing: the blobfs namespace
-// before any statement compiles, and the query library's namespace, whose
-// guard patterns the move includes, by the compile.
+// TestNewWithoutPatterns checks a catalog missing either namespace is
+// refused with an error naming it.
 func TestNewWithoutPatterns(t *testing.T) {
 	c, err := query.NewCatalog(query.Patterns())
 	if err != nil {
@@ -219,11 +211,8 @@ func TestNewWithoutPatterns(t *testing.T) {
 	}
 }
 
-// TestVerify proves Verify prepares every statement as authored, each
-// returning command's single-statement form beside it where the dialect
-// renders one, and each listing's three projection probes: its field
-// contract over the base, a page past a cursor over the name key, and the
-// same page counted, without consuming a response.
+// TestVerify checks Verify prepares every statement, each single-statement
+// form, and each listing's projection probes.
 func TestVerify(t *testing.T) {
 	for _, c := range []struct {
 		form      form
@@ -288,15 +277,9 @@ func probeEngine(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Va
 	return &probeVariant{Variant: base, stmts: stmts}, nil
 }
 
-// TestEngineSharesTheBaseline proves an Engine runs over the statements
-// New compiled: the store's inventory is the package's 21 once and then
-// the engine's own, Verify prepares every baseline statement exactly as
-// often as a store without an engine does, and the engine's statement
-// beside them, so no baseline statement is compiled or verified twice and
-// a startup Verify covers the engine's statements too. A wrapper that
-// embeds the engine's variant lists them as well. An engine's error
-// is wrapped as the engine's, and an engine that returns no variant is
-// refused.
+// TestEngineSharesTheBaseline checks an Engine runs over the statements
+// New compiled, with nothing compiled or verified twice, and the refusals
+// of an engine's error and of no variant.
 func TestEngineSharesTheBaseline(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t, fallback, data.WithEngine(probeEngine))
@@ -364,9 +347,8 @@ func TestEngineSharesTheBaseline(t *testing.T) {
 	}
 }
 
-// TestStandardTreeLock proves the baseline's tree lock: it reports that it
-// does not serialize, and inside a transaction it runs no statement at
-// all.
+// TestStandardTreeLock checks the baseline's lock runs no statement and
+// reports that it does not serialize.
 func TestStandardTreeLock(t *testing.T) {
 	s, db, rec := openStore(t, fallback)
 	ctx := context.Background()
@@ -406,13 +388,8 @@ var errLock = errors.New("lock refused")
 
 func (failingLock) LockTree(context.Context, *sqlate.Tx) error { return errLock }
 
-// TestConsumerEngineSwapsOneMethod proves a consumer-supplied variant needs
-// no fork: an Engine that wraps the baseline it is given and overrides the
-// lock is handed to New through WithEngine, New calls it once with the
-// store's catalog and dialect, the store runs the override, and path
-// resolution still runs as the baseline does. The wrapper compiled
-// nothing, so the inventory is the package's own. A lock that fails stops
-// a move before any statement.
+// TestConsumerEngineSwapsOneMethod checks a consumer's Engine overriding
+// the lock alone, with the rest of the baseline running as before.
 func TestConsumerEngineSwapsOneMethod(t *testing.T) {
 	ctx := context.Background()
 	c := catalog(t)
@@ -482,10 +459,8 @@ func (v *holdOverride) HoldFile(_ context.Context, _ *sqlate.Tx, id string, vers
 	return v.held, nil
 }
 
-// TestHoldIsAVariationPoint proves Files.Hold forwards to the variant's
-// HoldFile with the id and, under AtVersion, the version: a row the
-// variant held ends the call with no statement of the store's own, and a
-// row it did not hold is read once to classify, as over the baseline.
+// TestHoldIsAVariationPoint checks Files.Hold forwards to HoldFile and
+// classifies a refusal by one read.
 func TestHoldIsAVariationPoint(t *testing.T) {
 	ctx := context.Background()
 	v := &holdOverride{held: true}
@@ -517,10 +492,7 @@ func TestHoldIsAVariationPoint(t *testing.T) {
 	}
 }
 
-// TestErrorsNamedOnce proves each exported method names its operation once:
-// a sample of refusals, from the checks before any SQL, the scripted
-// statements, a variant's lock, a nested cycle check, the engine, and a
-// sweep's refusal from a step deep in a branch, each carries the package's
+// TestErrorsNamedOnce checks a sample of refusals each carries the
 // "data: " prefix exactly once, at the start, and keeps its sentinel.
 func TestErrorsNamedOnce(t *testing.T) {
 	ctx := context.Background()

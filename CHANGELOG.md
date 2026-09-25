@@ -18,18 +18,12 @@ v0.2.0` ships.
 
 - `DirectoryStatus`, with `DirectoryStatusActive` and `DirectoryStatusDeleting`, `Valid`, and
   `Mutable`, and `Directory.Status`.
-- `Directories.MarkDeleting`, the first step of a branch's delete: it marks the directory, every
-  directory beneath it, and every file in them deleting, in one transaction under the tree lock,
-  and returns `Marked`, the counts of rows it changed. A repeated mark converges and reaches a
-  straggler, a row a racing create left active in the branch.
+- `Directories.MarkDeleting`, the first step of a branch's delete, which marks a directory with
+  everything beneath it deleting and returns `Marked`, the counts of rows it changed.
 - `Directories.Deleting`, the roots of the branches being deleted, in id order.
-- `Store.Sweep`, one bounded pass that deletes each marked branch's objects through the
-  consumer's `ObjectDeleter`, purges its file rows, and removes its directories deepest first.
-  It returns a `SweepResult` (`Files`, `Directories`, `Stale`, `More`) and takes the options
-  `Batch`, `OnRemoveDirectory`, and `StaleOlderThan`. `OnRemoveDirectory` is the hook for a
-  consumer's own rows about a removed directory, and `StaleOlderThan` reclaims pending and
-  deleting file rows older than an age. A refusal stops the branch or row it meets and is
-  returned joined with the others; the pass goes on.
+- `Store.Sweep`, one bounded pass that removes marked branches through the consumer's
+  `ObjectDeleter`, with `SweepResult` and the options `Batch`, `OnRemoveDirectory`, and
+  `StaleOlderThan`, which reclaims stale pending and deleting file rows.
 - `AtVersion` guards `Files.Delete`, `Directories.Delete`, and `Directories.MarkDeleting` as it
   guards `Files.Hold`. Its type is `VersionOption`.
 - `ListOption` and `IncludeDeleting`, which makes a listing show every status and list a
@@ -51,22 +45,15 @@ v0.2.0` ships.
   argument, which a variant embeds through the `Variant` interface.
 - **Breaking:** `Variant` gains `Statements() []query.Statement` and
   `Verify(ctx, sess) error`, the variant's own inventory, which `Store.Statements` lists and
-  `Store.Verify` runs without asserting optional methods. A consumer's variant that embeds the
-  one it is given gains both through the embedding, and a wrapper of an engine's variant now
-  lists and verifies the engine's statements instead of hiding them.
-- **Breaking:** the published pattern `blobfs.directory_columns` includes `d.status`, so a
-  consumer's statement that includes it needs the migration that adds the column, and a scan
-  into a type of its own needs the field.
-- **Breaking:** a deleting directory is closed. A create or an ensure under it, a move into or
-  out of it, and a move of it are `ErrDeleting`, whatever the caller's version.
-- **Breaking:** the listings hide deleting directories and files by a filter on status appended
-  after the caller's own, and the listing of a deleting directory is `ErrDeleting`.
-  `IncludeDeleting` restores the whole listing. A directory that does not exist still lists
-  empty. The directory listing declares `status`.
+  `Store.Verify` runs. A variant that embeds the one it is given gains both.
+- **Breaking:** the published pattern `blobfs.directory_columns` includes `d.status`, which
+  needs migration 0003 and a field in a consumer's own scan type.
+- **Breaking:** a deleting directory is closed: a create or an ensure under it, a move into or
+  out of it, and a move of it are `ErrDeleting`.
+- **Breaking:** the listings hide deleting rows, and the listing of a deleting directory is
+  `ErrDeleting`, unless called with `IncludeDeleting`. The directory listing declares `status`.
 - **Breaking:** a create or a move whose parent or directory does not exist is a plain
-  `ErrNotFound`, which the store tells by reading the directory, and no longer a
-  `ViolationError` naming the foreign key. The foreign key reports it only when the directory is
-  removed between the statement's read of it and the write.
+  `ErrNotFound`, no longer a `ViolationError`, unless the directory is removed mid-statement.
 
 ## [v0.1.0] - 2026-09-24
 

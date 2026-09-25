@@ -19,11 +19,8 @@ The schema for the delete of a branch.
   indexes for the sweep's reads: `blobfs_ix_directory_deleting` on `blobfs_directory (id)` of
   the deleting directories, and `blobfs_ix_file_stale` on `blobfs_file (updated_at, id)` of the
   pending and deleting files. The migration ships its down, and the golden test pins both files.
-- The integration tier: the conformance suite's new groups over the baseline and the engine's
-  variant; the directory status check as the engine reports its violation; and plan-shape and
-  buffer-bound assertions for the read of the branch roots through
-  `blobfs_ix_directory_deleting`, and for the stale read through `blobfs_ix_file_stale` in the
-  index's order with no sort.
+- The integration tier: the conformance suite's new groups, the directory status check's
+  violation, and plan assertions for the reads through the two new indexes.
 
 ### Changed
 
@@ -35,8 +32,7 @@ The schema for the delete of a branch.
 - **Breaking:** `Engine` takes its baseline as a `data.Variant`, as blobfs v0.2.0's
   `data.Engine` declares.
 - **Breaking:** `Variant` is unexported. `Engine` returns the variant as a `data.Variant`, which
-  embeds the `data.Variant` it is given and lists and verifies its own statements through the
-  interface's `Statements` and `Verify`, so a wrapper that embeds it needs no type assertion.
+  lists and verifies its own statements through `Statements` and `Verify`.
 - **Breaking:** `lock_file` takes a nullable `version`, which `data.AtVersion` binds and which
   guards nothing when NULL, and `lock_file_at_version` is folded into it: the variant's
   inventory no longer lists it.

@@ -89,21 +89,28 @@ A file is deleted in two steps around the object delete:
 
 Every step is idempotent. `Delete` returns a row that is already deleting as it is, without
 advancing its version again. `Delete` with `data.AtVersion` moves the row only at the version
-the caller read, for a caller that acts on a listing without reading the row again; a row
-already deleting is the delete's retry, which converges whatever the version. `Purge` succeeds
-when the row is already gone, because a retry after a crash cannot tell its own earlier success
-from a row that never existed, and it refuses a row that is not deleting with
-`blobfs.ErrNotDeleting`, since that row's object may still be wanted. A stop at any point is
-resumed by running the steps again from the first. A deleting row is hidden from the listings,
-so a delete that stops and is never resumed leaves a row only a read by id or name, a listing
-with `data.IncludeDeleting`, or a sweep finds.
+the caller read, for a caller that acts on a listing without reading the row again. `Purge`
+succeeds when the row is already gone, because a retry after a crash cannot tell its own earlier
+success from a row that never existed; a caller that wants to report a missing file resolves it
+before `Delete`. `Purge` refuses a row that is not deleting with `blobfs.ErrNotDeleting`, since
+that row's object may still be wanted. A stop at any point is resumed by running the steps again
+from the first. A deleting row is hidden from the listings, so a delete that stops and is never
+resumed leaves a row only a read by id or name, a listing with `data.IncludeDeleting`, or a
+sweep finds.
 
 A deleting row keeps its name until it is purged, so a write of the same name in the window is
 refused as taken. Every mutation other than the delete steps refuses a deleting row with
-`blobfs.ErrDeleting`, so no operation acts on a row whose object is gone or about to be. The
-refusal holds whatever version the caller read: `Delete` advances the version, so a writer that
-read the pending row before the delete began is told the row is deleting, not that its version
-is stale.
+`blobfs.ErrDeleting`, so no operation acts on a row whose object is gone or about to be.
+
+### Deleting outranks the version
+
+A step that refuses a deleting row, or a row in a deleting directory, reports
+`blobfs.ErrDeleting` whatever version the caller names, not `query.ErrVersionMismatch`.
+`Files.Delete` and a [mark](#deleting-a-branch) advance the version of each row they change, so
+a writer or a mover that read the row before the delete began holds a version the row no longer
+carries, and a reread and retry could never resolve the mismatch; the refusal tells it why. The
+same holds for the delete steps themselves: a `Files.Delete` or a mark with `data.AtVersion`
+that finds its row already deleting is the step's retry, which converges whatever the version.
 
 ## Statuses and their transitions
 
@@ -164,7 +171,9 @@ statements in the caller's transaction: it takes the tree lock, checks that the 
 not inside the directory's own subtree (`Directories.IsWithin`), and runs the update, guarded by
 the version the caller read. The lock is what makes the check sound under concurrency: two
 opposing moves, A under B and B under A, each pass their check against the same committed tree
-unless one waits for the other.
+unless one waits for the other. It serializes only the transactions that take it, so every
+change to the tree's shape takes it: a move does, and a consumer takes it for a change of its
+own through `Directories.LockTree`.
 
 Standard SQL has no statement that holds a lock until commit, so the baseline's tree lock is a
 no-op, and `Directories.Serializes` reports `false`. On the baseline, two concurrent opposing
@@ -185,11 +194,11 @@ the tree as committed when it starts: the second mover's check runs after its lo
 so sees the first mover's commit. At repeatable read or serializable, a transaction reads the
 tree as of its first statement, and on PostgreSQL that is the lock statement itself, whose
 snapshot is taken before it blocks; the second mover's check then does not see the first move
-and passes. The engine refuses the second move instead, with `sqlate.ErrSerializationFailure`:
-at serializable on any engine that implements it, and at repeatable read on PostgreSQL because
-the update's foreign-key check locks the new parent, which the first move changed. The caller
-retries a refused move in a new transaction. Either way no cycle forms on PostgreSQL, but the
-refusal is the engine's, not the lock's.
+and passes. The engine refuses the second move instead, at its update or commit, with
+`sqlate.ErrSerializationFailure`: at serializable on any engine that implements it, and at
+repeatable read on PostgreSQL because the update's foreign-key check locks the new parent, which
+the first move changed. The caller retries a refused move in a new transaction. Either way no
+cycle forms on PostgreSQL, but the refusal is the engine's, not the lock's.
 
 If a cycle does form, on the baseline without any of the courses above, the upward walks still
 terminate: `IsWithin` answers true for any directory on the loop and false for any off it, the
@@ -229,9 +238,12 @@ pages, so a caller walking a large directory by cursor reads the total once and 
 
 ## Deleting a branch
 
-`Directories.Delete` removes one empty directory. A branch, a directory with everything beneath
-it, is deleted in two stages instead, because its objects live in a store no transaction reaches
-and there may be more of them than one pass should hold:
+`Directories.Delete` removes one empty directory. It needs no version guard: the one change a
+stale version would catch, a child added since the caller read the directory, the foreign keys
+refuse already; `data.AtVersion` adds one for a caller that acts on the version its user saw. A
+branch, a directory with everything beneath it, is deleted in two stages instead, because its
+objects live in a store no transaction reaches and there may be more of them than one pass
+should hold:
 
 1. `Directories.MarkDeleting` marks the branch in one transaction: the directory it names, every
    directory beneath it, and every file in them move to `deleting`, each row's version advancing
@@ -251,10 +263,8 @@ marked.
 The mark is guarded like the other steps a caller takes on a row it read. `data.AtVersion` marks
 the branch only while its root is at the version the caller read, the directory its user saw and
 confirmed; a directory at another version is `query.ErrVersionMismatch`, and nothing is marked.
-A directory already deleting is the mark's retry, which converges whatever the version and
-reports what it reached anew. Because the mark advances every version it changes, a writer or a
-mover that read a row before the mark is told `blobfs.ErrDeleting`, not that its version is
-stale.
+A directory already deleting is the mark's retry and reports what it reached anew (see
+[deleting outranks the version](#deleting-outranks-the-version)).
 
 ### Stragglers and convergence
 
@@ -270,11 +280,11 @@ The sweep keeps no state. On every pass it finds its work in the database:
 directory under an active parent, and the listings with `data.IncludeDeleting` reach the rest of
 each branch. Every step it takes is idempotent, so a pass stopped at any point, by an error or a
 crash, is finished by the next, and a row another pass removed first counts as done. A pass is
-bounded by `data.Batch`, a count of records, and reports `More` when work remains; a consumer
-runs passes while `More` is true, and again on a schedule of its own. A refusal stops the branch
-or row it meets, not the pass: the pass goes on to the next, so a row refused on every pass
-holds back nothing behind it. The pass returns every refusal joined, with a result that counts
-what it did.
+bounded by `data.Batch`, a count of records and not of bytes, since a pass never reads an
+object's size, and reports `More` when work remains; a consumer runs passes while `More` is
+true, and again on a schedule of its own. A refusal stops the branch or row it meets, not the
+pass: the pass goes on to the next, so a row refused on every pass holds back nothing behind it.
+The pass returns every refusal joined, with a result that counts what it did.
 
 ### The consumer's own rows
 
@@ -296,8 +306,9 @@ pending row, and a delete after `Files.Delete` leaves a deleting row, hidden fro
 yet still holding its name. These are stale rows. With `data.StaleOlderThan(age)`, a pass also
 reclaims the stale rows last written longer ago than `age`, oldest first, from the budget the
 branches leave. It moves a pending row to deleting at the version the pass read, so a write that
-completed in the meantime is left as it is, then deletes the row's object and purges the row.
-Without the option a pass reclaims no stale row.
+completed in the meantime is left as it is, then deletes the row's object and purges the row. A
+deleting row whose caller is still finishing its delete is harmless to finish twice, since each
+step is idempotent. Without the option a pass reclaims no stale row.
 
 A sweep deletes an object before it purges the object's row, so no row it removes leaves an
 object behind. It cannot close one case: a write whose put lands after its pending row was
@@ -334,9 +345,10 @@ publishes the column lists of its two entities as patterns, `blobfs.directory_co
 Every statement the persistence package ships is standard SQL, and the package is complete
 alone: any engine `sqlate` has a dialect for runs every operation through it. Three operations
 are variation points, where an engine can do better than standard SQL: the tree lock; path
-resolution, which the baseline walks one segment per statement; and a file's hold, which the
-baseline takes with an update that writes a row version. The `data.Variant` interface names
-them, with `Serializes`; the baseline is the standard-tier variant `data.New` binds.
+resolution, which the baseline walks one segment per statement, since standard SQL has no
+ordered array parameter to walk by; and a file's hold, which the baseline takes with an update
+that writes a row version. The `data.Variant` interface names them, with `Serializes`; the
+baseline is the standard-tier variant `data.New` binds.
 
 An engine sub-module adds an engine's native forms and its DDL. It ships a `data.Engine`, which
 `data.New` calls with the baseline it compiled, and a consumer installs it with
@@ -353,12 +365,12 @@ transaction. The cursor's
 keyset predicate is a pattern an engine's dialect module overlays, so a consumer on PostgreSQL
 registers `sqlate/postgres`'s patterns in its catalog in place of `query.Patterns()`.
 
-A consumer can write an engine of its own: a `data.Engine` whose variant embeds the baseline, or an
-engine's variant, and overrides the methods it needs. Embedding is the contract, not a convenience:
-a release that adds a variation point adds it to the baseline too, so every variant that embeds one
-inherits it, and adding a variation point is a minor release. A variant that implements the
-interface without embedding is outside the contract. The conformance suite, `data/datatest`, checks
-any variant against the baseline's outcomes on a live database.
+A consumer can write an engine of its own: a `data.Engine` whose variant embeds the baseline, or
+an engine's variant, and overrides the methods it needs. Embedding is the contract, not a
+convenience: a release that adds a variation point adds it to the baseline too, so every variant
+that embeds one inherits it, and adding a variation point is a minor release. A variant that
+implements the interface without embedding is outside the contract. The conformance suite,
+`data/datatest`, checks any variant against the baseline's outcomes on a live database.
 
 ## One install per configuration
 

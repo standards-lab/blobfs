@@ -108,12 +108,8 @@ func (s *suite) createDirectory(t *testing.T) {
 }
 
 // createDirectoryRefusals checks Create's and Ensure's refusals against the
-// baseline: a taken name in either spelling and a taken id, each by its
-// sentinel over its constraint, and a missing parent, ErrNotFound from the
-// read of the parent the insert did not select, in the same text on both
-// stores, Ensure finding the taken name instead of refusing it; and the
-// refusals before any SQL, an invalid name and an invalid id, which leave
-// no row.
+// baseline, by sentinel and constraint or in the same text, and the
+// refusals before any SQL, which leave no row.
 func (s *suite) createDirectoryRefusals(t *testing.T) {
 	parent := s.mkdir(t, "refusals-"+t.Name())
 	taken := s.mkdirUnder(t, parent.ID, composed)
@@ -212,14 +208,9 @@ func (s *suite) ensureDirectory(t *testing.T) {
 	}
 }
 
-// ensureDirectoryConcurrent checks the race on the pool, forced: two
-// callers ensure the same name at once through a pool that holds each
-// caller's lookup until both have looked, so both find no row and both
-// insert. The engine blocks the second insert on the unique constraint
-// until the first commits and then refuses it, and the second caller
-// recovers by looking the row up: exactly one creates it, both return the
-// same row, the lookup runs a third time, and the parent holds one row of
-// the name.
+// ensureDirectoryConcurrent checks the race on the pool, forced through
+// racingPool: exactly one caller creates the row, both return it, the
+// lookup runs a third time, and the parent holds one row of the name.
 func (s *suite) ensureDirectoryConcurrent(t *testing.T) {
 	parent := s.mkdir(t, "ensure-concurrent-"+t.Name())
 	pool := s.racingPool(t, "directory_by_name")
@@ -279,13 +270,9 @@ func (s *suite) findDirectoryByName(t *testing.T) {
 	}
 }
 
-// deleteDirectory checks Delete against the schema: the root refused
-// before any SQL; a directory with a child directory, with a file, or
-// with a file whose delete has begun refused as ErrNotEmpty under the
-// foreign key that names what remains; a directory a consumer's row
-// references refused as ErrReferenced under the consumer's constraint; a
-// missing directory ErrNotFound; and an empty directory removed, after
-// which its name is free again.
+// deleteDirectory checks Delete against the schema: the root, a directory
+// with a child, a file, or a deleting file, one a consumer's row
+// references, a missing one, and an empty one removed, its name then free.
 func (s *suite) deleteDirectory(t *testing.T) {
 	guarded := s.mkdir(t, "delete-guarded-"+t.Name())
 	if err := s.store.Directories.Delete(s.ctx, s.db, guarded.ID, data.AtVersion(guarded.Version+1)); !errors.Is(err, query.ErrVersionMismatch) {

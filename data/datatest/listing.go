@@ -149,13 +149,9 @@ func (m listingMode) plain(alias string) string {
 	return " AND " + alias + ".status <> 'deleting'"
 }
 
-// filesMatchAPlainQuery checks, for every directory of the fixture and a
-// missing one, called by default and with IncludeDeleting, under every
-// sort and filter, at several page sizes, that the pages read by number
-// and concatenated equal the rows a plain query over blobfs_file returns,
-// deleting rows excluded by default, that every counted page reports the
-// plain query's count, and that the pages without the total return the
-// same rows and query.NoTotal.
+// filesMatchAPlainQuery checks the file listing, by default and with
+// IncludeDeleting, under every sort, filter, and page size, against the
+// rows and count of a plain query, counted and not.
 func (s *suite) filesMatchAPlainQuery(t *testing.T, f listingFixture) {
 	p := s.db.Dialect().Placeholder
 	dirs := maps.Clone(f.dirs)
@@ -257,11 +253,9 @@ func (s *suite) directoriesUnder(t *testing.T, mode listingMode, path, dir strin
 	}
 }
 
-// fileOffsetWalk reads the file listing of dir, called with opts, page by
-// page by number until a page reports no More, checking that every page
-// after an earlier one's More holds rows, that a short page is the last, and
-// that every counted page with rows reports the same total, and returns the
-// ids concatenated and the total, query.NoTotal when the pages carried none.
+// fileOffsetWalk reads the file listing of dir page by page until no More,
+// checking each page's rows and total, and returns the ids and the total,
+// query.NoTotal when the pages carried none.
 func (s *suite) fileOffsetWalk(t *testing.T, dir string, req query.Directives, size int, opts ...data.ListOption) ([]string, int) {
 	t.Helper()
 	var ids []string
@@ -297,13 +291,8 @@ func (s *suite) fileOffsetWalk(t *testing.T, dir string, req query.Directives, s
 	return nil, 0
 }
 
-// pageBoundaries checks More, the total, and the cursor at the exact
-// boundaries: three files at size 3 fill one page with no More and no
-// cursor; at size 2 the first page has More and a cursor and the second
-// one row and no More, by number and by cursor; four files at size 2
-// fill page 2 exactly with no More; the rule holds without the total;
-// and a sort by a nullable field, which a cursor cannot continue, reports
-// More with no cursor, the state that says to page by number.
+// pageBoundaries checks More, the total, and the cursor at the exact page
+// boundaries, counted and not, and for a sort a cursor cannot continue.
 func (s *suite) pageBoundaries(t *testing.T) {
 	top := s.mkdir(t, "boundaries-"+t.Name())
 	three := s.mkdirUnder(t, top.ID, "three").ID
@@ -368,13 +357,8 @@ func (s *suite) pageBoundaries(t *testing.T) {
 	check("directories by parent_id at size 2", 2, 3, true, false, len(dirs.Items), dirs.Total, dirs.More, dirs.Next)
 }
 
-// emptyPages checks the counted total's rules for a page with no row: an
-// empty first page reports the exact total 0; a page past the last, by
-// number, carries no count and reports query.NoTotal; and an empty
-// continued page, past a cursor whose remaining rows were deleted,
-// reports query.NoTotal as well. None reports More or a cursor. A
-// continued page with rows reports the whole listing's total, not the
-// rows from the cursor on.
+// emptyPages checks the counted total of an empty first page, a page past
+// the last, and an empty continued page, and a continued page's total.
 func (s *suite) emptyPages(t *testing.T) {
 	dir := s.mkdir(t, "empty-pages-"+t.Name())
 	empty, err := s.store.Files.List(s.ctx, s.db, dir.ID, listAll(), firstPage(5))
@@ -409,13 +393,9 @@ func (s *suite) emptyPages(t *testing.T) {
 	}
 }
 
-// totalUnderConcurrentInserts checks that a page's total agrees with the
-// rows of the same statement while another connection inserts between
-// calls. On the pool each call sees its own snapshot. Inside a read-only
-// repeatable-read transaction, an insert committed between two pages
-// changes neither the total nor the rows: both pages come from the
-// transaction's snapshot, and the row inserted meanwhile appears, with
-// the larger total, only to a listing after it.
+// totalUnderConcurrentInserts checks a page's total agrees with its rows
+// while another connection inserts, on the pool and inside a read-only
+// repeatable-read transaction, whose pages keep its snapshot.
 func (s *suite) totalUnderConcurrentInserts(t *testing.T) {
 	dir := s.mkdir(t, "busy-"+t.Name()).ID
 	for _, n := range []string{"a", "b", "c"} {

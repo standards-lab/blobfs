@@ -15,10 +15,8 @@ var (
 	constraint   = regexp.MustCompile(`(?i)\bCONSTRAINT\s+([A-Za-z_][A-Za-z0-9_]*)`)
 )
 
-// TestMigrations loads the set and checks its shape: the name and the
-// history table the package exports, the three migrations in order with
-// strictly increasing versions, each transactional with an up and a down
-// text, so a consumer's Reset can revert the set.
+// TestMigrations checks the set's name, history table, and three
+// transactional migrations in order, each with an up and a down.
 func TestMigrations(t *testing.T) {
 	set, err := postgres.Migrations()
 	if err != nil {
@@ -76,10 +74,8 @@ func TestObjectNames(t *testing.T) {
 	}
 }
 
-// TestConstraintConstants proves that every constraint-name constant the
-// root package exports names a constraint or a unique index the DDL
-// declares, so the data package's error mapping cannot drift from
-// the schema. The scan is over the embedded up texts and needs no engine.
+// TestConstraintConstants checks every constraint-name constant names a
+// constraint or unique index the embedded DDL declares.
 func TestConstraintConstants(t *testing.T) {
 	set, err := postgres.Migrations()
 	if err != nil {

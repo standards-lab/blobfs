@@ -49,10 +49,8 @@ func (s *suite) heldRowUnchanged(t *testing.T, dir string) {
 	}
 }
 
-// holdRefusals checks the hold's refusals against the baseline: a stale
-// version is ErrVersionMismatch; a deleting row is ErrDeleting whatever
-// version is asked for, and never a version mismatch; and a missing row
-// is ErrNotFound. None changes the row.
+// holdRefusals checks the hold's refusals against the baseline, none of
+// which changes the row.
 func (s *suite) holdRefusals(t *testing.T, dir string) {
 	stale := s.insertFile(t, dir, "stale.txt", blobfs.StatusAvailable)
 	deletingID := s.insertFile(t, dir, "deleting.txt", blobfs.StatusAvailable)
@@ -90,11 +88,8 @@ func (s *suite) holdRefusals(t *testing.T, dir string) {
 	}
 }
 
-// holdThenDelete checks the first interleaving: a holder inserts its
-// reference under the hold; a Delete that starts meanwhile waits for the
-// holder to commit and then runs, and the reference is there for the
-// consumer's own check after the Delete to see, and for the foreign key
-// to refuse Purge on.
+// holdThenDelete checks the first interleaving: a Delete that starts under
+// a hold waits for the holder's commit, then sees its reference.
 func (s *suite) holdThenDelete(t *testing.T, dir string) {
 	s.createFileReferences(t)
 	id := s.insertFile(t, dir, "held-then-deleted.txt", blobfs.StatusAvailable)

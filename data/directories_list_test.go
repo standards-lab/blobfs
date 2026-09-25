@@ -100,15 +100,9 @@ const directoryBase = "FROM blobfs_directory d\nWHERE d.parent_id = CAST($1 AS u
 // layer before the count's closing parenthesis.
 const directoryCounted = "SELECT * FROM (SELECT q.*, COUNT(*) OVER () AS sqlate_total FROM (SELECT d.id, d.parent_id, d.name, d.status, d.version, d.created_at, d.updated_at\n" + directoryBase
 
-// TestListDirectories proves List by page number: the total counted in the
-// page's own statement, one query per page, over the base anchored on the
-// parent, under the caller's filters and then the one that hides
-// deleting directories, sorted by the caller's terms with name appended as
-// the tie-breaker, and fetching one row past the page to report More, and
-// after each page the read of the parent that tells a deleting one. The
-// first page with More carries a cursor; the last page reports no More
-// and no cursor. Under TotalNone the page carries no count column and the
-// total is NoTotal.
+// TestListDirectories checks List by page number, counted and under
+// TotalNone: the statement, its bindings, More, the cursor, and the
+// parent's read after each page.
 func TestListDirectories(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,
@@ -157,10 +151,8 @@ func TestListDirectories(t *testing.T) {
 	}
 }
 
-// TestListDirectoriesEmptyPage proves the total an empty page carries: an
-// empty first page, no row under the filters at all, reports a total of
-// 0, while an empty later page, one whose offset ran past the end,
-// carries no count column to read and reports query.NoTotal.
+// TestListDirectoriesEmptyPage checks an empty first page reports 0 and an
+// empty later page reports query.NoTotal.
 func TestListDirectoriesEmptyPage(t *testing.T) {
 	ctx := context.Background()
 	s, db, _ := openStore(t, fallback, sqltest.WithTotal(children(parentID), 0), listed())
@@ -182,9 +174,7 @@ func TestListDirectoriesEmptyPage(t *testing.T) {
 	}
 }
 
-// TestListRoot proves the listing of the root is the listing anchored on
-// blobfs.RootID: the depth-one directories, whose parent is the root. The
-// root itself has no parent, so the base never returns it.
+// TestListRoot checks the listing of RootID is the depth-one directories.
 func TestListRoot(t *testing.T) {
 	s, db, rec := openStore(t, fallback, sqltest.WithTotal(children(blobfs.RootID, "docs"), 1), directoryResponse(blobfs.RootID, "", "/", 1))
 	c, err := s.Directories.List(context.Background(), db, blobfs.RootID, query.Directives{}, query.Page{Number: 1, Size: 10})
@@ -201,10 +191,8 @@ func TestListRoot(t *testing.T) {
 	}
 }
 
-// TestContinueDirectories proves Continue walks the order List began: the
-// page past the cursor's name, by the keyset predicate in place of an
-// offset, with the same total a first page reports, and a cursor of its
-// own while rows remain. A descending sort continues descending.
+// TestContinueDirectories checks Continue reads past the cursor by the
+// keyset predicate, ascending and descending.
 func TestContinueDirectories(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,
@@ -245,10 +233,8 @@ func TestContinueDirectories(t *testing.T) {
 	}
 }
 
-// TestListDirectoriesRefusesDirectives proves a request naming a field the
-// base does not declare, a page below 1, and an empty cursor are refused
-// by the query library before any SQL, each unwrapping to ErrDirectives
-// and the unknown field reachable as an UnknownFieldError.
+// TestListDirectoriesRefusesDirectives checks an undeclared field, a page
+// below 1, and an empty cursor are refused before any SQL.
 func TestListDirectoriesRefusesDirectives(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
@@ -277,10 +263,8 @@ func TestListDirectoriesRefusesDirectives(t *testing.T) {
 	}
 }
 
-// TestDirectoriesNonContinuableSort proves a sort that cannot be continued,
-// one whose terms mix directions or name the nullable parent_id, still
-// pages by number and reports More, but carries no cursor, and Continue
-// under it is refused as unsupported before any SQL.
+// TestDirectoriesNonContinuableSort checks a mixed-direction or nullable
+// sort pages by number with no cursor, and Continue under it is refused.
 func TestDirectoriesNonContinuableSort(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
@@ -329,10 +313,8 @@ func editCursor(t *testing.T, c query.Cursor, old, new string) query.Cursor {
 	return query.Cursor(base64.RawURLEncoding.EncodeToString(bytes.Replace(raw, []byte(old), []byte(new), 1)))
 }
 
-// TestDirectoriesCursorRefusals proves a cursor is refused before any SQL
-// when its position was edited, when it comes from the file listing, and
-// when it is relayed under other filters or another sort than the page that
-// issued it.
+// TestDirectoriesCursorRefusals checks an edited, foreign, or relayed
+// cursor is refused before any SQL.
 func TestDirectoriesCursorRefusals(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,
@@ -374,14 +356,9 @@ func TestDirectoriesCursorRefusals(t *testing.T) {
 	}
 }
 
-// TestListDirectoriesDeleting proves what the listing does with deleting
-// rows. Under a parent that is deleting, List and Continue read the page
-// and then the parent, and report blobfs.ErrDeleting with no rows; under
-// a parent that does not exist the page is the listing, empty, with no
-// error. With IncludeDeleting the page composes the caller's filters
-// alone, and no read follows it. The hiding filter is part of what a
-// cursor is bound to, so a cursor continues only a listing called the
-// same way, and the caller's filters are never appended to in place.
+// TestListDirectoriesDeleting checks the hiding filter, the refusal of a
+// deleting parent, IncludeDeleting, and the cursor's binding to the
+// option; the caller's filters are never appended to in place.
 func TestListDirectoriesDeleting(t *testing.T) {
 	ctx := context.Background()
 	none := query.Directives{Total: query.TotalNone}

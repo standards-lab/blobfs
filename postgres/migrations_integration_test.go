@@ -30,13 +30,9 @@ var consumerSet = migrate.Set{
 	}},
 }
 
-// TestMigrationsWithAConsumerSet proves blobfs's set through migrate.New
-// below a consumer's: Up applies both, blobfs's first, each at its head
-// under its own history table, and Verify passes; blobfs's set cannot be
-// reverted while the consumer's above it is applied; the consumer's set
-// reverts on its own and blobfs's then reverts to nothing; Reset reverts
-// both and drops their history tables; and a later Up replays both from
-// zero, the root seeded again.
+// TestMigrationsWithAConsumerSet checks blobfs's set below a consumer's:
+// the order of Up, Verify, the refused revert, each set's revert, Reset,
+// and a replay from zero.
 func TestMigrationsWithAConsumerSet(t *testing.T) {
 	ctx := context.Background()
 	db := dbtest.Create(t).Session(sqlatepg.Dialect{})
@@ -124,16 +120,10 @@ func insertFile(ctx context.Context, db *sqlate.DB, dir, name, status string) (s
 	return id, err
 }
 
-// TestConstraints proves every named constraint and index of the DDL as
-// the engine reports it, each violation classified by sqlate's postgres
-// dialect under its class with the constraint's name: the second root
-// under blobfs_uq_directory_root, distinct from the primary key; the root
-// rule's check; a directory's empty name and its own parent; the
-// directory and file uniqueness; the directory and file status checks; and
-// the two foreign keys, on an insert and on a delete. The data package's
-// mapping of the constants to sentinels is proved through the store in
-// the conformance suite; the one constant no store operation can reach,
-// the root's index, is proved here.
+// TestConstraints checks every named constraint and index as the engine
+// reports its violation. The root's index, which no store operation can
+// reach, is proved only here; the others' mapping to sentinels is proved
+// through the store in the conformance suite.
 func TestConstraints(t *testing.T) {
 	ctx := context.Background()
 	db := dbtest.Migrated(t).Session(sqlatepg.Dialect{})

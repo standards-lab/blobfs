@@ -43,14 +43,10 @@ var keysetSorts = []struct {
 	{"version, created_at", []query.Sort{{Field: "version"}, {Field: "created_at"}}},
 }
 
-// keyset checks the cursor walk through the store under test against the
-// baseline: every sort walked by cursor to the end returns the same rows
-// in the same order on both stores, the same rows an offset walk returns,
-// each exactly once, with every page but the last carrying a cursor and a
-// continued page the whole listing's total; once without an index on
-// created_at, as the library ships, and once with the index a consumer
-// adds. The timestamps round-trip exactly, or a walk over the ties would
-// skip or repeat rows.
+// keyset checks every sort walked by cursor to the end returns the same
+// rows as the baseline and an offset walk, each once, without and then with
+// a sort index. The timestamps must round-trip exactly, or a walk over the
+// ties would skip or repeat rows.
 func (s *suite) keyset(t *testing.T) {
 	dir := s.mkdir(t, "keyset-"+t.Name())
 	// Files whose created_at ties in groups of three, whose version
@@ -135,11 +131,9 @@ type lister[T any] struct {
 	cont func(query.Directives, query.Cursor, int) (query.Collection[T], error)
 }
 
-// cursorWalk reads page 1 with its total and then follows the cursor to
-// the end, the second page with the total and the rest without, and
-// returns the keys of every row in order. Every page but the last reports
-// More with a cursor, and the last neither; a counted continued page
-// reports the whole listing's total, rows.
+// cursorWalk reads page 1 with its total and follows the cursor to the
+// end, the second page counted and the rest not, returning every row's key
+// in order and checking More, the cursor, and the totals.
 func cursorWalk[T any](t *testing.T, l lister[T], sort []query.Sort, rows int, key func(T) string) []string {
 	t.Helper()
 	req := query.Directives{Sort: sort}

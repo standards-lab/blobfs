@@ -11,15 +11,9 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// listingRefusals checks the refusals of a request: an undeclared field,
-// the file's key included, and a page below 1 unwrap to
-// query.ErrDirectives before any SQL; a filter value the engine cannot
-// read as the field's type is a query.InvalidValueError under
-// query.ErrDirectives; and a cursor refused by Continue is a
-// query.CursorError: an edited one, one issued by the other listing, one
-// issued under another sort or other filters, one issued with
-// IncludeDeleting to a call without it and the reverse, and any cursor
-// under a sort that cannot be continued.
+// listingRefusals checks a request's refusals: undeclared fields and pages
+// below 1 before any SQL, a value the engine cannot read, and every cursor
+// Continue refuses.
 func (s *suite) listingRefusals(t *testing.T) {
 	dir := s.mkdir(t, "refusals-"+t.Name())
 	for _, n := range []string{"a", "b", "c"} {

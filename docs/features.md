@@ -135,8 +135,10 @@ for the dialect and binds them. No I/O happens. The catalog must carry the query
 patterns, `query.Patterns()` or an engine's overlay of them such as `postgres.Patterns()` from
 `sqlate/postgres`, and blobfs's own, `data.Patterns()`; a catalog without the `blobfs` namespace
 is refused before compiling, with the fix named. The dialect chooses the form of each returning
-command: the single-statement form where it renders `RETURNING`, and otherwise the fallback,
-the command and its read in one transaction.
+command, the create, complete, move, and delete steps that return their row as the database
+holds it: the single-statement form where it renders `RETURNING`, and otherwise the fallback,
+the command and its read in one transaction, the caller's when the session is a `*sqlate.Tx` and
+one of the store's own on the pool.
 
 `WithEngine(e)` installs an engine. Without it the store runs the baseline. With it,
 `New` binds the baseline over the statements it compiled and calls `e(catalog, dialect, base)`
@@ -165,7 +167,8 @@ takes the `*sqlate.DB` itself, since it opens transactions of its own.
 `Files.Delete`, `Directories.Delete`, and `Directories.MarkDeleting`. The call acts only while
 the row is at version `v`, and a row at another version is `query.ErrVersionMismatch`. A row
 already deleting is `ErrDeleting` to `Files.Hold`, and a retry to `Files.Delete` and
-`Directories.MarkDeleting`, which converges whatever the version. Its type is `VersionOption`.
+`Directories.MarkDeleting`, at any version (see [deleting outranks the
+version](concepts.md#deleting-outranks-the-version)). Its type is `VersionOption`.
 
 ### Patterns
 
@@ -193,19 +196,16 @@ directory from the module's own `[export]`.
 | `Path(ctx, sess, id)` | Computes the path from the root at read time, `/` for the root and `/a/b` below it, in one recursive statement whose cost is the directory's depth. | `ErrNotFound`; `ErrCycle` when the chain of parents loops |
 | `Create(ctx, sess, parentID, name, opts...)` | Inserts a directory and returns the row. `WithID` supplies the id. | `NameError`, `IDError`, `ErrNameTaken`, `ErrIDTaken`, `ErrNotFound` for the parent, `ErrDeleting` for a deleting parent |
 | `Ensure(ctx, sess, parentID, name, opts...)` | Returns the directory with that name, creating it when none exists, and whether this call created it. | as `Create`; a name already held is found, not refused, except in the race below; a found directory that is deleting is `ErrDeleting` |
-| `Move(ctx, tx, id, parentID, name, version)` | Moves or renames a directory under the tree lock, after the cycle check, guarded by `version`. | `ErrRootDirectory`, `NameError`, `ErrCycle`, `ErrNotFound` for the directory or the new parent, `ErrNameTaken`, `ErrDeleting` whatever the version when the directory or either parent is deleting, `query.ErrVersionMismatch`; at repeatable read or serializable, `sqlate.ErrSerializationFailure` |
-| `Delete(ctx, sess, id, opts...)` | Removes one empty directory. Without `AtVersion` it takes no version: the foreign keys refuse the one case a stale version would catch. | `ErrRootDirectory`, `ErrNotEmpty`, `ErrReferenced`, `ErrNotFound`, and with `AtVersion`, `query.ErrVersionMismatch` |
+| `Move(ctx, tx, id, parentID, name, version)` | Moves or renames a directory under the tree lock, after the cycle check, guarded by `version`. | `ErrRootDirectory`, `NameError`, `ErrCycle`, `ErrNotFound` for the directory or the new parent, `ErrNameTaken`, `ErrDeleting` when the directory or either parent is deleting, `query.ErrVersionMismatch`; at repeatable read or serializable, `sqlate.ErrSerializationFailure` |
+| `Delete(ctx, sess, id, opts...)` | Removes one empty directory, only at the version `AtVersion` names when it is given. | `ErrRootDirectory`, `ErrNotEmpty`, `ErrReferenced`, `ErrNotFound`, and with `AtVersion`, `query.ErrVersionMismatch` |
 | `MarkDeleting(ctx, tx, id, opts...)` | The first step of [a branch's delete](#deleting-a-branch): marks the directory, every directory beneath it, and every file in them deleting, and returns the counts it changed as `Marked`. | `ErrRootDirectory`, `ErrNotFound`, and with `AtVersion`, `query.ErrVersionMismatch` |
 | `Deleting(ctx, sess, limit)` | Returns at most `limit` roots of the branches being deleted, in id order. | a `limit` below 1 |
 | `IsWithin(ctx, sess, id, ancestorID)` | Reports whether `id` lies in the subtree of `ancestorID`, that directory included; a directory that does not exist is within nothing. On a loop in the tree, `id` is within every directory on its chain and none off it. | none of its own |
-| `LockTree(ctx, tx)` | Takes the variant's tree lock in `tx`, held until it ends. | the engine's error |
+| `LockTree(ctx, tx)` | Takes the variant's tree lock in `tx`, held until it ends, for a tree-shape change of the caller's own; `Move` and `MarkDeleting` take it themselves. | the engine's error |
 | `Serializes()` | Reports whether `LockTree` serializes across transactions. | none |
 | `List`, `Continue` | [Listings](#listings). | |
 
-`Create` never creates a root, since it always binds a parent. It returns the row as the
-database holds it: in the single-statement form where the dialect renders `RETURNING`, and
-otherwise in the fallback, the insert and a read in one transaction, the caller's when `sess` is
-a `*sqlate.Tx` and one of its own on the pool.
+`Create` never creates a root, since it always binds a parent.
 
 `Ensure` looks the name up first and inserts only when it finds no row, so the common case runs
 no failing statement and composes into a caller's transaction. A creator that commits the name
@@ -220,22 +220,12 @@ children and files follow it, because they reference it by id. A file under the 
 the same name is no conflict. `IsWithin` is exported for a consumer's own scope check and for
 refusing a move early in a user interface: a directory D may move under P only when
 `IsWithin(P, D)` is false. Its answer is reliable only while no other transaction moves
-directories.
-
-The tree lock's guarantee assumes `tx` runs at read committed, the default: the check after the
-lock reads the tree as committed when it runs, so a second mover sees the first mover's commit
-and is refused with `ErrCycle`. At repeatable read or serializable the check reads the snapshot
-the transaction's first statement took, on PostgreSQL the lock statement itself, before it
-blocked, so the check passes; the engine refuses the second move at its update or commit with
-`sqlate.ErrSerializationFailure` instead, at serializable on any engine that implements it and at
-repeatable read on PostgreSQL, whose foreign-key check locks the new parent the first move
-changed. The caller retries a refused move in a new transaction.
-
-The upward walks, `IsWithin` and `Path`, combine their recursive steps with `UNION`, which
-discards a directory the walk has visited, so each terminates on a loop in the tree, the cycle
-two opposing moves leave on a variant that does not serialize. On a loop, `IsWithin` reports a
-directory within every directory on its chain and none off it, and `Path` reports `ErrCycle`. A
-`Move` of a directory on the loop back under the root passes the check and repairs the tree.
+directories. The tree lock's guarantee assumes read committed isolation; at repeatable read or
+serializable the engine refuses the second of two opposing moves with
+`sqlate.ErrSerializationFailure`, and the caller retries it in a new transaction (see
+[moves](concepts.md#moves)). `IsWithin` and `Path` terminate on a loop in the tree, with the
+answers the table gives, and a `Move` of a directory on the loop back under the root repairs
+it.
 
 `Delete` of a directory with children or files is `ErrNotEmpty`, deleting rows included; there
 is no cascade. A consumer that wants a directory gone with everything in it marks its branch and
@@ -245,19 +235,19 @@ the directory removes it in the same transaction as the directory. With `AtVersi
 directory is removed only at that version, in the same statement, and a read tells a directory
 at another version from a missing one.
 
-On a store whose `Serializes` reports false, see [moves](concepts.md#moves) for the three ways
-to make directory moves safe.
+On a store whose `Serializes` reports false, [moves](concepts.md#moves) gives the three ways to
+make directory moves safe.
 
 ### Files
 
 | Method | What it does | Refusals |
 |---|---|---|
 | `Find(ctx, sess, id)` | Reads a file by id, whatever its status. | `ErrNotFound` |
-| `FindByName(ctx, sess, directoryID, name)` | Reads the file named `name` in a directory, whatever its status. A directory of the same name is not found. | `NameError`, `ErrNotFound` |
+| `FindByName(ctx, sess, directoryID, name)` | Reads the file named `name` in a directory, whatever its status: the last step of resolving a file's path. A directory of the same name is not found. | `NameError`, `ErrNotFound` |
 | `Create(ctx, sess, keys, directoryID, name, contentType, opts...)` | The write's first step: inserts the row as `pending` with its key and the declared content type, and returns it. | `NameError`, `IDError`, `KeyError`, all before any SQL; `ErrNameTaken` (by a row of any status), `ErrIDTaken`, `ErrNotFound` for the directory, `ErrDeleting` for a deleting directory |
 | `Ensure(ctx, sess, keys, directoryID, name, contentType, opts...)` | The retry-safe first step: returns the row that holds the name and a `WriteOutcome`. | as `Create`; a name already held is found, not refused, except in the race `Directories.Ensure` describes |
-| `Complete(ctx, sess, id, version, obj)` | The write's last step: moves the pending row to `available`, records `obj`, and returns the row. | `ErrNotFound`; a `TransitionError` matching `ErrDeleting` when a delete began, whatever the version; `query.ErrVersionMismatch`; or a `TransitionError` matching `ErrInvalidTransition` when the write was already completed |
-| `Move(ctx, sess, id, directoryID, name, version)` | Moves or renames a file, guarded by `version`. The key is untouched. | `NameError`, `ErrNotFound` for the file or the directory, `ErrNameTaken`, `ErrDeleting` whatever the version when the file, its directory, or the new directory is deleting, `query.ErrVersionMismatch` |
+| `Complete(ctx, sess, id, version, obj)` | The write's last step: moves the pending row to `available`, records `obj`, and returns the row. | `ErrNotFound`; a `TransitionError` matching `ErrDeleting` when a delete began; `query.ErrVersionMismatch`; or a `TransitionError` matching `ErrInvalidTransition` when the write was already completed |
+| `Move(ctx, sess, id, directoryID, name, version)` | Moves or renames a file, guarded by `version`. The key is untouched. | `NameError`, `ErrNotFound` for the file or the directory, `ErrNameTaken`, `ErrDeleting` when the file, its directory, or the new directory is deleting, `query.ErrVersionMismatch` |
 | `Hold(ctx, tx, id, opts...)` | Locks the row for the rest of `tx` without changing it. | `ErrNotFound`, `ErrDeleting`, and with `AtVersion`, `query.ErrVersionMismatch` |
 | `Delete(ctx, tx, id, opts...)` | The delete's first step: moves the row to `deleting`, advancing its version once, and returns it with its key. | `ErrNotFound`, and with `AtVersion`, `query.ErrVersionMismatch` |
 | `Purge(ctx, sess, id)` | The delete's last step: removes a deleting row. A row already gone is success. | `ErrNotDeleting`, `ErrReferenced` |
@@ -277,29 +267,22 @@ reports a file the mark reached as `WritePresent`, its row deleting, and refuses
 holds with `Create`'s `ErrDeleting`.
 
 A pending row may be moved: its key is fixed at the insert, and a retry of its write finds it
-by its new name. `Complete`, `Move`, and `Delete` return the row in the single-statement form
-where the dialect renders `RETURNING`, and otherwise in the fallback, the update and a read; the
-refusals are told apart from the row that read returns, with no further statement. A deleting
-row outranks a stale version: `Delete` advances the version, so a writer or a mover that read the
-row before the delete began holds a version the deleting row no longer carries, and `Complete`
-and `Move` report `ErrDeleting` for it, as `Hold` does, rather than a version mismatch that a
-reread and retry could never resolve.
+by its new name. `Complete` tells its refusals apart from the row its returning read returns,
+with no further statement; `Move` reads the two directories when that row does not explain
+its refusal.
 
-`Hold` takes the row's lock that `Delete` waits on, changes no value, and advances no version, so
-other holders of the row's version stay valid. It is a variation point: the baseline takes the lock
-with an update that assigns a column to itself, which is portable but writes a new row version on an
-engine that keeps one per update, and the PostgreSQL engine takes the same lock with `SELECT ... FOR
-NO KEY UPDATE`, which writes none. The refusals are the same on both. A pending row is held like an
-available one; a deleting row is refused whatever its version, since a file whose delete has begun
-must take no new reference. `AtVersion(v)` makes the hold match only at version `v`, for a caller
-that acts on a listing without reading the row again in its transaction.
+`Hold` takes the row's lock that `Delete` waits on, changes no value, and advances no version,
+so other holders of the row's version stay valid. It is a variation point, `Variant.HoldFile`,
+whose refusals are the same on every variant. A pending row is held like an available one; a
+deleting row is refused, since a file whose delete has begun takes no new reference.
+`AtVersion(v)` makes the hold match only at version `v`, for a caller that acts on a listing
+without reading the row again in its transaction.
 
 `Delete` waits on a `Hold` another transaction took, so once it returns, every reference a hold
 admitted has committed; the consumer checks for its own references in `tx`, after the call.
-`Delete` with `AtVersion` moves the row only at that version; a row already deleting is
-returned, as for a retry, whatever the version. `Purge` refused by a consumer's foreign key
-leaves the row deleting, with the `sqlate.ConstraintError` reachable so the consumer matches the
-constraint's name against its own.
+`Purge` refused by a consumer's foreign key leaves the row deleting, with the
+`sqlate.ConstraintError` reachable so the consumer matches the constraint's name against its
+own.
 
 ### Listings
 
@@ -328,7 +311,8 @@ how the work of a delete is found.
 - `Continue(ctx, sess, id, req, after, size, opts...)` reads the `size` rows past `after`, the
   `Next` of an earlier page of the same listing, under the same filters and sort.
 
-Both return a `query.Collection[T]`: `Items`, `Total`, `More`, and `Next`.
+Both return a `query.Collection[T]`: `Items`, `Total`, `More`, and `Next`. `More` is read as
+one row past the page's size.
 
 - **Directives.** `req` is a `query.Directives`: `Sort` (`[]query.Sort`), `Filters`
   (`[]query.Filter`, with the query library's operators), and `Total`. A field the base does not
@@ -373,12 +357,12 @@ directories already deleting, so a repeated mark reaches a straggler: an active 
 branch by a create that read its parent before the first mark committed. The file update takes
 each row's lock, so it waits on a `Hold` another transaction took. The root is
 `ErrRootDirectory` before any SQL, and a directory that does not exist is `ErrNotFound`. With
-`AtVersion`, the directory is read under the lock and marked only at that version; a directory
-already deleting is the mark's retry, whatever the version. The walk costs the size of the
-branch, never of the tree, and terminates on a loop in the tree.
+`AtVersion`, the directory is read under the lock, which every change to a directory's version
+takes, and marked only at that version. The walk costs the size of the branch, never of the
+tree, and terminates on a loop in the tree.
 
-After the mark, a deleting directory refuses every operation that would add to the branch or take
-from it, with `ErrDeleting`, whatever version the caller holds:
+After the mark, a deleting directory refuses every operation that would add to the branch or
+take from it, with `ErrDeleting`:
 
 | Operation | Refused when |
 |---|---|
@@ -427,7 +411,9 @@ with `More` set, and so does a directory refused as `ErrNotEmpty` for the same r
 `SweepResult` counts what the pass did, each row once, by the step that purged it: `Files`
 counts the files of branches, `Directories` the directories removed, and `Stale` the stale rows
 reclaimed. `More` reports that the pass stopped at its bound, or at a straggler, with work
-remaining; a caller runs passes while it is true. Nothing to do is a zero result and no error.
+remaining; a caller runs passes while it is true. A stale row in a branch the walk has not
+reached yet is finished by the reclaim and counted in `Stale`. Nothing to do is a zero result
+and no error.
 
 A refusal stops the branch or the stale row it meets, not the pass. The refusals are an object
 delete's error, the hook's error, and a purge or removal a consumer's foreign key refuses as
@@ -435,17 +421,17 @@ delete's error, the hook's error, and a purge or removal a consumer's foreign ke
 wrapped as `data: sweep: ...`, with the result counting what it did.
 
 `StaleOlderThan`'s `age` must exceed the longest write the consumer lets run, counted from the
-write's first step: a write resumed through `Files.Ensure` keeps its row's `updated_at`, and a
-`Complete` of a reclaimed row is `ErrDeleting`, or `ErrNotFound` once the row is purged. The age
-is measured against the consumer's clock and `updated_at` against the database's, so their skew
-is part of the margin. A writer whose `Complete` is refused that way deletes the object it put;
-see [orphaned objects](concepts.md#stale-rows-and-orphaned-objects).
+write's first step. The age is measured against the consumer's clock and `updated_at` against
+the database's, so their skew is part of the margin. A `Complete` of a reclaimed row is
+`ErrDeleting`, or `ErrNotFound` once the row is purged; see [orphaned
+objects](concepts.md#stale-rows-and-orphaned-objects).
 
 ### Variants and engines
 
 `Variant` is the interface of the variation points:
 
-- `LockTree(ctx, tx)` takes the tree lock, held until `tx` ends.
+- `LockTree(ctx, tx)` takes the tree lock, held until `tx` ends. It serializes only the
+  transactions that take it.
 - `Serializes()` reports whether `LockTree` serializes at all.
 - `ResolvePath(ctx, sess, startID, segments)` walks normalized, validated names down from a
   start and returns the deepest directory reached and its depth, the number of segments matched;
@@ -597,7 +583,9 @@ CREATE INDEX ix_blobfs_file_directory_created ON blobfs_file (directory_id, crea
 
 Each migration ships its down. A released migration never changes in text or name; a change to
 seeded data is a new migration. The set references nothing outside the objects it creates, so a
-consumer declares it below its own set and references blobfs's tables freely.
+consumer declares it below its own set and references blobfs's tables freely. A second engine
+ships the set as a sub-module of its own, with the same file names in its own migrations
+directory.
 
 ## postgres: the PostgreSQL engine
 
@@ -672,10 +660,10 @@ The integration tier, behind the `integration` build tag, runs against a live Po
   replay;
 - every named constraint and index as the engine reports its violation;
 - plan shapes and buffer bounds: listing pages under each total mode, deleting rows hidden, a
-  cursor page over a consumer's `created_at` index at any position, the upward walks' cost
-  bounded by depth, every protocol step found through the primary key, the read of the branch
-  roots through `blobfs_ix_directory_deleting`, and the stale read through `blobfs_ix_file_stale`
-  in the index's order, with no sort.
+cursor page over a consumer's `created_at` index at any position, the upward walks' cost bounded
+by depth, every protocol step found through the primary key, the read of the branch roots
+through `blobfs_ix_directory_deleting`, and the stale read through `blobfs_ix_file_stale` in the
+index's order, with no sort.
 
 ## datatest: the conformance suite
 

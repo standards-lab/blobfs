@@ -12,28 +12,19 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// ObjectDeleter is the consumer's object store as Store.Sweep calls it:
-// the delete of the object under a file's key, the one step of a sweep
-// outside the database. The consumer adapts its own store to it, so the
-// data package names no object store.
-//
-// DeleteObject must be idempotent: an object that does not exist is
-// success, not an error. A pass that stopped after an object's delete and
-// before its row's purge deletes the object again, and the object of a
-// pending row may never have been stored. An error stops that file's
-// delete and leaves its row deleting, for the next pass to finish.
+// ObjectDeleter is the consumer's object store as Store.Sweep calls it.
+// DeleteObject must be idempotent, a missing object being success, since a
+// pass may delete an object again and a pending row's object may never
+// have been stored. An error leaves that file's row deleting for the next
+// pass.
 type ObjectDeleter interface {
 	DeleteObject(ctx context.Context, key string) error
 }
 
-// SweepResult is what one pass of Store.Sweep did. Files counts the files
-// of branches being deleted whose objects it deleted and whose rows it
-// purged, Directories the directories it removed, and Stale the stale rows,
-// pending or deleting, it reclaimed outside the branches' walks (see
-// StaleOlderThan). Each row is counted once, by the step that purged it.
-// More reports that the pass stopped with work remaining, at its Batch
-// bound or at a row that reached a branch after the branch's mark; a
-// caller runs passes while More is true.
+// SweepResult is what one pass of Store.Sweep did: Files counts the
+// branches' files finished, Directories the directories removed, and Stale
+// the stale rows reclaimed, each row once. More reports work remaining; a
+// caller runs passes while it is true.
 type SweepResult struct {
 	Files       int
 	Directories int
@@ -41,51 +32,20 @@ type SweepResult struct {
 	More        bool
 }
 
-// Sweep runs one bounded pass that finishes the deletes a caller began and
-// did not complete: the branches Directories.MarkDeleting marked and, with
-// StaleOlderThan, the pending rows of abandoned writes and the deleting
-// rows of file deletes that stopped before the purge. The pass is
-// stateless: it finds its work in the database each time, and every step
-// it takes is idempotent, so a pass stopped at any point, by an error or a
-// crash, is finished by the next one. It calls objects for every object it
-// deletes and never otherwise touches the object store.
+// Sweep runs one bounded, stateless pass that finishes the deletes callers
+// began: for each branch root Directories.Deleting returns, it marks the
+// branch again and walks it, deleting each file's object through objects,
+// purging its row, and removing each directory once empty; with
+// StaleOlderThan it then reclaims stale rows. It takes the *sqlate.DB
+// because it opens a transaction of its own for each mark, removal, and
+// pending row's delete, and holds none across a call to objects. See The
+// sweep in docs/features.md.
 //
-// For each branch root Directories.Deleting returns, in id order, the pass
-// first marks the branch again, in a transaction of its own, which reaches
-// any straggler: a row a create that raced the first mark left active. It
-// then walks the branch depth first through the listings with
-// IncludeDeleting. In each directory it deletes every file's object and
-// then purges the file's row, as the file delete's last two steps do; then
-// it empties and removes each child directory the same way; then it
-// removes the directory itself, leaf directories before their parents and
-// the root last. Each directory is removed in a transaction of its own,
-// guarded by the version the pass read it at, with OnRemoveDirectory's
-// function run first in the same transaction. A row still active in the
-// branch when the pass reaches it, a straggler that landed after this
-// pass's mark, stops the branch's walk with More set, and so does a
-// directory refused as blobfs.ErrNotEmpty for the same reason; the next
-// pass marks the straggler. With StaleOlderThan, the pass spends the budget
-// the branches leave on the oldest stale rows (see StaleOlderThan). A
-// deleting row inside a branch the walk has not reached yet may be among
-// them; it is finished there, as the walk would have finished it, and
-// counted once, since the purged row is in no later read.
-//
-// Batch bounds the records the pass handles. When the pass spends the
-// bound, it reads whether any work remains, a branch being deleted or, with
-// StaleOlderThan, a stale row past its age, and reports the answer as More.
-//
-// It takes the *sqlate.DB and not a session because it opens one
-// transaction for each mark, each directory's removal, and each pending
-// row's delete, which a *sqlate.Tx cannot. It reads and purges on the pool
-// and deletes objects outside any transaction, so no row lock is held
-// across a call to the object store. A refusal stops the branch or the
-// stale row it meets, not the pass. The refusals are an object delete's
-// error, a hook's error, and a purge or removal a consumer's foreign key
-// refuses as blobfs.ErrReferenced. The pass goes on to the next branch or
-// row, so a row refused on every pass does not hold back the work behind
-// it, and returns every refusal joined and wrapped as "data: sweep: ...",
-// with the result counting what it did. A Batch below 1 and a StaleOlderThan age that is not positive are
-// refused before any SQL. Nothing to do is a zero result and no error.
+// A refusal stops the branch or row it meets, not the pass: an object
+// delete's error, the hook's error, or blobfs.ErrReferenced from a
+// consumer's foreign key. The pass returns every refusal joined, with the
+// result counting what it did. A Batch below 1 and a StaleOlderThan age
+// that is not positive are refused before any SQL.
 func (s *Store) Sweep(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, opts ...SweepOption) (_ SweepResult, err error) {
 	defer wrap(&err, "sweep")
 	o := sweepOptions{batch: defaultBatch}
@@ -105,27 +65,23 @@ func (s *Store) Sweep(ctx context.Context, db *sqlate.DB, objects ObjectDeleter,
 	return w.result, w.run(ctx)
 }
 
-// sweep is one pass's state: what it has done, and the budget of records
-// Batch left it.
+// sweep is one pass's state.
 type sweep struct {
 	store   *Store
 	db      *sqlate.DB
 	objects ObjectDeleter
 	opts    sweepOptions
-	// before is the instant a stale row must have been last written
-	// before to be reclaimed, set only with StaleOlderThan.
+	// before is the stale rows' cutoff, set only with StaleOlderThan.
 	before time.Time
 	budget int
 	result SweepResult
-	// refused holds the files whose finish this pass tried and was
-	// refused, so the stale read does not try them again and report the
-	// same refusal twice.
+	// refused holds the files this pass was refused, so the stale read
+	// does not report the same refusal twice.
 	refused map[string]bool
 }
 
-// run is the pass: the branches, then the stale rows with what budget
-// is left, then, when the budget is spent, the read of whether work
-// remains.
+// run is the pass: the branches, then the stale rows, then, when the
+// budget is spent, the read of whether work remains.
 func (w *sweep) run(ctx context.Context) error {
 	roots, err := w.roots(ctx, w.budget)
 	if err != nil {
@@ -153,8 +109,7 @@ func (w *sweep) run(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// branch finishes the delete of the branch under root, as far as the
-// budget allows: the mark repeated, then the walk from the root.
+// branch repeats the mark of root's branch and walks it.
 func (w *sweep) branch(ctx context.Context, root blobfs.Directory) error {
 	_, err := w.db.Transact(ctx, func(tx *sqlate.Tx) (Marked, error) {
 		return w.store.Directories.markDeleting(ctx, tx, root.ID, nil)
@@ -170,11 +125,9 @@ func (w *sweep) branch(ctx context.Context, root blobfs.Directory) error {
 	return err
 }
 
-// directory empties the deleting directory dir and removes it: its files,
-// then its child directories, each emptied and removed the same way, then
-// dir itself. It reports whether dir is gone. It stops, reporting false,
-// when the budget runs out, and when it meets a row of the branch that is
-// not deleting, which a later mark reaches, with More set.
+// directory empties and removes dir, files first, then child directories,
+// and reports whether dir is gone. It stops at the budget, and at an
+// active row, a straggler, with More set.
 func (w *sweep) directory(ctx context.Context, dir blobfs.Directory) (bool, error) {
 	for {
 		if w.budget == 0 {
@@ -225,11 +178,9 @@ func (w *sweep) directory(ctx context.Context, dir blobfs.Directory) (bool, erro
 	return w.remove(ctx, dir)
 }
 
-// remove removes the emptied directory dir in a transaction of its own,
-// after the consumer's hook in the same transaction, guarded by the
-// version the pass read dir at, which a deleting directory keeps. A
-// directory already gone was removed by a concurrent pass. One a straggler
-// landed in since the walk emptied it is left, with More set.
+// remove removes the emptied dir after the hook, in one transaction, at
+// the version the pass read it at. A directory a straggler landed in is
+// left, with More set.
 func (w *sweep) remove(ctx context.Context, dir blobfs.Directory) (bool, error) {
 	var hookErr error
 	_, err := w.db.Transact(ctx, func(tx *sqlate.Tx) (struct{}, error) {
@@ -256,11 +207,8 @@ func (w *sweep) remove(ctx context.Context, dir blobfs.Directory) (bool, error) 
 	return true, nil
 }
 
-// finish runs the last two steps of the delete of the deleting file f:
-// the delete of its object, then the purge of its row, and spends one
-// record of the budget. A row already gone, purged by a concurrent pass
-// or its own caller, is done: Purge reports its absence as success. A
-// file refused is recorded, so this pass does not try it again.
+// finish deletes the deleting file f's object, purges its row, and spends
+// one record of the budget; a refused file is recorded.
 func (w *sweep) finish(ctx context.Context, f blobfs.File) error {
 	if err := w.objects.DeleteObject(ctx, f.Key); err != nil {
 		w.refused[f.ID] = true
@@ -274,14 +222,9 @@ func (w *sweep) finish(ctx context.Context, f blobfs.File) error {
 	return nil
 }
 
-// stale reclaims the oldest stale rows last written before w.before, as
-// many as the budget allows, each by its status. A pending row is moved
-// to deleting in a transaction of its own at the version the pass read,
-// then finished; one that moved on since the read, completed or gone, is
-// skipped and spends nothing. A deleting row is past that step, so it is
-// finished at once. A row refused is skipped too, its refusal returned
-// with the others', and so is a row whose finish this pass was already
-// refused in a branch's walk.
+// stale reclaims the oldest stale rows, as many as the budget allows: a
+// pending row is moved to deleting at the version read, and skipped if it
+// moved on; then each row is finished.
 func (w *sweep) stale(ctx context.Context) []error {
 	rows, err := w.store.Files.stale.All(ctx, w.db, query.Args{"before": w.before, "offset": 0, "fetch": w.budget})
 	if err != nil {
@@ -314,8 +257,8 @@ func (w *sweep) stale(ctx context.Context) []error {
 	return errs
 }
 
-// remains reports whether work is left for another pass: a branch being
-// deleted or, with StaleOlderThan, a stale row past its age.
+// remains reports whether a branch or, with StaleOlderThan, a stale row
+// is left for another pass.
 func (w *sweep) remains(ctx context.Context) (bool, error) {
 	roots, err := w.roots(ctx, 1)
 	if err != nil || len(roots) > 0 || !w.opts.hasStale {
@@ -328,8 +271,7 @@ func (w *sweep) remains(ctx context.Context) (bool, error) {
 	return len(rows) > 0, nil
 }
 
-// roots reads at most limit of the roots of the branches being deleted, as
-// Directories.Deleting does, with its error named for the pass.
+// roots reads at most limit branch roots, as Directories.Deleting does.
 func (w *sweep) roots(ctx context.Context, limit int) ([]blobfs.Directory, error) {
 	roots, err := w.store.Directories.deleting.All(ctx, w.db, query.Args{"offset": 0, "fetch": limit})
 	if err != nil {

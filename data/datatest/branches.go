@@ -75,11 +75,8 @@ func (s *suite) mark(store *data.Store, id string, opts ...data.VersionOption) (
 }
 
 // markCounts checks a mark of a three-level branch against the baseline:
-// the three directories and the four files not yet deleting counted, and
-// the file already deleting not; every directory of the branch read back
-// deleting, at one version past its own, by id, by name, and by path
-// through the variant's resolution; every file deleting, the one already
-// deleting unchanged; and a sibling branch and the root untouched.
+// the counts, every row read back deleting at one version past its own,
+// the row already deleting unchanged, and a sibling and the root untouched.
 func (s *suite) markCounts(t *testing.T) {
 	b := s.newBranch(t, "mark-"+t.Name())
 	sibling := s.newBranch(t, "sibling-"+t.Name())
@@ -161,10 +158,8 @@ func (s *suite) markMissing(t *testing.T) {
 	wantSameError(t, err, base)
 }
 
-// markAgain checks a mark of a branch marked already is no error: it
-// counts nothing and changes no row. Stragglers, a directory and a file
-// inserted active into the deleting branch as a create that raced the mark
-// leaves them, are reached by the next mark, which counts them alone.
+// markAgain checks a repeated mark counts and changes nothing, and that a
+// later mark reaches stragglers, counting them alone.
 func (s *suite) markAgain(t *testing.T) {
 	b := s.newBranch(t, "again-"+t.Name())
 	if _, err := s.mark(s.store, b.top.ID); err != nil {
@@ -195,11 +190,9 @@ func (s *suite) markAgain(t *testing.T) {
 	}
 }
 
-// markAtVersion checks a mark guarded by AtVersion, against the baseline:
-// a stale version is query.ErrVersionMismatch and marks nothing; the
-// current version marks the branch; a retry at the version read before the
-// mark converges, since the branch is deleting; and a missing directory is
-// ErrNotFound.
+// markAtVersion checks a mark under AtVersion against the baseline: a
+// stale version, the current one, a retry after the mark, and a missing
+// directory.
 func (s *suite) markAtVersion(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("at-version-%d-%s", i, t.Name()))
@@ -224,15 +217,10 @@ func (s *suite) markAtVersion(t *testing.T) {
 	}
 }
 
-// deletingRefuses checks every operation a deleting directory closes,
-// against the baseline in the same text: a create and an ensure of a
-// directory or a file under it; a move of a directory or a file into it;
-// and a move of a directory or a file out of it, the marked rows at the
-// version they carried before the mark and at their own, and stragglers,
-// rows still active in the deleting branch, refused by their parent. An
-// ensure that finds a deleting directory refuses it; one that finds a
-// deleting file reports it present, as for a file whose own delete began.
-// Every refused row is left as it was.
+// deletingRefuses checks every create, ensure, and move a deleting
+// directory refuses, against the baseline in the same text, at the marked
+// rows' old and new versions and for stragglers; every refused row is left
+// as it was. An ensure that finds a deleting file reports it present.
 func (s *suite) deletingRefuses(t *testing.T) {
 	b := s.newBranch(t, "refuses-"+t.Name())
 	if _, err := s.mark(s.store, b.top.ID); err != nil {

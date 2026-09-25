@@ -49,9 +49,8 @@ full.
   where a retry resumes it.
 - **Available**: a row whose object exists, with the size, content type, and entity tag the
   store reported.
-- **Deleting**: a file row whose object is being removed, or a directory whose branch is. It
-  keeps its name until it is removed, every mutation but the delete steps refuses it, and the
-  listings hide it unless asked to include it.
+- **Deleting**: a file row whose object is being removed, or a directory whose branch is; see
+  [the two-phase delete](concepts.md#the-two-phase-delete).
 - **Transition**: a change of status the table in the root package allows. No transition leaves
   `deleting` except the row's removal.
 - **Two-phase write**: `Create` (or `Ensure`) inserts the pending row, the consumer puts the
@@ -59,8 +58,7 @@ full.
 - **Two-phase delete**: `Delete` marks the row deleting and returns its key, the consumer
   deletes the object, and `Purge` removes the row. Every step is safe to repeat.
 - **Mark**: `Directories.MarkDeleting`, the first step of a branch's delete, which moves every
-  directory and file in the branch to deleting and closes the branch: nothing is created in it,
-  moved into it, or moved out of it.
+  directory and file in the branch to deleting and closes the branch.
 - **Straggler**: an active row in a deleting branch, left by a create that read its parent before
   the mark committed. A repeated mark reaches it, and each pass of the sweep marks its branches
   again.
@@ -75,15 +73,12 @@ full.
 - **Write outcome**: what `Files.Ensure` did with a name: created a pending row, resumed a
   pending row an earlier write left, or found the name present.
 - **Hold**: `Files.Hold`, a lock on a file's row for the rest of a transaction, taken without
-  changing the row. It is the library's half of reference-then-delete, and a variation point:
-  the baseline takes it with a self-assigning update, the PostgreSQL engine with
-  `SELECT ... FOR NO KEY UPDATE`, which writes no row version.
+  changing the row: the library's half of reference-then-delete, and a variation point.
 - **Reference-then-delete**: the rule that a consumer holds a file in the transaction that
   inserts a reference to it, so the reference and a delete of the file serialize on the file's
   row.
 - **Tree lock**: the lock a directory move takes before its cycle check, so two opposing moves
-  run one after the other. The baseline has none; the PostgreSQL engine's is an advisory lock
-  held until the transaction ends.
+  run one after the other; see [moves](concepts.md#moves).
 - **Cycle check**: `Directories.IsWithin`, run by a directory move, which refuses a new parent
   inside the moved directory's own subtree.
 - **Serializes**: whether a variant's tree lock serializes directory moves across transactions.
@@ -111,10 +106,9 @@ full.
   `RETURNING`, on an engine whose dialect renders the clause.
 - **Fallback** (sqlate): a returning command run as the command and then its read, in one
   transaction, on an engine whose dialect does not render `RETURNING`.
-- **Guarded step**: an update that runs only at the version the caller read, and reports
-  `query.ErrVersionMismatch` otherwise, or `blobfs.ErrDeleting` for a deleting row, whose
-  refusal outranks the version. `data.AtVersion` guards the steps that take no version argument:
-  a hold, a file's or a directory's delete, and a mark.
+- **Guarded step**: an update that runs only at the version the caller read; see [deleting
+  outranks the version](concepts.md#deleting-outranks-the-version). `data.AtVersion` guards the
+  steps that take no version argument.
 - **Violation**: a database constraint violation mapped to a blobfs sentinel, reported as a
   `blobfs.ViolationError` that names the sentinel and the constraint.
 

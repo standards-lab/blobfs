@@ -14,10 +14,9 @@ import (
 //go:embed statements/*.sql
 var statementFiles embed.FS
 
-// Store is blobfs's persistence: the embedded statements compiled once
-// against the consumer's catalog and bound to their typed handles, and the
-// operation handles over them. It holds no session; every operation takes
-// one.
+// Store is blobfs's persistence: the statements compiled once against the
+// consumer's catalog and the operation handles over them. It holds no
+// session; every operation takes one.
 type Store struct {
 	// Directories holds the operations over blobfs_directory rows.
 	Directories *Directories
@@ -30,21 +29,13 @@ type Store struct {
 }
 
 // New compiles blobfs's statements against catalog for dialect and binds
-// them. The catalog must carry the blobfs namespace, registered from
-// Patterns(), and the query library's own namespace from query.Patterns():
-// the statements include patterns of both. A catalog without the blobfs
-// namespace is refused before compiling, naming it; any other compile
-// failure is returned as the loader reports it. The dialect chooses the form
-// of each returning command: the single-statement form where it renders
-// RETURNING, and the fallback, the command and its read, otherwise. No I/O
-// happens here.
-//
-// The options choose the variant the store forwards its variation points to
-// (see Variant). New binds the baseline over the statements it compiled.
-// Without WithEngine the store runs the baseline; with it, New passes the
-// baseline to the Engine and runs the variant the Engine returns. The
-// statements are compiled once either way. An Engine's error is returned
-// wrapped as "data: new store: engine: ...".
+// them, with no I/O. The catalog must carry the blobfs namespace from
+// Patterns() and the query library's from query.Patterns(); a catalog
+// without the blobfs namespace is refused before compiling, and any other
+// compile failure is returned as the loader reports it. The dialect
+// chooses the form of each returning command. With WithEngine, New passes
+// the baseline it bound to the Engine and runs the variant it returns; an
+// Engine's error is returned as "data: new store: engine: ...".
 func New(catalog *query.Catalog, dialect sqlate.Dialect, opts ...Option) (_ *Store, err error) {
 	defer wrap(&err, "new store")
 	var o options
@@ -79,20 +70,16 @@ func New(catalog *query.Catalog, dialect sqlate.Dialect, opts ...Option) (_ *Sto
 	}, nil
 }
 
-// Statements returns the compiled inventory in name order, for a consumer
-// that lists or registers the SQL its program runs: the data package's own
-// statements, followed by the variant's own (see Variant).
+// Statements returns the compiled inventory in name order, followed by the
+// variant's own statements.
 func (s *Store) Statements() []query.Statement {
 	return append(s.stmts.Statements(), s.variant.Statements()...)
 }
 
-// Verify prepares every statement against the schema the session reaches, so
-// a statement the migrated schema does not satisfy fails at startup and not
-// at first use. The two listings are verified as projections too: each
-// declared field is compared with its declared type over the base, and a
-// page past a cursor is prepared, so a field contract the schema does not
-// satisfy and the keyset predicate fail here as well. The variant verifies
-// its own statements in the same pass (see Variant).
+// Verify prepares every statement, the variant's included, against the
+// schema the session reaches, and probes both listings' field contracts
+// and a page past a cursor, so a program that calls it at startup fails
+// there and not at first use.
 func (s *Store) Verify(ctx context.Context, sess sqlate.Session) error {
 	return query.Verify(ctx, sess, s.stmts, s.Directories.list.projection, s.Files.list.projection, s.variant)
 }

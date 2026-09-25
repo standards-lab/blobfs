@@ -21,10 +21,8 @@ func within(n int64) sqltest.Response {
 	return sqltest.Response{Columns: []string{"matches"}, Rows: [][]driver.Value{{n}}}
 }
 
-// TestMoveRefusesBeforeSQL proves the refusals that happen before any
-// statement runs: the root is ErrRootDirectory and an invalid name is
-// ErrInvalidName, each with nothing reaching the driver but the
-// transaction's begin.
+// TestMoveRefusesBeforeSQL checks the root and an invalid name are refused
+// before any statement.
 func TestMoveRefusesBeforeSQL(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
@@ -40,14 +38,8 @@ func TestMoveRefusesBeforeSQL(t *testing.T) {
 	}
 }
 
-// TestMoveIsThreeStepsUnderOneLock proves the order of the move on the
-// baseline, in both forms: in the caller's transaction, the lock (a no-op
-// that runs no SQL), then the cycle check bound to the new parent and the
-// moved directory, then the guarded update bound to the new parent, the
-// normalized name, the id, and the expected version, which returns the row
-// (with RETURNING in one statement, or followed by the read by id). A
-// check that finds the moved directory above the new parent is ErrCycle,
-// and the update never runs.
+// TestMoveIsThreeStepsUnderOneLock checks the move's order in both forms:
+// the lock, the cycle check, then the guarded update; a cycle stops it.
 func TestMoveIsThreeStepsUnderOneLock(t *testing.T) {
 	ctx := context.Background()
 	for _, f := range forms {
@@ -99,21 +91,14 @@ func TestMoveIsThreeStepsUnderOneLock(t *testing.T) {
 	}
 }
 
-// TestMoveClassifies proves the outcomes of the guarded update in both
-// forms: no row at all is ErrNotFound; a row at another version is
-// ErrVersionMismatch naming both versions; a root the update's own
-// predicate refused is ErrRootDirectory; a deleting directory, or one whose
-// current or new parent is deleting, is ErrDeleting at any version, the
-// parents told by their reads; a missing new parent is ErrNotFound from
-// those reads at the expected version, or through the foreign key once the
-// predicate passed, and a taken name ErrNameTaken through the unique
-// constraint, each with the constraint reachable.
+// TestMoveClassifies checks each refusal of the guarded update in both
+// forms, from the row its read returns and the reads of the two parents.
 func TestMoveClassifies(t *testing.T) {
 	ctx := context.Background()
 	for _, f := range forms {
 		t.Run(f.name, func(t *testing.T) {
-			// unchanged scripts the update that changed no row, in the form's
-			// own shape, and then the read of the row as it is.
+			// unchanged scripts the update that changed no row, in the
+			// form's own shape, and then the read of the row as it is.
 			unchanged := func(read sqltest.Response) []sqltest.Response {
 				if f.single {
 					return []sqltest.Response{noDirectory(), read}
@@ -140,8 +125,7 @@ func TestMoveClassifies(t *testing.T) {
 				t.Errorf("Move refused by the update's own predicate = %v, want ErrRootDirectory", err)
 			}
 			for _, version := range []int64{1, 3} {
-				// A deleting branch outranks a stale version: the mark
-				// advanced the version past the one the mover read.
+				// Deleting outranks the stale version.
 				err := move(unchanged(directoryIn("D", "S", "d", blobfs.DirectoryStatusDeleting, version))...)
 				if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) {
 					t.Errorf("Move of a deleting directory at version %d = %v, want ErrDeleting", version, err)
@@ -184,10 +168,7 @@ func TestMoveClassifies(t *testing.T) {
 	}
 }
 
-// TestIsWithin proves the tree predicate: a count of zero is false and any
-// other count true, bound to the start of the walk and the directory
-// looked for, over a walk that combines its steps with UNION so that it
-// terminates on a cycle.
+// TestIsWithin checks the count's reading and the walk's bindings.
 func TestIsWithin(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, within(0), within(2))
@@ -206,12 +187,8 @@ func TestIsWithin(t *testing.T) {
 	}
 }
 
-// TestMarkDeleting proves the mark of a branch in the caller's transaction:
-// the root refused before any SQL; the tree lock (a no-op on the baseline),
-// the directories' update, and the files' update, each bound to the id,
-// with their counts reported; a mark that changed no directory reading the
-// row to tell a missing directory, ErrNotFound with no files' update, from
-// a branch marked already, which is no error.
+// TestMarkDeleting checks the mark's statements, their bindings and
+// counts, and its refusals.
 func TestMarkDeleting(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
@@ -252,10 +229,7 @@ func TestMarkDeleting(t *testing.T) {
 	}
 }
 
-// TestDeleting proves the read of the branches being deleted: one query
-// of the deleting directories under an active parent, in id order, paged
-// from the start to the limit; no rows is no error; and a limit below 1
-// is refused before any SQL.
+// TestDeleting checks the read of the branch roots and its limit.
 func TestDeleting(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,

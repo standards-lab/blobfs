@@ -15,14 +15,8 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// TestHoldFile proves the hold against the script, inside a transaction:
-// one exec of the self-assigning update bound to the id and the nullable
-// version, NULL without AtVersion and the version under it, and a row
-// affected ends the call with no read. When no row is affected the row is
-// read once, in the same transaction: a missing row is ErrNotFound, a deleting row
-// ErrDeleting whatever its version, a row at another version under
-// AtVersion query.ErrVersionMismatch naming both versions, and any other
-// row an error naming its state.
+// TestHoldFile checks the hold's statement and bindings, with and without
+// AtVersion, and each refusal classified from the read that follows.
 func TestHoldFile(t *testing.T) {
 	ctx := context.Background()
 	// hold runs one hold of F inside a transaction over the scripted
@@ -92,12 +86,8 @@ func TestHoldFile(t *testing.T) {
 	}
 }
 
-// TestDeleteFile proves the first step of a file delete in both forms,
-// inside the caller's transaction: the update moves the row to deleting
-// and advances its version only when it is not deleting already, bound to
-// the id and a NULL version, and returns the row with its key. A row already deleting is
-// returned as it is, with no error and no version change, so a retry
-// converges. A row that does not exist is ErrNotFound.
+// TestDeleteFile checks the delete's first step in both forms, and a
+// retry of a deleting row.
 func TestDeleteFile(t *testing.T) {
 	ctx := context.Background()
 	for _, f := range forms {
@@ -154,13 +144,8 @@ func TestDeleteFile(t *testing.T) {
 	}
 }
 
-// TestPurgeFile proves the last step of a file delete against the script:
-// one exec of purge_file bound to the id removes a deleting row and nothing
-// else runs; when it removes nothing the row is read once, and a row that
-// is gone is success, a row that is not deleting is ErrNotDeleting naming
-// its status with nothing changed, and a row that became deleting in
-// between has the removal repeated once. A foreign key blobfs does not own
-// classifies as ErrReferenced with the sqlate.ConstraintError reachable.
+// TestPurgeFile checks the purge, the read after a removal of nothing,
+// and each refusal.
 func TestPurgeFile(t *testing.T) {
 	ctx := context.Background()
 	t.Run("RemovesTheDeletingRow", func(t *testing.T) {

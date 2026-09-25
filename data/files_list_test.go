@@ -49,13 +49,8 @@ const fileBase = "FROM blobfs_file f\nWHERE f.directory_id = CAST($1 AS uuid)) q
 // layer before the count's closing parenthesis.
 const fileCounted = "SELECT * FROM (SELECT q.*, COUNT(*) OVER () AS sqlate_total FROM (SELECT f.id, f.directory_id, f.name, f.status, f.key, f.size, f.content_type, f.etag, f.version, f.created_at, f.updated_at\n" + fileBase
 
-// TestListFiles proves List and Continue over the files of one directory:
-// a status filter bound as text and then the one that hides deleting
-// files, the total counted in the page's own statement over the base
-// anchored on the directory, the name tie-breaker after a sort by
-// updated_at, the continuation past the cursor's two keyed values under
-// the same filters, and after each page the read of the directory that
-// tells a deleting one.
+// TestListFiles checks List and Continue over one directory's files: the
+// filters, the count, the order, the cursor, and the directory's read.
 func TestListFiles(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,
@@ -100,10 +95,8 @@ func TestListFiles(t *testing.T) {
 	}
 }
 
-// TestListFilesEmptyPage proves the total an empty page carries: an empty
-// first page, no row under the filters at all, reports a total of 0,
-// while an empty later page, one whose offset ran past the end, carries
-// no count column to read and reports query.NoTotal.
+// TestListFilesEmptyPage checks an empty first page reports 0 and an empty
+// later page reports query.NoTotal.
 func TestListFilesEmptyPage(t *testing.T) {
 	ctx := context.Background()
 	s, db, _ := openStore(t, fallback, sqltest.WithTotal(filesIn(parentID), 0), listed())
@@ -143,9 +136,8 @@ func TestFilesNullableSort(t *testing.T) {
 	}
 }
 
-// TestListFilesRefusesUndeclaredFields proves the file listing's contract:
-// the object key, which is not declared, is refused as a filter and as a
-// sort before any SQL.
+// TestListFilesRefusesUndeclaredFields checks the object key is refused as
+// a filter and a sort before any SQL.
 func TestListFilesRefusesUndeclaredFields(t *testing.T) {
 	s, db, rec := openStore(t, fallback)
 	for _, req := range []query.Directives{
@@ -163,12 +155,8 @@ func TestListFilesRefusesUndeclaredFields(t *testing.T) {
 	}
 }
 
-// TestListFilesDeleting proves the file listing hides deleting files as
-// the directory listing hides deleting directories: in a directory that
-// is deleting, List reads the page and then the directory and reports
-// blobfs.ErrDeleting with no rows, and with IncludeDeleting the page
-// composes the caller's filters alone, so a filter on status reaches
-// deleting files, and no read follows it.
+// TestListFilesDeleting checks the hiding filter, the refusal of a
+// deleting directory, and IncludeDeleting.
 func TestListFilesDeleting(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,

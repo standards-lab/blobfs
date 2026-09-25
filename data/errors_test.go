@@ -46,14 +46,7 @@ func wantClassified(t *testing.T, got error, in *sqlate.ConstraintError, constra
 	}
 }
 
-// TestClassifyWrite is the truth table of the write mapping: each of
-// blobfs's constraints maps to its sentinel under the class it reports, the
-// two primary keys and the root's partial index included, as a
-// blobfs.ViolationError whose message names the sentinel and the constraint
-// and keeps the sqlate.ConstraintError reachable. A constraint blobfs does
-// not own, a class the constraint does not report (a check violation among
-// them), and an error that is no violation pass through unchanged, the
-// driver's text included.
+// TestClassifyWrite is the truth table of the write mapping.
 func TestClassifyWrite(t *testing.T) {
 	cause := errors.New(driverText)
 	cases := []struct {
@@ -88,13 +81,7 @@ func TestClassifyWrite(t *testing.T) {
 	}
 }
 
-// TestClassifyDelete is the truth table of the delete mapping: blobfs's
-// two foreign keys into blobfs_directory mean not empty, a foreign key
-// blobfs does not own (a consumer's, whatever its name) means referenced,
-// and both are a blobfs.ViolationError whose message names the sentinel
-// and the constraint and keeps the sqlate.ConstraintError reachable. A
-// unique or check violation, blobfs's own name under a class it does not
-// report there, and an error that is no violation pass through unchanged.
+// TestClassifyDelete is the truth table of the delete mapping.
 func TestClassifyDelete(t *testing.T) {
 	cause := errors.New(driverText)
 	cases := []struct {

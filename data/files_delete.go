@@ -12,30 +12,14 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// Hold locks the row of the file with id for the rest of tx, so that no
-// Delete of the file begins before tx ends: the library's half of the
-// reference-then-delete rule. A consumer calls it before it inserts a row
-// that references the file, in the same transaction as the insert, and a
-// Delete, whose update takes the same row lock, waits for that transaction
-// and then sees the reference. The hold changes no value and advances no
-// version, so other holders of the row's version stay valid. Only a row that
-// is not deleting is held, because a file whose delete has begun must take
-// no new reference; a pending row is held like an available one. It takes a
-// *sqlate.Tx because on the pool the lock would be released as the
-// statement ends and hold nothing.
+// Hold locks the row of the file with id for the rest of tx without
+// changing it, so a Delete of the file waits for tx: the library's half of
+// the reference-then-delete rule. It takes a *sqlate.Tx because on the
+// pool the lock would end with the statement. The lock is the variant's
+// (see Variant.HoldFile). See Reference-then-delete in docs/concepts.md.
 //
-// The hold is a variation point, Variant.HoldFile. The baseline takes the
-// lock with an update that assigns a column to itself, which is portable;
-// an engine's variant may take the same lock without writing a row version,
-// as the PostgreSQL engine does with SELECT ... FOR NO KEY UPDATE. The
-// refusals are the same on every variant.
-//
-// A file that does not exist is blobfs.ErrNotFound. A row that is deleting
-// is blobfs.ErrDeleting, whatever its version, since no version will make
-// it holdable. With AtVersion, a row that is not deleting and sits at
-// another version is query.ErrVersionMismatch, with the expected and
-// current versions in the text. When the hold holds no row, the row is
-// read once more, in tx, to classify.
+// Refusals: blobfs.ErrNotFound; blobfs.ErrDeleting for a deleting row;
+// query.ErrVersionMismatch under AtVersion.
 func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) (err error) {
 	defer wrap(&err, "hold file %s", id)
 	version := atVersion(opts)
@@ -60,70 +44,46 @@ func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...Vers
 }
 
 // Delete is the first step of a file delete: it moves the row of the file
-// with id to blobfs.StatusDeleting, advances its version, and returns the
-// row as the database holds it afterward, so the caller deletes the object
-// under its Key next and then calls Purge. A row that is already deleting
-// is returned as it is, with no version change, so a retry converges; the
-// version advances once per delete. The transition is allowed from pending
-// and available alike, so an abandoned write is removed the same way. A
-// file that does not exist is blobfs.ErrNotFound, whether the id never
-// existed or a concurrent delete purged it first. With AtVersion, the row
-// moves to deleting only at that version, in the same statement; a row at
-// another version is query.ErrVersionMismatch and is left as it is, and a
-// row already deleting is returned, as for a retry, whatever the version.
+// with id, pending or available, to blobfs.StatusDeleting, advancing its
+// version once, and returns it; the caller deletes the object under its
+// Key and then calls Purge. A row already deleting is returned as it is,
+// so a retry converges. It takes a *sqlate.Tx because its update waits on
+// a Hold another transaction took; the consumer checks for its own
+// references in tx after the call.
 //
-// It takes a *sqlate.Tx because it is the delete's half of the
-// reference-then-delete rule: its update takes the row's lock and waits on a
-// Hold another transaction took, so the delete and a consumer's new
-// reference to the file serialize on the row. Once Delete returns, every
-// reference a Hold admitted has committed, so a consumer checks for its own
-// references in tx after the call, and a foreign key of its own refuses
-// Purge while one remains. The update is a returning command: the
-// single-statement form where the dialect renders RETURNING, and otherwise
-// the fallback, the update and a read of the row.
+// Refusals: blobfs.ErrNotFound; query.ErrVersionMismatch under AtVersion.
 func (f *Files) Delete(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) (_ blobfs.File, err error) {
 	defer wrap(&err, "delete file %s", id)
 	return f.deleteFile(ctx, tx, id, atVersion(opts))
 }
 
 // deleteFile is Delete's body, at version when it is not nil, with its
-// errors bare, for the sweep, which names the step itself.
+// errors bare for the sweep.
 func (f *Files) deleteFile(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (blobfs.File, error) {
 	file, _, err := f.remove.One(ctx, tx, withVersion(query.Args{"id": id}, version))
 	switch {
 	case err != nil:
 		return blobfs.File{}, notFound(err)
 	case version != nil && file.Status.Mutable():
-		// The update matched nothing and the row is not deleting: it is at
-		// another version, and is returned as it stands.
+		// The update matched nothing and the row is not deleting.
 		return blobfs.File{}, versionMismatch(*version, file.Version)
 	}
 	return file, nil
 }
 
-// Purge is the last step of a file delete: it removes the row of the file
-// with id, after the caller has deleted the object under the row's Key.
-// Only a deleting row is removed. A row that is already gone is success,
-// because the step's postcondition is the row's absence and a retry after
-// a crash cannot tell its own earlier completion from a row that never
-// existed; a caller that wants to report a missing file resolves it before
-// Delete. A row that exists and is not deleting is blobfs.ErrNotDeleting
-// and is left as it is: its delete has not begun, so the object may still
-// be wanted.
+// Purge is the last step of a file delete: it removes the deleting row of
+// the file with id, after the caller deleted its object. A row already
+// gone is success.
 //
-// A foreign key from a consumer's table that references the row refuses the
-// removal as blobfs.ErrReferenced, with the sqlate.ConstraintError
-// reachable, so the consumer matches the constraint's name against its own;
-// the row stays deleting, and a retry after the consumer's row is gone
-// converges. Purge runs one statement to remove the row, so the session may
-// be the pool or a transaction.
+// Refusals: blobfs.ErrNotDeleting for a row whose delete has not begun;
+// blobfs.ErrReferenced for a consumer's foreign key, which leaves the row
+// deleting.
 func (f *Files) Purge(ctx context.Context, sess sqlate.Session, id string) (err error) {
 	defer wrap(&err, "purge file %s", id)
 	return f.purgeFile(ctx, sess, id)
 }
 
-// purgeFile is Purge's body, with its errors bare, for the sweep, which
-// names the step itself.
+// purgeFile is Purge's body, with its errors bare for the sweep.
 func (f *Files) purgeFile(ctx context.Context, sess sqlate.Session, id string) error {
 	args := query.Args{"id": id}
 	n, err := f.purge.Exec(ctx, sess, args)
@@ -142,10 +102,8 @@ func (f *Files) purgeFile(ctx context.Context, sess sqlate.Session, id string) e
 	case err != nil:
 		return err
 	case !file.Status.Mutable():
-		// A concurrent Delete moved the row to deleting between the removal
-		// and this read. The removal is repeated once; a deleting row never
-		// leaves that status except by removal, so the second attempt
-		// removes it or finds it gone.
+		// A concurrent Delete moved the row to deleting since the removal;
+		// once deleting it stays so, so one more removal settles it.
 		if _, err := f.purge.Exec(ctx, sess, args); err != nil {
 			return classifyDelete(err)
 		}

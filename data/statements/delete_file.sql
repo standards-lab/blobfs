@@ -1,22 +1,11 @@
 --| tier: standard
 --| transaction: required
 --| returning: file_by_id
--- The first step of the two-phase delete: moves the row to deleting, advances its
--- version, stamps updated_at, and returns the row with the key the caller
--- deletes the object under. A row that is already deleting is left as it is,
--- and its read returns it unchanged, so a retry converges and the version
--- advances once per delete. The version is nullable: NULL, the default,
--- guards nothing, and a version the caller read moves the row only at that
--- version, so a row at another version is returned unchanged and not
--- deleting, which the caller reports as a stale version, while a row already
--- deleting is returned as for a retry, whatever version guarded it. It
--- requires a transaction because it is the delete's half of the
--- reference-then-delete rule: the row lock this update takes, or waits on
--- behind a hold (hold_file, or an engine's form of it), holds until the
--- caller commits, so a consumer's reference to the file commits before this
--- sees the row or waits until the delete is decided, and the fallback's read
--- sees the row as this statement left it. A row that does not exist changes
--- nothing and its read finds no row.
+-- The first step of the two-phase delete: moves the row to deleting,
+-- advancing its version. The status predicate leaves a row already
+-- deleting unchanged, so a retry advances nothing; the version is
+-- nullable, and NULL guards nothing. A transaction is required so the row
+-- lock, which waits on a hold, lasts until the caller commits.
 UPDATE blobfs_file
 SET status = 'deleting', version = version + 1, updated_at = CURRENT_TIMESTAMP
 WHERE id = {{id:uuid}} AND status <> 'deleting'

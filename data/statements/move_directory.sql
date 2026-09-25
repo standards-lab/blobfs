@@ -1,28 +1,14 @@
 --| tier: standard
 --| transaction: required
 --| returning: directory_by_id
--- The last step of a directory move, as the guarded command of the query
--- library's optimistic-concurrency protocol: sets the directory's parent
--- and name, advances the version, and stamps updated_at, and returns the
--- row as it stands afterward. The guard's predicate names the id and the
--- version the caller read. The parent_id predicate keeps the statement
--- from ever moving the root, which Go refuses before this runs. It
--- requires a transaction because it is the third of three statements that
--- must see one tree lock: the lock, the cycle check, and this update, in
--- that order, so a concurrent move cannot pass its own check between this
--- transaction's check and its update.
---
--- The status predicates keep a deleting branch closed: the directory, its
--- current parent, and its new parent must each be active, so nothing moves
--- out of a branch marked for removal and nothing moves into one. Each
--- parent is read through the primary key, the current one correlated by
--- the table's own name, which the subquery's alias leaves unshadowed. When
--- nothing changed, the row its read returns tells a missing directory, a
--- version conflict, and a refusal apart, and the caller reads the two
--- parents to classify the refusal: a deleting one, or a new parent that
--- does not exist, which the predicate refuses before the foreign key
--- blobfs_fk_directory_parent could. A name already held under the new
--- parent fails the unique constraint blobfs_uq_directory_parent_name.
+-- The guarded update of a directory move: sets parent_id and name at the
+-- caller's version. The parent_id predicate keeps the root out. The status
+-- predicates require the directory and its current and new parents to be
+-- active; the current parent is correlated by the table's own name, which
+-- the subquery's alias leaves unshadowed, and the new parent's predicate
+-- refuses a missing parent before blobfs_fk_directory_parent could. Fails
+-- blobfs_uq_directory_parent_name. A transaction is required: it runs
+-- after the tree lock and the cycle check.
 UPDATE blobfs_directory
 SET parent_id = {{parent_id:uuid}},
     name = {{name}},

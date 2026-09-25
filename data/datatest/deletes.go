@@ -95,10 +95,8 @@ func (s *suite) deleteRollback(t *testing.T, dir string) {
 	}
 }
 
-// deleteAtVersion checks the version-guarded Delete: a stale version is
-// query.ErrVersionMismatch with the row left as it was, the current version
-// moves the row to deleting as the plain Delete does, and a retry of a
-// delete already begun converges whatever version it names.
+// deleteAtVersion checks the version-guarded Delete: a stale version, the
+// current one, and a retry of a delete already begun.
 func (s *suite) deleteAtVersion(t *testing.T, dir string) {
 	id := s.insertFile(t, dir, "guarded.txt", blobfs.StatusAvailable)
 	before := s.file(t, id)

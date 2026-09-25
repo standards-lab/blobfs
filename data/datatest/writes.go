@@ -54,12 +54,8 @@ func (s *suite) createFile(t *testing.T) {
 }
 
 // createFileRefusals checks Create's and Ensure's refusals against the
-// baseline: a name taken by a row of any status and a taken id, each by
-// its sentinel over its constraint, and a missing directory, ErrNotFound
-// from the read of the directory the insert did not select, in the same
-// text on both stores, Ensure finding the taken name instead of refusing it;
-// and the refusals before any SQL, a refused name, a refused id, and a
-// key the store refuses, which leave no row.
+// baseline, by sentinel and constraint or in the same text, and the
+// refusals before any SQL, which leave no row.
 func (s *suite) createFileRefusals(t *testing.T) {
 	dir := s.mkdir(t, "create-file-refusals-"+t.Name())
 	taken := s.insertFile(t, dir.ID, "taken.txt", blobfs.StatusAvailable)
@@ -125,11 +121,8 @@ func (s *suite) createFileRefusals(t *testing.T) {
 	})
 }
 
-// ensureFile checks Ensure's outcomes on both stores: a free name created
-// pending under a supplied id; the same name, in the other spelling and
-// under another supplied id, resumed as the same row; once the write
-// completes the name present as available; once a delete begins present
-// as deleting; and the directory holding one row throughout.
+// ensureFile checks Ensure's outcomes on both stores: created, resumed,
+// present as available and as deleting, with one row throughout.
 func (s *suite) ensureFile(t *testing.T) {
 	dir := s.mkdir(t, "ensure-file-"+t.Name())
 	for _, tier := range []struct {
@@ -168,11 +161,7 @@ func (s *suite) ensureFile(t *testing.T) {
 }
 
 // ensureFileConcurrent checks the race on the pool, forced as the
-// directory's is: two callers write the same free name at once through a
-// pool that holds each caller's lookup until both have looked, so both
-// insert and the second insert is refused; the second caller recovers by
-// looking the row up. Exactly one creates the pending row, the other
-// resumes it, both return the same row, and the lookup runs a third time.
+// directory's is: one caller creates, the other resumes the same row.
 func (s *suite) ensureFileConcurrent(t *testing.T) {
 	dir := s.mkdir(t, "ensure-file-concurrent-"+t.Name())
 	pool := s.racingPool(t, "file_by_name")
@@ -219,11 +208,8 @@ func (s *suite) ensureFileConcurrent(t *testing.T) {
 	pool.wantRecovered(t)
 }
 
-// completeFile checks Complete against the baseline: the row moved to
-// available at the next version with the object's size, content type, and
-// entity tag, updated_at stamped, and the key, the name, and created_at
-// unchanged; the row the database holds; and the same shape through both
-// stores.
+// completeFile checks Complete against the baseline: the row available at
+// the next version with the object's facts, and nothing else changed.
 func (s *suite) completeFile(t *testing.T) {
 	dir := s.mkdir(t, "complete-"+t.Name())
 	pending, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "complete.txt", "application/octet-stream")
@@ -256,11 +242,8 @@ func (s *suite) completeFile(t *testing.T) {
 }
 
 // completeFileRefusals checks Complete's refusals against the baseline,
-// each leaving the row unchanged: a missing row, a stale version, a row
-// already available (an invalid transition), and a deleting row, at its
-// own version and at the pending version the writer read before a
-// concurrent Delete advanced it, which is ErrDeleting and never a version
-// mismatch.
+// each leaving the row unchanged; a deleting row is ErrDeleting at its own
+// version and at the one read before a concurrent Delete.
 func (s *suite) completeFileRefusals(t *testing.T) {
 	dir := s.mkdir(t, "complete-refusals-"+t.Name())
 	available, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "refused.txt", "text/plain")
@@ -310,11 +293,8 @@ func (s *suite) completeFileRefusals(t *testing.T) {
 }
 
 // writeInTransaction checks the write composes into the caller's
-// transaction beside the caller's own row: the caller inserts a row that
-// references the pending file in the same transaction, a rollback leaves
-// neither row, and a commit leaves both. The foreign key holds against
-// the pending row inside the transaction, so a consumer references a file
-// before its object exists.
+// transaction beside a row that references the pending file: a rollback
+// leaves neither row, a commit both.
 func (s *suite) writeInTransaction(t *testing.T) {
 	s.createFileReferences(t)
 	dir := s.mkdir(t, "in-transaction-"+t.Name())

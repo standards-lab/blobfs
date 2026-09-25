@@ -14,12 +14,9 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// sweeps checks Store.Sweep: the finish of the branches a mark began and
-// of abandoned writes, one bounded pass at a time. The suite's database
-// holds the branches the earlier groups marked, so the group sweeps them
-// first; every later case starts from a tree with nothing to sweep and
-// runs over the store under test and then over the baseline, each
-// finishing what it began.
+// sweeps checks Store.Sweep. It first drains the branches the earlier
+// groups marked; every later case starts from nothing to sweep and runs
+// over the store under test and then the baseline.
 func (s *suite) sweeps(t *testing.T) {
 	s.createDirectoryReferences(t)
 	t.Run("DrainsTheSuite", s.sweepDrains)
@@ -207,12 +204,9 @@ func (s *suite) sweepNothing(t *testing.T) {
 	}
 }
 
-// sweepBranch checks a full sweep of a three-level branch whose top a
-// consumer owns, against the baseline: one pass removes every directory
-// and file of the branch, each object deleted once, the hook called once
-// per directory, deepest first and the root last, unbinding the owner in
-// the removal's transaction; the counts are the branch's five files and
-// three directories; an active sibling is untouched.
+// sweepBranch checks a full sweep of a three-level branch a consumer owns,
+// against the baseline: every row gone in one pass, each object deleted
+// once, the hook called deepest first, the counts, and a sibling untouched.
 func (s *suite) sweepBranch(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("sweep-%d-%s", i, t.Name()))
@@ -244,11 +238,8 @@ func (s *suite) sweepBranch(t *testing.T) {
 	}
 }
 
-// sweepCrash checks a pass stopped by a crash between an object's delete
-// and its row's purge, against the baseline: the pass returns the store's
-// error with the files it finished counted, the row it stopped at stays
-// deleting, and the next pass finishes the branch, deleting that object
-// again and every other object once.
+// sweepCrash checks a pass stopped between an object's delete and its
+// row's purge, and the next pass finishing the branch.
 func (s *suite) sweepCrash(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("crash-%d-%s", i, t.Name()))
@@ -322,11 +313,8 @@ func (s *suite) sweepStragglers(t *testing.T) {
 	}
 }
 
-// sweepBatch checks the bound over a branch of eight records, five files
-// and three directories, against the baseline: a batch of three takes
-// three passes, the first two reporting More; a batch of four takes two,
-// and the second, which spends its bound on the last record, reports no
-// More, since nothing remains.
+// sweepBatch checks the bound over a branch of eight records: a batch of
+// three takes three passes, and a batch of four two, the last with no More.
 func (s *suite) sweepBatch(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		for _, c := range []struct {
@@ -353,12 +341,8 @@ func (s *suite) sweepBatch(t *testing.T) {
 	}
 }
 
-// sweepHookAborts checks, against the baseline, that a failing hook
-// aborts its directory's removal and stops the pass with its error, the
-// directory left deleting for the next pass; that a pass without the
-// hook is refused by the consumer's owner row on the top as
-// blobfs.ErrReferenced, the top left in place; and that a pass with the
-// hook then finishes the branch, calling it for the top alone.
+// sweepHookAborts checks a failing hook aborts its removal, a pass without
+// the hook is refused by the owner row, and a pass with it finishes.
 func (s *suite) sweepHookAborts(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("hook-%d-%s", i, t.Name()))
@@ -394,11 +378,8 @@ func (s *suite) sweepHookAborts(t *testing.T) {
 	}
 }
 
-// sweepRefusalDoesNotBlock checks, against the baseline, that a branch
-// refused on every pass holds back no branch behind it: with an owner row
-// on the first branch's top, which comes first in id order, a pass without
-// the hook returns blobfs.ErrReferenced for it and still removes the
-// second branch whole; a pass with the hook then finishes the first.
+// sweepRefusalDoesNotBlock checks a branch refused on every pass holds back
+// no branch behind it.
 func (s *suite) sweepRefusalDoesNotBlock(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		stuck := s.newBranch(t, fmt.Sprintf("stuck-%d-%s", i, t.Name()))
@@ -429,14 +410,9 @@ func (s *suite) sweepRefusalDoesNotBlock(t *testing.T) {
 	}
 }
 
-// sweepStale checks the reclaim of the rows a caller left partway through
-// a protocol, against the baseline: without StaleOlderThan a pass leaves
-// every such row; with it, a pending row last written before the age is
-// moved to deleting, its object deleted, and its row purged, and a
-// deleting row whose Files.Delete ran before the age and whose purge never
-// did is finished, its object deleted and its row purged, which frees its
-// name for a new write; a younger pending row, a younger deleting row, and
-// an available row as old are left as they were.
+// sweepStale checks the reclaim with and without StaleOlderThan: old
+// pending and deleting rows finished, their names freed, and younger rows
+// and available rows left as they were.
 func (s *suite) sweepStale(t *testing.T) {
 	old := time.Now().Add(-2 * time.Hour)
 	for i, store := range []*data.Store{s.store, s.baseline} {

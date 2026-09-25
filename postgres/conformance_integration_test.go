@@ -28,17 +28,10 @@ var forms = []struct {
 	{"Fallback", fallback{sqlatepg.Dialect{}}},
 }
 
-// TestConformance runs the conformance suite over the matrix of the two
-// forms of the returning commands and the two variants, the standard
-// baseline (the store data.New builds without WithEngine) and the
-// PostgreSQL variant Engine builds, each in a throwaway database of its
-// own, with the catalog built from the engine's overlay of the library's
-// patterns; and once more over the PostgreSQL engine with the library's own
-// patterns, so the standard spelling of the keyset predicate runs on the
-// engine too. The baseline reports that it does not serialize, and the
-// suite proves the cycle two opposing moves form on it; the PostgreSQL
-// variant reports that it does, and the suite proves the second move
-// refused.
+// TestConformance runs the conformance suite over both returning-command
+// forms and both variants, the baseline and Engine's, each in a database
+// of its own under the engine's pattern overlay, and once more over the
+// engine with the library's own patterns, for the standard keyset spelling.
 func TestConformance(t *testing.T) {
 	for _, form := range forms {
 		for _, variant := range []string{"Standard", "Postgres"} {
@@ -81,10 +74,8 @@ func conform(t *testing.T, dialect sqlate.Dialect, patterns query.Source, native
 	datatest.Run(t, d.Session(dialect), c, engine)
 }
 
-// TestTreeLockIsAnAdvisoryLock proves the lock LockTree takes is a
-// transaction-scoped advisory lock under TreeLockKey, which the engine
-// reports in pg_locks while the transaction runs and releases when it
-// commits.
+// TestTreeLockIsAnAdvisoryLock checks LockTree takes a transaction-scoped
+// advisory lock under TreeLockKey, seen in pg_locks until commit.
 func TestTreeLockIsAnAdvisoryLock(t *testing.T) {
 	ctx := context.Background()
 	d := dbtest.Migrated(t)

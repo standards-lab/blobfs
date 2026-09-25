@@ -64,10 +64,8 @@ func TestSweepRefusesBeforeSQL(t *testing.T) {
 	}
 }
 
-// TestSweepNothingToDo proves a pass with no branch being deleted is the
-// roots' read alone and a zero result; with StaleOlderThan it is that read
-// and the read of the stale rows, pending and deleting, oldest first, before
-// an instant the age before now, from offset 0 to the batch.
+// TestSweepNothingToDo checks a pass with no work runs only its reads and
+// returns a zero result.
 func TestSweepNothingToDo(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, noDirectory())
@@ -103,11 +101,8 @@ func TestSweepNothingToDo(t *testing.T) {
 	}
 }
 
-// TestSweepABranch proves a pass over a branch of one directory holding
-// one file: the mark repeated in its own transaction; the file listed
-// with IncludeDeleting, its object deleted and its row purged; the child
-// directories listed; and the directory removed in a transaction of its
-// own, the hook first and then the removal at the version the pass read.
+// TestSweepABranch checks a pass over a branch of one directory and one
+// file, step by step.
 func TestSweepABranch(t *testing.T) {
 	ctx := context.Background()
 	responses := append([]sqltest.Response{deletingRoot()}, remark()...)
@@ -147,9 +142,7 @@ func TestSweepABranch(t *testing.T) {
 	}
 }
 
-// TestSweepBatch proves the bound: a pass of one record deletes the first
-// file of a page that holds more, stops, and reads whether any branch is
-// still being deleted, which it reports as More.
+// TestSweepBatch checks a pass stops at its bound and reports More.
 func TestSweepBatch(t *testing.T) {
 	ctx := context.Background()
 	responses := append([]sqltest.Response{deletingRoot()}, remark()...)
@@ -169,11 +162,8 @@ func TestSweepBatch(t *testing.T) {
 	}
 }
 
-// TestSweepStops proves the three ways a pass stops in a branch: an
-// object delete's error stops it before the purge, with the error
-// returned; a hook's error rolls the removal back, with the error
-// returned; and a file that is not deleting, a straggler that landed
-// after the mark, stops the branch with More and no error.
+// TestSweepStops checks a pass stops a branch at an object delete's error,
+// a hook's error, and a straggler.
 func TestSweepStops(t *testing.T) {
 	ctx := context.Background()
 	errStore := errors.New("the store is down")
@@ -209,12 +199,8 @@ func TestSweepStops(t *testing.T) {
 	}
 }
 
-// TestSweepStale proves the reclaim of stale rows by status: a pending
-// row moved to deleting in a transaction of its own at the version read,
-// its object deleted, its row purged; a deleting row, a delete stopped
-// before its purge, finished at once with no delete step; a deleting row
-// purged by someone else meanwhile, which the purge finds gone, done; and
-// a pending row that moved on since the read skipped.
+// TestSweepStale checks the reclaim of pending and deleting stale rows,
+// and the skip of rows gone or moved on.
 func TestSweepStale(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
@@ -253,9 +239,8 @@ func TestSweepStale(t *testing.T) {
 	}
 }
 
-// TestSweepRefusedOnce proves a file the branch's walk was refused is not
-// tried again by the stale read of the same pass: its object is deleted
-// once, and its refusal is reported once.
+// TestSweepRefusedOnce checks a file refused in a branch's walk is not
+// tried again by the stale read of the same pass.
 func TestSweepRefusedOnce(t *testing.T) {
 	ctx := context.Background()
 	errStore := errors.New("the store is down")
