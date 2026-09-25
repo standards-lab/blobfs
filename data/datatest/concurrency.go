@@ -241,11 +241,12 @@ func (s *suite) opposingSerializableMoves(t *testing.T) {
 
 // gatedStore builds a store over a gated wrapper of the variant the
 // engine under test builds, through an engine that wraps it, against the
-// suite's catalog and dialect.
+// suite's catalog and dialect, and checks that the wrapper lists and
+// verifies the variant's own statements through the embedding.
 func (s *suite) gatedStore(t *testing.T) (*gated, *data.Store) {
 	t.Helper()
 	g := &gated{arrived: make(chan chan struct{})}
-	gate := func(c *query.Catalog, d sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+	gate := func(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Variant, error) {
 		v, err := s.engine(c, d, base)
 		if err != nil {
 			return nil, err
@@ -256,6 +257,14 @@ func (s *suite) gatedStore(t *testing.T) (*gated, *data.Store) {
 	store, err := data.New(s.catalog, s.db.Dialect(), data.WithEngine(gate))
 	if err != nil {
 		t.Fatalf("data.New over the gated variant: %v", err)
+	}
+	// The wrapper embeds the variant, so it lists and verifies the
+	// engine's own statements as the store under test does.
+	if got, want := len(store.Statements()), len(s.store.Statements()); got != want {
+		t.Errorf("the gated store lists %d statements, want the %d of the store under test", got, want)
+	}
+	if err := store.Verify(s.ctx, s.db); err != nil {
+		t.Errorf("Verify of the gated store: %v", err)
 	}
 	return g, store
 }

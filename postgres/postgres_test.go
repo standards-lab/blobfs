@@ -38,16 +38,13 @@ func catalog(t *testing.T) *query.Catalog {
 
 // newStore compiles the store over the engine under dialect and returns
 // it with the variant the engine built for it.
-func newStore(t *testing.T, dialect sqlate.Dialect) (*data.Store, *postgres.Variant) {
+func newStore(t *testing.T, dialect sqlate.Dialect) (*data.Store, data.Variant) {
 	t.Helper()
-	var v *postgres.Variant
-	capture := func(c *query.Catalog, d sqlate.Dialect, base *data.Standard) (data.Variant, error) {
-		dv, err := postgres.Engine(c, d, base)
-		if err != nil {
-			return nil, err
-		}
-		v = dv.(*postgres.Variant)
-		return dv, nil
+	var v data.Variant
+	capture := func(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Variant, error) {
+		var err error
+		v, err = postgres.Engine(c, d, base)
+		return v, err
 	}
 	s, err := data.New(catalog(t), dialect, data.WithEngine(capture))
 	if err != nil {

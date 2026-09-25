@@ -263,10 +263,10 @@ func TestVerify(t *testing.T) {
 }
 
 // probeVariant is an engine's variant over the baseline with one
-// statement of its own, which it lists and verifies through the optional
-// methods the store asserts.
+// statement of its own, which it lists and verifies through the inventory
+// methods it overrides.
 type probeVariant struct {
-	*data.Standard
+	data.Variant
 	stmts *query.Statements
 }
 
@@ -278,14 +278,14 @@ func (v *probeVariant) Verify(ctx context.Context, sess sqlate.Session) error {
 
 // probeEngine compiles the probe statement against the store's catalog
 // and dialect and embeds the baseline it is given.
-func probeEngine(c *query.Catalog, d sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+func probeEngine(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Variant, error) {
 	stmts, err := c.Compile(fstest.MapFS{
 		"engine/probe_engine.sql": {Data: []byte("--| tier: standard\n-- The engine's own statement.\nSELECT {{> blobfs.directory_columns}}\nFROM blobfs_directory d\nWHERE d.name = {{name:text}}\n")},
 	}, "engine", d)
 	if err != nil {
 		return nil, err
 	}
-	return &probeVariant{Standard: base, stmts: stmts}, nil
+	return &probeVariant{Variant: base, stmts: stmts}, nil
 }
 
 // TestEngineSharesTheBaseline proves an Engine runs over the statements
@@ -293,7 +293,8 @@ func probeEngine(c *query.Catalog, d sqlate.Dialect, base *data.Standard) (data.
 // the engine's own, Verify prepares every baseline statement exactly as
 // often as a store without an engine does, and the engine's statement
 // beside them, so no baseline statement is compiled or verified twice and
-// a startup Verify covers the engine's statements too. An engine's error
+// a startup Verify covers the engine's statements too. A wrapper that
+// embeds the engine's variant lists them as well. An engine's error
 // is wrapped as the engine's, and an engine that returns no variant is
 // refused.
 func TestEngineSharesTheBaseline(t *testing.T) {
@@ -308,6 +309,18 @@ func TestEngineSharesTheBaseline(t *testing.T) {
 	}
 	if distinct := slices.Compact(slices.Sorted(slices.Values(names))); len(distinct) != len(names) {
 		t.Errorf("Statements() = %v lists a statement twice", names)
+	}
+	// A consumer's wrapper that embeds the engine's variant inherits its
+	// inventory, so the engine's statement is still listed.
+	wrapped := newStore(t, fallback, data.WithEngine(func(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Variant, error) {
+		v, err := probeEngine(c, d, base)
+		if err != nil {
+			return nil, err
+		}
+		return failingLock{Variant: v}, nil
+	}))
+	if all := wrapped.Statements(); len(all) != 22 || all[21].Name() != "probe_engine" {
+		t.Errorf("a wrapper over the engine's variant lists %d statements, want the package's 21 and then probe_engine", len(all))
 	}
 
 	pool, rec := sqltest.Open(t)
@@ -337,13 +350,13 @@ func TestEngineSharesTheBaseline(t *testing.T) {
 	}
 
 	errEngine := errors.New("no native statements")
-	_, err := data.New(catalog(t), sqltest.Dialect{}, data.WithEngine(func(*query.Catalog, sqlate.Dialect, *data.Standard) (data.Variant, error) {
+	_, err := data.New(catalog(t), sqltest.Dialect{}, data.WithEngine(func(*query.Catalog, sqlate.Dialect, data.Variant) (data.Variant, error) {
 		return nil, errEngine
 	}))
 	if !errors.Is(err, errEngine) || !strings.HasPrefix(err.Error(), "data: engine: ") {
 		t.Errorf("New with a failing engine = %v, want the engine's error wrapped as data: engine", err)
 	}
-	_, err = data.New(catalog(t), sqltest.Dialect{}, data.WithEngine(func(*query.Catalog, sqlate.Dialect, *data.Standard) (data.Variant, error) {
+	_, err = data.New(catalog(t), sqltest.Dialect{}, data.WithEngine(func(*query.Catalog, sqlate.Dialect, data.Variant) (data.Variant, error) {
 		return nil, nil
 	}))
 	if err == nil {
@@ -407,7 +420,7 @@ func TestConsumerEngineSwapsOneMethod(t *testing.T) {
 		v     *lockOverride
 		calls int
 	)
-	engine := func(gotCatalog *query.Catalog, gotDialect sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+	engine := func(gotCatalog *query.Catalog, gotDialect sqlate.Dialect, base data.Variant) (data.Variant, error) {
 		calls++
 		if gotCatalog != c || gotDialect != (sqltest.Dialect{}) || base == nil {
 			t.Errorf("the engine got %p, %v, %v; want the store's catalog %p, its dialect, and a baseline", gotCatalog, gotDialect, base, c)
@@ -441,7 +454,7 @@ func TestConsumerEngineSwapsOneMethod(t *testing.T) {
 		t.Errorf("Statements() lists %d, want the persistence package's 21", n)
 	}
 
-	failing := func(_ *query.Catalog, _ sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+	failing := func(_ *query.Catalog, _ sqlate.Dialect, base data.Variant) (data.Variant, error) {
 		return failingLock{Variant: base}, nil
 	}
 	s = newStore(t, fallback, data.WithEngine(failing))
@@ -476,7 +489,7 @@ func (v *holdOverride) HoldFile(_ context.Context, _ *sqlate.Tx, id string, vers
 func TestHoldIsAVariationPoint(t *testing.T) {
 	ctx := context.Background()
 	v := &holdOverride{held: true}
-	s := newStore(t, fallback, data.WithEngine(func(_ *query.Catalog, _ sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+	s := newStore(t, fallback, data.WithEngine(func(_ *query.Catalog, _ sqlate.Dialect, base data.Variant) (data.Variant, error) {
 		v.Variant = base
 		return v, nil
 	}))

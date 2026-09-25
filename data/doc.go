@@ -104,11 +104,12 @@
 //
 // Three operations are variation points, where an engine may do better than
 // standard SQL: the tree lock that serializes directory moves, path
-// resolution, and a file's hold. The Variant interface names them. Standard
-// is the baseline, a no-op lock that reports it does not serialize, one
-// child read per path segment, and a hold that is a self-assigning update,
-// and a store runs it unless New installs another variant through
-// WithEngine. An Engine builds its variant over the baseline New compiled
+// resolution, and a file's hold. The Variant interface names them, with
+// the inventory of the statements a variant compiled of its own. The
+// baseline is a no-op lock that reports it does not serialize, one child
+// read per path segment, and a hold that is a self-assigning update, with
+// no statements of its own, and a store runs it unless New installs another
+// variant through WithEngine. An Engine builds its variant over the baseline New compiled
 // and bound, so the statements are compiled once. The Engine is an engine
 // sub-module's, or a consumer's own, whose variant embeds the baseline or an
 // engine's variant and overrides the methods it needs; embedding is the

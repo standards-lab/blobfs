@@ -32,6 +32,11 @@ The schema for the delete of a branch.
   rest of the set.
 - `resolve_path` returns the directory's status with its other columns, as
   `blobfs.directory_columns` now lists them.
+- **Breaking:** `Engine` takes its baseline as a `data.Variant`, as blobfs v0.2.0's
+  `data.Engine` declares.
+- **Breaking:** `Variant` is unexported. `Engine` returns the variant as a `data.Variant`, which
+  embeds the `data.Variant` it is given and lists and verifies its own statements through the
+  interface's `Statements` and `Verify`, so a wrapper that embeds it needs no type assertion.
 - **Breaking:** `lock_file` takes a nullable `version`, which `data.AtVersion` binds and which
   guards nothing when NULL, and `lock_file_at_version` is folded into it: the variant's
   inventory no longer lists it.

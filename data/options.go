@@ -19,11 +19,10 @@ type options struct {
 }
 
 // WithEngine makes the store forward its variation points to the variant
-// e builds instead of Standard. New calls e once, with its own catalog and
-// dialect and the baseline it bound over the statements it compiled, so a
-// consumer selects an engine with New(catalog, dialect,
-// WithEngine(postgres.Engine)), or passes an Engine of its own. See
-// Engine.
+// e builds instead of the baseline. New calls e once, with its own catalog
+// and dialect and the baseline it bound over the statements it compiled, so
+// a consumer selects an engine with New(catalog, dialect,
+// WithEngine(postgres.Engine)), or passes an Engine of its own. See Engine.
 func WithEngine(e Engine) Option {
 	return func(o *options) { o.engine = e }
 }

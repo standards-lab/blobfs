@@ -138,7 +138,7 @@ is refused before compiling, with the fix named. The dialect chooses the form of
 command: the single-statement form where it renders `RETURNING`, and otherwise the fallback,
 the command and its read in one transaction.
 
-`WithEngine(e)` installs an engine. Without it the store runs `Standard`, the baseline. With it,
+`WithEngine(e)` installs an engine. Without it the store runs the baseline. With it,
 `New` binds the baseline over the statements it compiled and calls `e(catalog, dialect, base)`
 once, and the store runs the variant `e` returns; the statements are compiled once either way.
 An engine's error is returned as `data: engine: ...`.
@@ -146,7 +146,7 @@ An engine's error is returned as `data: engine: ...`.
 `Store` has two handles, `Directories` and `Files`, and three methods:
 
 - `Statements()` returns the compiled inventory in name order, followed by the variant's own
-  statements when it compiled any.
+  statements.
 - `Verify(ctx, sess)` prepares every statement, and each returning command's single-statement
   form, against the schema the session reaches, and probes both listings' field contracts and a
   page past a cursor. A variant that compiled statements of its own is verified in the same
@@ -454,22 +454,25 @@ see [orphaned objects](concepts.md#stale-rows-and-orphaned-objects).
   `tx`, and reports whether it held the row: one that exists, is not deleting, and sits at
   `*version` when `version` is not nil. It changes no value; `Files.Hold` reads the row after a
   false to classify the refusal, so the refusals are the same on every variant.
+- `Statements()` and `Verify(ctx, sess)` are the variant's own inventory: the statements it
+  compiled beyond the data package's, which `Store.Statements` appends, and their verification,
+  which `Store.Verify` runs in its own pass.
 
-`Standard` is the baseline: a no-op `LockTree`, `Serializes` false, a walk that reads the start
-and then one child per segment, and a hold that is an update assigning a column to itself.
-`Engine` is
-`func(catalog *query.Catalog, dialect sqlate.Dialect, base *Standard) (Variant, error)`.
+The baseline, which `New` binds and passes to an engine as `base`, is a no-op `LockTree`,
+`Serializes` false, a walk that reads the start and then one child per segment, a hold that is
+an update assigning a column to itself, and no statements of its own. `Engine` is
+`func(catalog *query.Catalog, dialect sqlate.Dialect, base Variant) (Variant, error)`.
 
 A variant embeds the variant it is given, `base` or an engine's variant, and overrides the
 methods it needs. That is the contract: a release that adds a variation point adds its method to
-`Standard` as well, so every variant that embeds one inherits it, and adding a variation point
+the baseline as well, so every variant that embeds one inherits it, and adding a variation point
 is a minor release. A type that implements `Variant` without embedding one is outside the
 contract, and a minor release may break its build. This one wraps the PostgreSQL engine's
 variant and logs each path resolution:
 
 ```go
-// tracing is the PostgreSQL variant with its path resolution logged.
-type tracing struct{ *postgres.Variant }
+// tracing is a variant with its path resolution logged.
+type tracing struct{ data.Variant }
 
 func (t tracing) ResolvePath(ctx context.Context, sess sqlate.Session, startID string, segments []string) (blobfs.Directory, int, error) {
 	log.Printf("resolve %d segments below %s", len(segments), startID)
@@ -477,21 +480,18 @@ func (t tracing) ResolvePath(ctx context.Context, sess sqlate.Session, startID s
 }
 
 // tracingEngine builds the PostgreSQL variant over the store's baseline and wraps it.
-func tracingEngine(c *query.Catalog, d sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+func tracingEngine(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Variant, error) {
 	v, err := postgres.Engine(c, d, base)
 	if err != nil {
 		return nil, err
 	}
-	return tracing{v.(*postgres.Variant)}, nil
+	return tracing{v}, nil
 }
 ```
 
-`data.New(catalog, dialect, data.WithEngine(tracingEngine))` installs it. A variant that
-compiled statements of its own exposes them through two optional methods the store asserts:
-`Statements() []query.Statement`, which `Store.Statements` appends, and
-`Verify(ctx, sess) error`, which `Store.Verify` runs in its own pass. `tracing` embeds the
-concrete `*postgres.Variant`, so both are promoted; a wrapper that embeds a variant through the
-`Variant` interface hides them, and forwards them itself when it wants them listed and verified.
+`data.New(catalog, dialect, data.WithEngine(tracingEngine))` installs it. `tracing` inherits
+the PostgreSQL variant's `Statements` and `Verify` through the embedding, so the engine's
+statements stay in the store's inventory and its startup verification.
 
 The store validates every input and classifies every error, so a variant binds what it is given
 and returns what the session mapped.
@@ -607,11 +607,13 @@ no registry, init, or flag.
 
 ### The engine
 
-`Engine` is a `data.Engine`: it compiles the variant's four native statements against the consumer's
-catalog for its dialect and returns a `*Variant` over the baseline `data.New` compiled. A consumer
-installs it with `data.New(catalog, dialect, data.WithEngine(postgres.Engine))`. The catalog must
-carry the `blobfs` namespace. `Variant` embeds `*data.Standard` and overrides all three points; its
-`Statements` and `Verify` put its statements in the store's inventory and its startup verification.
+`Engine` is a `data.Engine`: it compiles the variant's three native statements against the
+consumer's catalog for its dialect and returns the PostgreSQL variant over the baseline
+`data.New` compiled. A consumer installs it with
+`data.New(catalog, dialect, data.WithEngine(postgres.Engine))`. The catalog must carry the
+`blobfs` namespace. The variant embeds the baseline it is given and overrides all three points;
+its `Statements` and `Verify` put its statements in the store's inventory and its startup
+verification.
 
 - **The tree lock.** `lock_tree` is `pg_advisory_xact_lock` over the fixed key `TreeLockKey`,
   `-8521165719926625175`, the 64-bit FNV-1a hash of `TreeLockName`, `blobfs_directory.tree`,

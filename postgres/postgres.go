@@ -28,16 +28,17 @@ const TreeLockName = "blobfs_directory.tree"
 // this package's tests recompute it from the name.
 const TreeLockKey int64 = -8521165719926625175
 
-// Variant is the PostgreSQL implementation of data.Variant, the variant
-// Engine builds. It embeds the store's standard baseline, as the
-// data.Variant contract requires, so a variation point this package does
-// not override runs as the baseline does, and it binds the compiled native
-// statements to their handles. It overrides all three: the tree lock, which
-// the baseline cannot take; path resolution in one statement; and the file
-// hold, taken without writing a row version. It holds no session; every
-// method takes one.
-type Variant struct {
-	*data.Standard
+// variant is the PostgreSQL implementation of data.Variant, the variant
+// Engine builds. It embeds the variant it is given, the store's standard
+// baseline, as the data.Variant contract requires, so a variation point
+// this package does not override runs as the base does, and it binds the
+// compiled native statements to their handles. It overrides all three
+// variation points (the tree lock, which the baseline cannot take; path
+// resolution in one statement; and the file hold, taken without writing a
+// row version) and the inventory, which lists and verifies its own
+// statements. It holds no session; every method takes one.
+type variant struct {
+	data.Variant
 	stmts       *query.Statements
 	lockTree    query.Statement
 	resolvePath query.Rows[resolved]
@@ -53,27 +54,26 @@ type resolved struct {
 }
 
 var (
-	_ data.Engine    = Engine
-	_ data.Variant   = (*Variant)(nil)
-	_ query.Verifier = (*Variant)(nil)
+	_ data.Engine  = Engine
+	_ data.Variant = (*variant)(nil)
 )
 
 // Engine is the PostgreSQL engine for data.WithEngine: it compiles the
-// variant's own three statements against catalog for dialect, binds them, and
-// returns a *Variant over base, the baseline data.New compiled, so the data
-// package's statements are compiled once. A consumer selects it at its
+// variant's own three statements against catalog for dialect, binds them,
+// and returns the PostgreSQL variant over base, the baseline data.New
+// compiled, so the data package's statements are compiled once. A consumer selects it at its
 // composition root with data.New(catalog, dialect, data.WithEngine(Engine)).
 // The catalog must carry the blobfs namespace, registered from
 // data.Patterns(), because resolve_path returns the published directory
 // columns. The variant's statements are not returning commands, so either
 // form of the store's returning commands suits it. No I/O happens here.
-func Engine(catalog *query.Catalog, dialect sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+func Engine(catalog *query.Catalog, dialect sqlate.Dialect, base data.Variant) (data.Variant, error) {
 	stmts, err := catalog.Compile(statementFiles, "statements", dialect)
 	if err != nil {
 		return nil, fmt.Errorf("blobfs/postgres: %w", err)
 	}
-	return &Variant{
-		Standard:    base,
+	return &variant{
+		Variant:     base,
 		stmts:       stmts,
 		lockTree:    stmts.Statement("lock_tree"),
 		resolvePath: stmts.Statement("resolve_path").Scan(query.Scanner[resolved]()),
@@ -84,28 +84,28 @@ func Engine(catalog *query.Catalog, dialect sqlate.Dialect, base *data.Standard)
 // Statements returns the variant's compiled inventory in name order, for a
 // consumer that lists the SQL its program runs. The store's Statements
 // appends it to the data package's own.
-func (v *Variant) Statements() []query.Statement {
+func (v *variant) Statements() []query.Statement {
 	return v.stmts.Statements()
 }
 
 // Verify prepares the variant's statements against the schema the session
 // reaches. The store's Verify runs it in the same pass as its own, so a
 // startup Verify covers the variant's statements.
-func (v *Variant) Verify(ctx context.Context, sess sqlate.Session) error {
+func (v *variant) Verify(ctx context.Context, sess sqlate.Session) error {
 	return v.stmts.Verify(ctx, sess)
 }
 
 // LockTree takes the transaction-scoped advisory lock under TreeLockKey in
 // tx and returns once it is held. A transaction that holds it blocks every
 // other LockTree until it commits or rolls back.
-func (v *Variant) LockTree(ctx context.Context, tx *sqlate.Tx) error {
+func (v *variant) LockTree(ctx context.Context, tx *sqlate.Tx) error {
 	_, err := v.lockTree.Exec(ctx, tx, query.Args{"key": TreeLockKey})
 	return err
 }
 
 // Serializes reports true: LockTree holds an engine lock to the end of the
 // transaction.
-func (*Variant) Serializes() bool {
+func (*variant) Serializes() bool {
 	return true
 }
 
@@ -116,7 +116,7 @@ func (*Variant) Serializes() bool {
 // encoded by the driver from the Go slice, so no name is ever spliced into
 // the text; no segments bind as an empty array. No row means the start does
 // not exist and is blobfs.ErrNotFound. See data.Variant.
-func (v *Variant) ResolvePath(ctx context.Context, sess sqlate.Session, startID string, segments []string) (blobfs.Directory, int, error) {
+func (v *variant) ResolvePath(ctx context.Context, sess sqlate.Session, startID string, segments []string) (blobfs.Directory, int, error) {
 	if segments == nil {
 		segments = []string{}
 	}
@@ -138,7 +138,7 @@ func (v *Variant) ResolvePath(ctx context.Context, sess sqlate.Session, startID 
 // guard. A row returned is a row held; no row, whether missing, deleting,
 // or at another version, is false with no lock taken, and the store reads
 // the row to classify, as it does over the baseline. See data.Variant.
-func (v *Variant) HoldFile(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (bool, error) {
+func (v *variant) HoldFile(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (bool, error) {
 	args := query.Args{"id": id, "version": nil}
 	if version != nil {
 		args["version"] = *version

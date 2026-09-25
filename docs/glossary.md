@@ -122,8 +122,9 @@ full.
 
 - **Tier** (sqlate): the portability a statement declares. A standard statement runs on any
   engine; a native one uses a feature of one engine and carries a port note.
-- **Baseline**: `data.Standard`, the standard-tier variant every store runs unless an engine
-  replaces it, complete on any engine `sqlate` has a dialect for.
+- **Baseline**: the standard-tier variant `data.New` binds, which every store runs unless an
+  engine replaces it and which an engine receives as its `base`, complete on any engine `sqlate`
+  has a dialect for.
 - **Variation point**: an operation an engine can do better than standard SQL: the tree lock,
   path resolution, and a file's hold.
 - **Variant**: an implementation of the variation points, `data.Variant`, that the store

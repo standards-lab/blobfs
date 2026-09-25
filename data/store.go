@@ -40,9 +40,9 @@ type Store struct {
 // happens here.
 //
 // The options choose the variant the store forwards its variation points to
-// (see Variant). New binds Standard over the statements it compiled. Without
-// WithEngine the store runs Standard; with it, New passes Standard to the
-// Engine as the baseline and runs the variant the Engine returns. The
+// (see Variant). New binds the baseline over the statements it compiled.
+// Without WithEngine the store runs the baseline; with it, New passes the
+// baseline to the Engine and runs the variant the Engine returns. The
 // statements are compiled once either way. An Engine's error is returned
 // wrapped as "data: engine: ...".
 func New(catalog *query.Catalog, dialect sqlate.Dialect, opts ...Option) (*Store, error) {
@@ -80,13 +80,9 @@ func New(catalog *query.Catalog, dialect sqlate.Dialect, opts ...Option) (*Store
 
 // Statements returns the compiled inventory in name order, for a consumer
 // that lists or registers the SQL its program runs: the data package's own
-// statements, followed by the variant's own when it compiled any.
+// statements, followed by the variant's own (see Variant).
 func (s *Store) Statements() []query.Statement {
-	out := s.stmts.Statements()
-	if inv, ok := s.variant.(inventory); ok {
-		out = append(out, inv.Statements()...)
-	}
-	return out
+	return append(s.stmts.Statements(), s.variant.Statements()...)
 }
 
 // Verify prepares every statement against the schema the session reaches, so
@@ -94,20 +90,8 @@ func (s *Store) Statements() []query.Statement {
 // at first use. The two listings are verified as projections too: each
 // declared field is compared with its declared type over the base, and a
 // page past a cursor is prepared, so a field contract the schema does not
-// satisfy and the keyset predicate fail here as well. A variant that can
-// verify itself, as an Engine's variant that compiled statements of its own
-// does, is verified in the same pass (see Engine).
+// satisfy and the keyset predicate fail here as well. The variant verifies
+// its own statements in the same pass (see Variant).
 func (s *Store) Verify(ctx context.Context, sess sqlate.Session) error {
-	vs := []query.Verifier{s.stmts, s.Directories.list.projection, s.Files.list.projection}
-	if v, ok := s.variant.(query.Verifier); ok {
-		vs = append(vs, v)
-	}
-	return query.Verify(ctx, sess, vs...)
-}
-
-// inventory is the optional capability of a variant that compiled statements
-// of its own (see Engine). Standard has none: its statements are the data
-// package's own, which the Store already lists and verifies.
-type inventory interface {
-	Statements() []query.Statement
+	return query.Verify(ctx, sess, s.stmts, s.Directories.list.projection, s.Files.list.projection, s.variant)
 }

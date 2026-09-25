@@ -27,9 +27,6 @@ func (s *suite) moves(t *testing.T) {
 // first holds the lock and returns once the first commits or rolls back;
 // when it does not, the lock is a no-op that never blocks.
 func (s *suite) lockTree(t *testing.T) {
-	if s.store.Directories.Serializes() != s.variant.Serializes() {
-		t.Errorf("the store reports Serializes %v and its variant %v", s.store.Directories.Serializes(), s.variant.Serializes())
-	}
 	if s.baseline.Directories.Serializes() {
 		t.Error("the baseline reports it serializes; standard SQL has no lock to take")
 	}

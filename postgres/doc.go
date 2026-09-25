@@ -9,10 +9,11 @@
 //
 // # The variant
 //
-// Engine builds a Variant, which implements data.Variant over four
-// native-tier statements with the store's standard baseline embedded, as
-// the data.Variant contract requires, and overrides all three variation
-// points:
+// Engine builds the PostgreSQL variant, a data.Variant over three
+// native-tier statements with the variant it is given, the store's standard
+// baseline, embedded, as the data.Variant contract requires. It overrides
+// all three variation points and the inventory, which lists and verifies
+// its own statements:
 //
 //   - The tree lock (lock_tree) is a transaction-scoped advisory lock,
 //     pg_advisory_xact_lock over the fixed key TreeLockKey, so two

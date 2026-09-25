@@ -45,6 +45,15 @@ v0.2.0` ships.
 - **Breaking:** the statements `delete_directory`, `delete_file`, and `hold_file` take a
   nullable `version`, which `AtVersion` binds and which guards nothing when NULL, and
   `hold_file_at_version` is folded into `hold_file`: the store's inventory no longer lists it.
+- **Breaking:** `Engine` takes its baseline as a `Variant`:
+  `func(catalog *query.Catalog, dialect sqlate.Dialect, base Variant) (Variant, error)`.
+- **Breaking:** `Standard` is unexported. The baseline reaches an engine only as its `base`
+  argument, which a variant embeds through the `Variant` interface.
+- **Breaking:** `Variant` gains `Statements() []query.Statement` and
+  `Verify(ctx, sess) error`, the variant's own inventory, which `Store.Statements` lists and
+  `Store.Verify` runs without asserting optional methods. A consumer's variant that embeds the
+  one it is given gains both through the embedding, and a wrapper of an engine's variant now
+  lists and verifies the engine's statements instead of hiding them.
 - **Breaking:** the published pattern `blobfs.directory_columns` includes `d.status`, so a
   consumer's statement that includes it needs the migration that adds the column, and a scan
   into a type of its own needs the field.

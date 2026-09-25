@@ -336,7 +336,7 @@ alone: any engine `sqlate` has a dialect for runs every operation through it. Th
 are variation points, where an engine can do better than standard SQL: the tree lock; path
 resolution, which the baseline walks one segment per statement; and a file's hold, which the
 baseline takes with an update that writes a row version. The `data.Variant` interface names
-them, with `Serializes`; `data.Standard` is the baseline.
+them, with `Serializes`; the baseline is the standard-tier variant `data.New` binds.
 
 An engine sub-module adds an engine's native forms and its DDL. It ships a `data.Engine`, which
 `data.New` calls with the baseline it compiled, and a consumer installs it with

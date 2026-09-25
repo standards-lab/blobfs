@@ -97,12 +97,7 @@ func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, engine data.Engine
 	if engine == nil {
 		engine = baselineEngine
 	}
-	var variant data.Variant
-	store, err := data.New(catalog, dialect, data.WithEngine(func(c *query.Catalog, d sqlate.Dialect, base *data.Standard) (data.Variant, error) {
-		v, err := engine(c, d, base)
-		variant = v
-		return v, err
-	}))
+	store, err := data.New(catalog, dialect, data.WithEngine(engine))
 	if err != nil {
 		t.Fatalf("data.New over the engine under test: %v", err)
 	}
@@ -115,7 +110,6 @@ func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, engine data.Engine
 		db:       db,
 		catalog:  catalog,
 		engine:   engine,
-		variant:  variant,
 		store:    store,
 		baseline: baseline,
 	}
@@ -141,8 +135,6 @@ type suite struct {
 	// engine is the engine under test, the baseline's when Run was given
 	// none, which the move group wraps to interleave two moves.
 	engine data.Engine
-	// variant is the variant the engine built for the store under test.
-	variant data.Variant
 	// store is the store under test.
 	store *data.Store
 	// baseline is a store over the standard baseline against the same
@@ -171,6 +163,6 @@ func (s *suite) verify(t *testing.T) {
 }
 
 // baselineEngine is the engine of a run given none: the baseline itself.
-func baselineEngine(_ *query.Catalog, _ sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+func baselineEngine(_ *query.Catalog, _ sqlate.Dialect, base data.Variant) (data.Variant, error) {
 	return base, nil
 }
