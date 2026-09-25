@@ -12,6 +12,7 @@ import (
 	"github.com/standards-lab/sqlate/query"
 
 	"github.com/standards-lab/blobfs"
+	"github.com/standards-lab/blobfs/data"
 )
 
 // listAll is the request for a whole listing in the default order with
@@ -40,13 +41,13 @@ func (s *suite) listing(t *testing.T) {
 // a listing that leaked past its directory would show.
 type listingFixture struct {
 	top blobfs.Directory
-	// dirs is every directory of the fixture by its path below top, the
-	// empty path for top itself.
+	// dirs is every active directory of the fixture by its path below
+	// top, the empty path for top itself.
 	dirs map[string]string
 }
 
-// seedListing builds the listing fixture, with files of every status and
-// sizes that tie.
+// seedListing builds the listing fixture, with files of every status,
+// sizes that tie, and a directory marked deleting.
 func (s *suite) seedListing(t *testing.T) listingFixture {
 	t.Helper()
 	top := s.mkdir(t, "listing-"+t.Name())
@@ -76,18 +77,31 @@ func (s *suite) seedListing(t *testing.T) listingFixture {
 			s.insertFile(t, f.dirs[path], n, status)
 		}
 	}
+	// A marked branch in d1, which a listing hides by default and shows
+	// with IncludeDeleting. It is not in dirs: its own listing is
+	// ErrDeleting, which the Branches group checks.
+	marked := s.mkdirUnder(t, f.dirs[d1], "a-marked")
+	s.mkdirUnder(t, marked.ID, "a-child")
+	s.insertFile(t, marked.ID, "a1", blobfs.StatusAvailable)
+	if _, err := s.mark(s.store, marked.ID); err != nil {
+		t.Fatalf("MarkDeleting: %v", err)
+	}
 	return f
+}
+
+// listingSort is one sort the listing group checks, with the ORDER BY of
+// the plain query that must return the same rows.
+type listingSort struct {
+	label   string
+	orderBy string
+	sort    []query.Sort
 }
 
 // fileSorts are the file sorts the listing group checks, each with the
 // ORDER BY of the plain query that must return the same rows: by name in
 // both directions, by a nullable field, and by created_at, each with the
 // name appended as the tie-breaker.
-var fileSorts = []struct {
-	label   string
-	orderBy string
-	sort    []query.Sort
-}{
+var fileSorts = []listingSort{
 	{"name", "f.name", nil},
 	{"name desc", "f.name DESC", []query.Sort{{Field: "name", Descending: true}}},
 	{"size then name", "f.size, f.name", []query.Sort{{Field: "size"}}},
@@ -97,7 +111,8 @@ var fileSorts = []struct {
 
 // fileFilters are the file filters the listing group checks, each with
 // the predicate of the plain query and its argument: none, a LIKE on the
-// name, a status, and a null size.
+// name, a status, the status the listing hides by default, and a null
+// size.
 var fileFilters = []struct {
 	label     string
 	predicate string
@@ -107,118 +122,152 @@ var fileFilters = []struct {
 	{"all", "", nil, nil},
 	{"like a%", "f.name LIKE %s", "a%", []query.Filter{{Field: "name", Op: query.OpLike, Value: "a%"}}},
 	{"available", "f.status = %s", "available", []query.Filter{{Field: "status", Op: query.OpEq, Value: "available"}}},
+	{"deleting", "f.status = %s", "deleting", []query.Filter{{Field: "status", Op: query.OpEq, Value: "deleting"}}},
 	{"size null", "f.size IS NULL", nil, []query.Filter{{Field: "size", Op: query.OpIsNull}}},
 }
 
+// listingMode is one way a listing is called: by default, which hides
+// deleting rows, or with the options that show them.
+type listingMode struct {
+	label string
+	hides bool
+	opts  []data.ListOption
+}
+
+// listingModes are the two ways a listing is called.
+var listingModes = []listingMode{
+	{"by default", true, nil},
+	{"with IncludeDeleting", false, []data.ListOption{data.IncludeDeleting()}},
+}
+
+// plain is the predicate the plain query over alias adds in the mode:
+// deleting rows excluded when the mode hides them, and nothing otherwise.
+func (m listingMode) plain(alias string) string {
+	if !m.hides {
+		return ""
+	}
+	return " AND " + alias + ".status <> 'deleting'"
+}
+
 // filesMatchAPlainQuery checks, for every directory of the fixture and a
-// missing one, under every sort and filter, at several page sizes, that
-// the pages read by number and concatenated equal the rows a plain query
-// over blobfs_file returns, that every counted page reports the plain
-// query's count, and that the pages without the total return the same
-// rows and query.NoTotal.
+// missing one, called by default and with IncludeDeleting, under every
+// sort and filter, at several page sizes, that the pages read by number
+// and concatenated equal the rows a plain query over blobfs_file returns,
+// deleting rows excluded by default, that every counted page reports the
+// plain query's count, and that the pages without the total return the
+// same rows and query.NoTotal.
 func (s *suite) filesMatchAPlainQuery(t *testing.T, f listingFixture) {
 	p := s.db.Dialect().Placeholder
 	dirs := maps.Clone(f.dirs)
 	dirs["missing"] = blobfs.NewID()
-	for path, dir := range dirs {
-		for _, filter := range fileFilters {
-			for _, sort := range fileSorts {
-				text := "SELECT f.id FROM blobfs_file f WHERE f.directory_id = " + p(1)
-				args := []any{dir}
-				if filter.predicate != "" {
-					if filter.arg != nil {
-						text += " AND " + fmt.Sprintf(filter.predicate, p(2))
-						args = append(args, filter.arg)
-					} else {
-						text += " AND " + filter.predicate
+	for _, mode := range listingModes {
+		for path, dir := range dirs {
+			for _, filter := range fileFilters {
+				for _, sort := range fileSorts {
+					text := "SELECT f.id FROM blobfs_file f WHERE f.directory_id = " + p(1) + mode.plain("f")
+					args := []any{dir}
+					if filter.predicate != "" {
+						if filter.arg != nil {
+							text += " AND " + fmt.Sprintf(filter.predicate, p(2))
+							args = append(args, filter.arg)
+						} else {
+							text += " AND " + filter.predicate
+						}
 					}
-				}
-				want := s.column(t, text+" ORDER BY "+sort.orderBy, args...)
-				req := query.Directives{Sort: sort.sort, Filters: filter.filters}
-				for _, size := range []int{1, 2, 3, 10} {
-					got, total := s.fileOffsetWalk(t, dir, req, size)
-					if !slices.Equal(got, want) || total != len(want) {
-						t.Errorf("/%s %s by %s, size %d: the listing %v with total %d, the plain query %v", path, filter.label, sort.label, size, got, total, want)
+					want := s.column(t, text+" ORDER BY "+sort.orderBy, args...)
+					req := query.Directives{Sort: sort.sort, Filters: filter.filters}
+					for _, size := range []int{1, 2, 3, 10} {
+						got, total := s.fileOffsetWalk(t, dir, req, size, mode.opts...)
+						if !slices.Equal(got, want) || total != len(want) {
+							t.Errorf("/%s %s, %s by %s, size %d: the listing %v with total %d, the plain query %v", path, mode.label, filter.label, sort.label, size, got, total, want)
+						}
 					}
-				}
-				req.Total = query.TotalNone
-				if got, total := s.fileOffsetWalk(t, dir, req, 2); !slices.Equal(got, want) || total != query.NoTotal {
-					t.Errorf("/%s %s by %s without the total: the listing %v with total %d, the plain query %v", path, filter.label, sort.label, got, total, want)
+					req.Total = query.TotalNone
+					if got, total := s.fileOffsetWalk(t, dir, req, 2, mode.opts...); !slices.Equal(got, want) || total != query.NoTotal {
+						t.Errorf("/%s %s, %s by %s without the total: the listing %v with total %d, the plain query %v", path, mode.label, filter.label, sort.label, got, total, want)
+					}
 				}
 			}
 		}
 	}
+}
+
+// directorySorts are the directory sorts the listing group checks: by
+// name in both directions and by created_at.
+var directorySorts = []listingSort{
+	{"name", "d.name", nil},
+	{"name desc", "d.name DESC", []query.Sort{{Field: "name", Descending: true}}},
+	{"created_at then name", "d.created_at, d.name", []query.Sort{{Field: "created_at"}}},
 }
 
 // directoriesMatchAPlainQuery checks the directory listing the same way,
-// by name in both directions and by created_at, with and without a LIKE
-// filter.
+// by default and with IncludeDeleting, under every directory sort, with
+// and without a LIKE filter.
 func (s *suite) directoriesMatchAPlainQuery(t *testing.T, f listingFixture) {
-	p := s.db.Dialect().Placeholder
 	dirs := maps.Clone(f.dirs)
 	dirs["missing"] = blobfs.NewID()
-	sorts := []struct {
-		label   string
-		orderBy string
-		sort    []query.Sort
-	}{
-		{"name", "d.name", nil},
-		{"name desc", "d.name DESC", []query.Sort{{Field: "name", Descending: true}}},
-		{"created_at then name", "d.created_at, d.name", []query.Sort{{Field: "created_at"}}},
+	for _, mode := range listingModes {
+		for path, dir := range dirs {
+			s.directoriesUnder(t, mode, path, dir)
+		}
 	}
-	for path, dir := range dirs {
-		for _, like := range []string{"", "a%"} {
-			var filters []query.Filter
-			text := "SELECT d.id FROM blobfs_directory d WHERE d.parent_id = " + p(1)
-			args := []any{dir}
-			if like != "" {
-				filters = []query.Filter{{Field: "name", Op: query.OpLike, Value: like}}
-				text += " AND d.name LIKE " + p(2)
-				args = append(args, like)
-			}
-			for _, sort := range sorts {
-				want := s.column(t, text+" ORDER BY "+sort.orderBy, args...)
-				for _, size := range []int{1, 2, 10} {
-					var got []string
-					total := query.NoTotal
-					for n := 1; n <= 100; n++ {
-						c, err := s.store.Directories.List(s.ctx, s.db, dir, query.Directives{Sort: sort.sort, Filters: filters}, query.Page{Number: n, Size: size})
-						if err != nil {
-							t.Fatalf("Directories.List: %v", err)
-						}
-						if n == 1 || len(c.Items) > 0 {
-							total = c.Total
-						}
-						for _, d := range c.Items {
-							if d.IsRoot() {
-								t.Errorf("a listing holds the root")
-							}
-							got = append(got, d.ID)
-						}
-						if !c.More {
-							break
-						}
+}
+
+// directoriesUnder is one directory's part of directoriesMatchAPlainQuery,
+// in one listing mode.
+func (s *suite) directoriesUnder(t *testing.T, mode listingMode, path, dir string) {
+	p := s.db.Dialect().Placeholder
+	for _, like := range []string{"", "a%"} {
+		var filters []query.Filter
+		text := "SELECT d.id FROM blobfs_directory d WHERE d.parent_id = " + p(1) + mode.plain("d")
+		args := []any{dir}
+		if like != "" {
+			filters = []query.Filter{{Field: "name", Op: query.OpLike, Value: like}}
+			text += " AND d.name LIKE " + p(2)
+			args = append(args, like)
+		}
+		for _, sort := range directorySorts {
+			want := s.column(t, text+" ORDER BY "+sort.orderBy, args...)
+			for _, size := range []int{1, 2, 10} {
+				var got []string
+				total := query.NoTotal
+				for n := 1; n <= 100; n++ {
+					c, err := s.store.Directories.List(s.ctx, s.db, dir, query.Directives{Sort: sort.sort, Filters: filters}, query.Page{Number: n, Size: size}, mode.opts...)
+					if err != nil {
+						t.Fatalf("Directories.List: %v", err)
 					}
-					if !slices.Equal(got, want) || total != len(want) {
-						t.Errorf("/%s like %q by %s, size %d: the listing %v with total %d, the plain query %v", path, like, sort.label, size, got, total, want)
+					if n == 1 || len(c.Items) > 0 {
+						total = c.Total
 					}
+					for _, d := range c.Items {
+						if d.IsRoot() {
+							t.Errorf("a listing holds the root")
+						}
+						got = append(got, d.ID)
+					}
+					if !c.More {
+						break
+					}
+				}
+				if !slices.Equal(got, want) || total != len(want) {
+					t.Errorf("/%s %s, like %q by %s, size %d: the listing %v with total %d, the plain query %v", path, mode.label, like, sort.label, size, got, total, want)
 				}
 			}
 		}
 	}
 }
 
-// fileOffsetWalk reads the file listing of dir page by page by number
-// until a page reports no More, checking that every page after an earlier
-// one's More holds rows, that a short page is the last, and that every
+// fileOffsetWalk reads the file listing of dir, called with opts, page by
+// page by number until a page reports no More, checking that every page
+// after an earlier one's More holds rows, that a short page is the last, and that every
 // counted page with rows reports the same total, and returns the ids
 // concatenated and the total, query.NoTotal when the pages carried none.
-func (s *suite) fileOffsetWalk(t *testing.T, dir string, req query.Directives, size int) ([]string, int) {
+func (s *suite) fileOffsetWalk(t *testing.T, dir string, req query.Directives, size int, opts ...data.ListOption) ([]string, int) {
 	t.Helper()
 	var ids []string
 	total := query.NoTotal
 	for n := 1; n <= 100; n++ {
-		c, err := s.store.Files.List(s.ctx, s.db, dir, req, query.Page{Number: n, Size: size})
+		c, err := s.store.Files.List(s.ctx, s.db, dir, req, query.Page{Number: n, Size: size}, opts...)
 		if err != nil {
 			t.Fatalf("page %d of size %d: %v", n, size, err)
 		}

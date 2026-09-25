@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/standards-lab/sqlate/sqltest"
 
 	"github.com/standards-lab/blobfs"
+	"github.com/standards-lab/blobfs/data"
 )
 
 // filesIn scripts one page of available file rows in directory, one per
@@ -48,15 +50,17 @@ const fileBase = "FROM blobfs_file f\nWHERE f.directory_id = CAST($1 AS uuid)) q
 const fileCounted = "SELECT * FROM (SELECT q.*, COUNT(*) OVER () AS sqlate_total FROM (SELECT f.id, f.directory_id, f.name, f.status, f.key, f.size, f.content_type, f.etag, f.version, f.created_at, f.updated_at\n" + fileBase
 
 // TestListFiles proves List and Continue over the files of one directory:
-// a status filter bound as text, the total counted in the page's own
-// statement over the base anchored on the directory, the name tie-breaker
-// after a sort by updated_at, and the continuation past the cursor's two
-// keyed values under the same filter.
+// a status filter bound as text and then the one that hides deleting
+// files, the total counted in the page's own statement over the base
+// anchored on the directory, the name tie-breaker after a sort by
+// updated_at, the continuation past the cursor's two keyed values under
+// the same filters, and after each page the read of the directory that
+// tells a deleting one.
 func TestListFiles(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,
-		sqltest.WithTotal(filesIn(parentID, "a", "b", "c"), 3),
-		sqltest.WithTotal(filesIn(parentID, "c"), 3),
+		sqltest.WithTotal(filesIn(parentID, "a", "b", "c"), 3), listed(),
+		sqltest.WithTotal(filesIn(parentID, "c"), 3), listed(),
 	)
 	req := query.Directives{
 		Filters: []query.Filter{{Field: "status", Op: query.OpEq, Value: string(blobfs.StatusAvailable)}},
@@ -77,21 +81,21 @@ func TestListFiles(t *testing.T) {
 		t.Errorf("continued page = %v total %d more %v, want [c] of 3 and nothing more", got, next.Total, next.More)
 	}
 
-	calls := queries(rec)
+	calls := pages(t, rec)
 	if len(calls) != 2 {
-		t.Fatalf("ran %d queries, want one per page", len(calls))
+		t.Fatalf("ran %d pages, want one per call", len(calls))
 	}
-	filter := " WHERE q.status = CAST($2 AS text)"
-	want := fileCounted + filter + ") q ORDER BY q.updated_at, q.name OFFSET $3 ROWS FETCH NEXT $4 ROWS ONLY"
-	if calls[0].SQL != want || !slices.Equal(calls[0].Args, []any{parentID, "available", 0, 3}) {
+	filter := " WHERE q.status = CAST($2 AS text) AND " + hideDeleting(3)
+	want := fileCounted + filter + ") q ORDER BY q.updated_at, q.name OFFSET $4 ROWS FETCH NEXT $5 ROWS ONLY"
+	if calls[0].SQL != want || !slices.Equal(calls[0].Args, []any{parentID, "available", "deleting", 0, 3}) {
 		t.Errorf("page = %q %v, want %q", calls[0].SQL, calls[0].Args, want)
 	}
-	want = fileCounted + filter + ") q WHERE (q.updated_at > CAST($3 AS timestamp with time zone) OR (q.updated_at = CAST($3 AS timestamp with time zone) AND q.name > CAST($4 AS text)))" +
-		" ORDER BY q.updated_at, q.name OFFSET $5 ROWS FETCH NEXT $6 ROWS ONLY"
+	want = fileCounted + filter + ") q WHERE (q.updated_at > CAST($4 AS timestamp with time zone) OR (q.updated_at = CAST($4 AS timestamp with time zone) AND q.name > CAST($5 AS text)))" +
+		" ORDER BY q.updated_at, q.name OFFSET $6 ROWS FETCH NEXT $7 ROWS ONLY"
 	if calls[1].SQL != want {
 		t.Errorf("continued page = %q, want %q", calls[1].SQL, want)
 	}
-	if args := calls[1].Args; len(args) != 6 || args[0] != parentID || args[3] != "b" {
+	if args := calls[1].Args; len(args) != 7 || args[0] != parentID || args[4] != "b" {
 		t.Errorf("continued page args = %v, want the directory, the filter, the keyed values past b, and the paging", args)
 	}
 }
@@ -102,7 +106,7 @@ func TestListFiles(t *testing.T) {
 // no count column to read and reports query.NoTotal.
 func TestListFilesEmptyPage(t *testing.T) {
 	ctx := context.Background()
-	s, db, _ := openStore(t, fallback, sqltest.WithTotal(filesIn(parentID), 0))
+	s, db, _ := openStore(t, fallback, sqltest.WithTotal(filesIn(parentID), 0), listed())
 	empty, err := s.Files.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 1, Size: 2})
 	if err != nil {
 		t.Fatalf("List page 1: %v", err)
@@ -111,7 +115,7 @@ func TestListFilesEmptyPage(t *testing.T) {
 		t.Errorf("empty first page = %+v, want no items, no more, and a total of 0", empty)
 	}
 
-	s, db, _ = openStore(t, fallback, sqltest.WithTotal(filesIn(parentID), 0))
+	s, db, _ = openStore(t, fallback, sqltest.WithTotal(filesIn(parentID), 0), listed())
 	past, err := s.Files.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 2, Size: 2})
 	if err != nil {
 		t.Fatalf("List page 2: %v", err)
@@ -126,7 +130,7 @@ func TestListFilesEmptyPage(t *testing.T) {
 func TestFilesNullableSort(t *testing.T) {
 	for _, field := range []string{"size", "etag"} {
 		t.Run(field, func(t *testing.T) {
-			s, db, _ := openStore(t, fallback, filesIn(parentID, "a", "b", "c"))
+			s, db, _ := openStore(t, fallback, filesIn(parentID, "a", "b", "c"), listed())
 			req := query.Directives{Sort: []query.Sort{{Field: field}}, Total: query.TotalNone}
 			page, err := s.Files.List(context.Background(), db, parentID, req, query.Page{Number: 1, Size: 2})
 			if err != nil {
@@ -156,5 +160,33 @@ func TestListFilesRefusesUndeclaredFields(t *testing.T) {
 	}
 	if len(rec.Calls()) != 0 {
 		t.Error("refused requests ran SQL")
+	}
+}
+
+// TestListFilesDeleting proves the file listing hides deleting files as
+// the directory listing hides deleting directories: in a directory that
+// is deleting, List reads the page and then the directory and reports
+// blobfs.ErrDeleting with no rows, and with IncludeDeleting the page
+// composes the caller's filters alone, so a filter on status reaches
+// deleting files, and no read follows it.
+func TestListFilesDeleting(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, fallback,
+		filesIn(parentID), directoryIn(parentID, blobfs.RootID, "parent", blobfs.DirectoryStatusDeleting, 2),
+		filesIn(parentID, "a"),
+	)
+	none := query.Directives{Total: query.TotalNone}
+	c, err := s.Files.List(ctx, db, parentID, none, query.Page{Number: 1, Size: 2})
+	if !errors.Is(err, blobfs.ErrDeleting) || len(c.Items) != 0 {
+		t.Errorf("List in a deleting directory = %+v, %v, want no rows and ErrDeleting", c, err)
+	}
+	req := query.Directives{Total: query.TotalNone, Filters: []query.Filter{{Field: "status", Op: query.OpEq, Value: string(blobfs.StatusDeleting)}}}
+	if _, err := s.Files.List(ctx, db, parentID, req, query.Page{Number: 1, Size: 2}, data.IncludeDeleting()); err != nil {
+		t.Fatalf("List with IncludeDeleting: %v", err)
+	}
+	calls := queries(rec)
+	want := fileBase + " WHERE q.status = CAST($2 AS text) ORDER BY q.name OFFSET $3 ROWS FETCH NEXT $4 ROWS ONLY"
+	if len(calls) != 3 || !strings.HasSuffix(calls[2].SQL, want) || !slices.Equal(calls[2].Args, []any{parentID, "deleting", 0, 3}) {
+		t.Errorf("with IncludeDeleting ran %v, want the page %q alone", calls[2:], want)
 	}
 }

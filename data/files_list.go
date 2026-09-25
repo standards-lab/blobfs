@@ -10,27 +10,38 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// List reads one page of the files in the directory with directoryID,
-// whatever their status, by page number: the rows under req's filters and
-// sort, the total under the same filters unless req declines it with
-// query.TotalNone, whether a further page exists, and the cursor Continue
-// takes to read it. The declared fields are id, directory_id, name,
-// status, size, content_type, etag, version, created_at, and updated_at;
-// a filter or sort naming any other, the object key included, is refused
-// by the query library before any SQL, with an error that unwraps to
-// query.ErrDirectives, as is a page number or size below 1. A filter on
-// status narrows the listing to one stage of the write and delete
-// protocols. The default order is by name, and name, unique in one
-// directory, is the tie-breaker the library appends to every sort, so
-// every order is total. The total is counted in the page's own statement,
-// so it never disagrees with the page; an empty page after the first
-// carries no count and reports query.NoTotal, as does a request that
+// List reads one page of the files in the directory with directoryID, by
+// page number: the rows under req's filters and sort, the total under the
+// same filters unless req declines it with query.TotalNone, whether a
+// further page exists, and the cursor Continue takes to read it. The
+// declared fields are id, directory_id, name, status, size, content_type,
+// etag, version, created_at, and updated_at; a filter or sort naming any
+// other, the object key included, is refused by the query library before
+// any SQL, with an error that unwraps to query.ErrDirectives, as is a page
+// number or size below 1. A filter on status narrows the listing to one
+// stage of the write protocol. The default order is by name, and name,
+// unique in one directory, is the tie-breaker the library appends to every
+// sort, so every order is total. The total is counted in the page's own
+// statement, so it never disagrees with the page; an empty page after the
+// first carries no count and reports query.NoTotal, as does a request that
 // declines the count with query.TotalNone. Passing query.TotalNone is how
 // a caller walks a large directory by cursor cheaply, since the counted
 // read holds every filtered row before it pages. A directory that does
 // not exist lists no rows and a total of zero.
-func (f *Files) List(ctx context.Context, sess sqlate.Session, directoryID string, req query.Directives, page query.Page) (query.Collection[blobfs.File], error) {
+//
+// A deleting file, one whose delete began or whose directory's branch was
+// marked, is hidden: the listing appends a filter on status after req's
+// own, so neither the page nor the total holds one, and a directory that
+// is itself deleting is blobfs.ErrDeleting, told by a read of the
+// directory after the page. IncludeDeleting shows deleting files, so a
+// filter on status reaches the delete protocol's stage too, and lists a
+// deleting directory, without the read.
+func (f *Files) List(ctx context.Context, sess sqlate.Session, directoryID string, req query.Directives, page query.Page, opts ...ListOption) (query.Collection[blobfs.File], error) {
+	req, include := listing(req, string(blobfs.StatusDeleting), opts)
 	c, err := f.list.List(ctx, sess, req, page, query.With("directory_id", directoryID))
+	if err == nil && !include {
+		err = listable(ctx, sess, f.directory, directoryID)
+	}
 	if err != nil {
 		return query.Collection[blobfs.File]{}, fmt.Errorf("data: list files in %s: %w", directoryID, err)
 	}
@@ -47,13 +58,20 @@ func (f *Files) List(ctx context.Context, sess sqlate.Session, directoryID strin
 // tie-breaker run in one direction and name no nullable field, which here
 // is size or etag, null until a write completes. Any other sort pages by
 // number only. A cursor the library did not issue, one edited, one issued
-// by the directory listing or under other filters or another sort, and
+// by the directory listing or under other filters or another sort, one
+// issued with IncludeDeleting to a call without it or the reverse, and
 // any cursor under a sort that cannot be continued are refused with a
 // query.CursorError before any SQL. A cursor is a position in the order,
 // not a bookmark on the directory: the library does not record
-// directoryID in it.
-func (f *Files) Continue(ctx context.Context, sess sqlate.Session, directoryID string, req query.Directives, after query.Cursor, size int) (query.Collection[blobfs.File], error) {
+// directoryID in it. Deleting files are hidden and a deleting directory
+// refused as List hides and refuses them, so a file marked after the
+// cursor was issued is not on the pages past it.
+func (f *Files) Continue(ctx context.Context, sess sqlate.Session, directoryID string, req query.Directives, after query.Cursor, size int, opts ...ListOption) (query.Collection[blobfs.File], error) {
+	req, include := listing(req, string(blobfs.StatusDeleting), opts)
 	c, err := f.list.Continue(ctx, sess, req, after, size, query.With("directory_id", directoryID))
+	if err == nil && !include {
+		err = listable(ctx, sess, f.directory, directoryID)
+	}
 	if err != nil {
 		return query.Collection[blobfs.File]{}, fmt.Errorf("data: continue files in %s: %w", directoryID, err)
 	}

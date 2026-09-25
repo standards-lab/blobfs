@@ -17,7 +17,10 @@
 -- unique, so the default order is by name and every sort is total. size
 -- and etag stay null until a write completes, so a sort by either pages
 -- by number only. key is not declared: it is derived from the id and the
--- name, and no listing filters or sorts by it.
+-- name, and no listing filters or sorts by it. Go appends a filter on
+-- status after the caller's own, which hides deleting files unless the
+-- caller passes data.IncludeDeleting; like the caller's filters it is a
+-- predicate over the rows the name index reaches, not an index condition.
 SELECT {{> blobfs.file_columns}}
 FROM blobfs_file f
 WHERE f.directory_id = {{directory_id:uuid}}

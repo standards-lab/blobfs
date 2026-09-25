@@ -21,6 +21,11 @@ func (s *suite) branches(t *testing.T) {
 	t.Run("MarkAgainConverges", s.markAgain)
 	t.Run("MarkAtVersion", s.markAtVersion)
 	t.Run("DeletingRefuses", s.deletingRefuses)
+	t.Run("ListingsHideTheBranch", s.listingsHideTheBranch)
+	t.Run("ListingADeletingDirectory", s.listingADeletingDirectory)
+	t.Run("CursorAcrossAMark", s.cursorAcrossAMark)
+	t.Run("DeletingFindsTheRoots", s.deletingFindsTheRoots)
+	t.Run("DeletingFindsNone", s.deletingFindsNone)
 }
 
 // branch is a three-level branch the group marks: top under the root, mid
@@ -40,8 +45,15 @@ type branch struct {
 // file in leaf, and a file in top already deleting.
 func (s *suite) newBranch(t *testing.T, n string) branch {
 	t.Helper()
+	return s.newBranchUnder(t, blobfs.RootID, n)
+}
+
+// newBranchUnder creates the branch newBranch creates under the directory
+// with parentID.
+func (s *suite) newBranchUnder(t *testing.T, parentID, n string) branch {
+	t.Helper()
 	var b branch
-	b.top = s.mkdir(t, n)
+	b.top = s.mkdirUnder(t, parentID, n)
 	b.mid = s.mkdirUnder(t, b.top.ID, "mid")
 	b.leaf = s.mkdirUnder(t, b.mid.ID, "leaf")
 	b.files = []string{

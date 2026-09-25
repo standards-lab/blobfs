@@ -63,7 +63,9 @@ var (
 	// a mutation refused because a directory it reaches is deleting: a
 	// create or an ensure under a deleting directory, a move into one, and a
 	// move of a directory or file whose parent is deleting, since a branch
-	// marked for removal takes nothing in and lets nothing out.
+	// marked for removal takes nothing in and lets nothing out. A listing of
+	// a deleting directory reports it too, unless the listing asked to
+	// include deleting rows.
 	ErrDeleting = errors.New("blobfs: row is deleting")
 
 	// ErrNotDeleting reports a purge, the last step of the two-phase

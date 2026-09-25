@@ -29,6 +29,7 @@ type Directories struct {
 	removeAt  query.Statement
 	markDirs  query.Statement
 	markFiles query.Statement
+	deleting  query.Rows[blobfs.Directory]
 }
 
 // ancestor is one row of directory_ancestors: a directory's id, parent,
@@ -56,6 +57,7 @@ func newDirectories(stmts *query.Statements, variant Variant) *Directories {
 		removeAt:  stmts.Statement("delete_directory_at_version"),
 		markDirs:  stmts.Statement("mark_directory_deleting"),
 		markFiles: stmts.Statement("mark_directory_files_deleting"),
+		deleting:  stmts.Statement("deleting_branches").Scan(directory),
 	}
 }
 
@@ -306,4 +308,25 @@ func (d *Directories) MarkDeleting(ctx context.Context, tx *sqlate.Tx, id string
 		return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, err)
 	}
 	return Marked{Directories: dirs, Files: files}, nil
+}
+
+// Deleting returns at most limit of the roots of the branches being
+// deleted, in id order: each directory that is deleting under a parent
+// that is active, the directory a MarkDeleting named, and none beneath it,
+// since a mark reaches every directory in its branch. It is how a sweeper
+// finds the branches whose delete stopped before their rows were removed;
+// the rest of each branch is reached from its root, through the listings
+// with IncludeDeleting. No branch being deleted returns no rows and no
+// error. A limit below 1 is refused before any SQL. Its cost is the
+// deleting rows where the engine indexes them, as the postgres migrations
+// do, and the directory table where it does not.
+func (d *Directories) Deleting(ctx context.Context, sess sqlate.Session, limit int) ([]blobfs.Directory, error) {
+	if limit < 1 {
+		return nil, fmt.Errorf("data: deleting directories: the limit %d is below 1", limit)
+	}
+	dirs, err := d.deleting.All(ctx, sess, query.Args{"offset": 0, "fetch": limit})
+	if err != nil {
+		return nil, fmt.Errorf("data: deleting directories: %w", err)
+	}
+	return dirs, nil
 }

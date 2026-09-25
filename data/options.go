@@ -76,3 +76,29 @@ func AtVersion(version int64) VersionOption {
 		o.hasVersion = true
 	}
 }
+
+// ListOption configures one call of a listing, Directories.List or
+// Directories.Continue and Files.List or Files.Continue, beyond its
+// required arguments.
+type ListOption func(*listOptions)
+
+// listOptions collects what the list options set.
+type listOptions struct {
+	includeDeleting bool
+}
+
+// IncludeDeleting makes a listing show deleting rows as well: the
+// directories of a branch marked for deletion, and the files whose delete
+// began or whose directory's branch was marked. Without it a listing
+// hides them, by a filter on status it appends after the caller's own,
+// and a listing of a directory that is itself deleting is
+// blobfs.ErrDeleting. With it the listing composes the caller's filters
+// alone and lists a deleting directory's contents, which is how the work
+// of a branch's delete is found. The appended filter is part of what a
+// cursor is bound to, so a cursor continues only a listing called the
+// same way, with the option or without it; either way a row marked
+// deleting after the cursor was issued is hidden from the pages past it
+// unless the option is given.
+func IncludeDeleting() ListOption {
+	return func(o *listOptions) { o.includeDeleting = true }
+}

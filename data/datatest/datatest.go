@@ -70,16 +70,21 @@ import (
 // serialize or form a cycle as Serializes says, with IsWithin and Path
 // terminating on the cycle and a Move repairing it, and which serializable
 // isolation refuses on every variant); Listing (both listings against a
-// plain query, the page boundaries, the counted total's rules for empty
-// and continued pages, the total under concurrent inserts, and the
+// plain query, by default, which hides deleting rows, and with
+// IncludeDeleting, the page boundaries, the counted total's rules for
+// empty and continued pages, the total under concurrent inserts, and the
 // refusals); Keyset (every cursorable sort walked to the end against the
 // baseline and an offset walk, without and then with a sort index); and
 // Branches (MarkDeleting's counts over a three-level branch against the
 // baseline, the marked rows read back deleting, the root and a missing
 // directory refused, a repeated mark converging and reaching stragglers,
-// and every create, ensure, and move a deleting directory refuses, with
-// the same refusals as the baseline). Branches runs last because the
-// branches it marks stay in the tree.
+// every create, ensure, and move a deleting directory refuses, with the
+// same refusals as the baseline, a marked branch hidden from the listings
+// and shown by IncludeDeleting, the listing of a deleting directory
+// refused, a cursor issued before a mark continuing without the marked
+// rows, and Deleting's roots against a plain query). Branches runs last
+// because the branches it marks stay in the tree, and Deleting reads them
+// all.
 func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, engine data.Engine) {
 	t.Helper()
 	dialect := db.Dialect()

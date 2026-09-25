@@ -7,8 +7,8 @@ package postgres_test
 // query.TotalExact, the cursor page by name and by the row-value
 // comparison over a consumer's created_at index, the baseline's path walk
 // step and the variant's one-statement resolution, the recursive walks up
-// the tree, and the protocol steps, each command in its single-statement
-// form. Each test seeds a fixture in its own throwaway database, captures
+// the tree, the protocol steps, each command in its single-statement
+// form, and the read of the roots of the branches being deleted. Each test seeds a fixture in its own throwaway database, captures
 // a statement as the store composes it or takes it from the store's
 // inventory, explains it with EXPLAIN (ANALYZE, BUFFERS) through
 // internal/dbtest, and asserts a plan shape and a buffer bound, never a
@@ -116,12 +116,28 @@ func one(t *testing.T, db *sqlate.DB, op func(sess sqlate.Session) error) call {
 	return rec.calls[0]
 }
 
-// explainList captures the file listing of dir as the store composes it
-// and explains it.
-func (e costEnv) explainList(t *testing.T, dir string, req query.Directives, page query.Page) dbtest.Plan {
+// page runs a listing through a recorder over db and returns its page:
+// the first of the two queries a listing without data.IncludeDeleting
+// runs, the second being the read of the listed directory by id, which
+// TestProtocolStepPlans covers as directory_by_id.
+func page(t *testing.T, db *sqlate.DB, op func(sess sqlate.Session) error) call {
 	t.Helper()
-	c := one(t, e.db, func(sess sqlate.Session) error {
-		_, err := e.store.Files.List(e.ctx, sess, dir, req, page)
+	rec := &recorder{DB: db}
+	if err := op(rec); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.calls) != 2 || !strings.Contains(rec.calls[1].sql, "WHERE d.id = CAST($1 AS uuid)") {
+		t.Fatalf("the listing ran %d queries, want its page and the read of its directory", len(rec.calls))
+	}
+	return rec.calls[0]
+}
+
+// explainList captures the file listing of dir as the store composes it,
+// deleting files hidden, and explains it.
+func (e costEnv) explainList(t *testing.T, dir string, req query.Directives, pg query.Page) dbtest.Plan {
+	t.Helper()
+	c := page(t, e.db, func(sess sqlate.Session) error {
+		_, err := e.store.Files.List(e.ctx, sess, dir, req, pg)
 		return err
 	})
 	return e.ex.Explain(e.ctx, t, c.sql, c.args...)
@@ -130,7 +146,7 @@ func (e costEnv) explainList(t *testing.T, dir string, req query.Directives, pag
 // explainContinue captures the page past after and explains it.
 func (e costEnv) explainContinue(t *testing.T, dir string, req query.Directives, after query.Cursor) dbtest.Plan {
 	t.Helper()
-	c := one(t, e.db, func(sess sqlate.Session) error {
+	c := page(t, e.db, func(sess sqlate.Session) error {
 		_, err := e.store.Files.Continue(e.ctx, sess, dir, req, after, costPageSize)
 		return err
 	})
@@ -149,7 +165,9 @@ func (e costEnv) cursorAt(t *testing.T, dir string, req query.Directives, number
 }
 
 // TestListingPlans proves the listing's plan under each total mode on the
-// big directory. Under query.TotalNone the first page and a page
+// big directory, each page as the store composes it by default: deleting
+// files hidden by a filter on status, which the plan applies to the rows
+// the name index reaches. Under query.TotalNone the first page and a page
 // continued by cursor from the middle, sorted by name in either
 // direction, are an index scan on blobfs_uq_file_directory_name in the
 // key's order, with no sort, no window, and no sequential scan, the
@@ -434,4 +452,46 @@ func indexCondHas(p dbtest.Plan, s string) bool {
 		}
 	}
 	return false
+}
+
+// TestDeletingPlan measures the read of the roots of the branches being
+// deleted, deleting_branches. With a directory of the chain marked, a
+// branch of hundreds of directories, the read returns the one root,
+// reaching the candidates through the partial index
+// blobfs_ix_directory_deleting and each candidate's parent through
+// blobfs_pk_directory as an index condition, within one buffer per
+// deleting directory plus the index's pages and a fixed allowance for the
+// index roots; the regressions are a pass over the whole table and a join
+// that reads the table once per candidate.
+func TestDeletingPlan(t *testing.T) {
+	e := openCost(t, stepSizes)
+	if _, err := e.db.Transact(e.ctx, func(tx *sqlate.Tx) (data.Marked, error) {
+		return e.store.Directories.MarkDeleting(e.ctx, tx, e.tree.Chain[2].ID)
+	}); err != nil {
+		t.Fatalf("MarkDeleting: %v", err)
+	}
+	if _, err := e.db.ExecContext(e.ctx, "ANALYZE blobfs_directory"); err != nil {
+		t.Fatalf("ANALYZE: %v", err)
+	}
+	c := one(t, e.db, func(sess sqlate.Session) error {
+		roots, err := e.store.Directories.Deleting(e.ctx, sess, 10)
+		if err == nil && (len(roots) != 1 || roots[0].ID != e.tree.Chain[2].ID) {
+			t.Fatalf("Deleting = %+v, want the marked directory alone", roots)
+		}
+		return err
+	})
+	p := e.ex.Explain(e.ctx, t, c.sql, c.args...)
+	rows := dbtest.Int(e.ctx, t, e.db, "SELECT COUNT(*) FROM blobfs_directory")
+	deleting := dbtest.Int(e.ctx, t, e.db, "SELECT COUNT(*) FROM blobfs_directory WHERE status = 'deleting'")
+	index := dbtest.RelationPages(e.ctx, t, e.db, "blobfs_ix_directory_deleting")
+	bound := deleting + index + 8
+	t.Logf("the roots' read costs %d buffers over %d deleting directories; the bound is %d, the table has %d rows", p.Buffers, deleting, bound, rows)
+	switch {
+	case !p.Has("blobfs_ix_directory_deleting"):
+		t.Errorf("the roots' read does not reach the candidates through the partial index:\n%s", p.Text)
+	case !p.Has("Index Scan using blobfs_pk_directory on blobfs_directory p"), !indexCondHas(p, "id = d.parent_id"):
+		t.Errorf("the roots' read does not read each parent through the primary key:\n%s", p.Text)
+	case p.Buffers > bound:
+		t.Errorf("the roots' read reads %d buffers, more than %d:\n%s", p.Buffers, bound, p.Text)
+	}
 }

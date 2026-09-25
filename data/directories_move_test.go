@@ -251,3 +251,38 @@ func TestMarkDeleting(t *testing.T) {
 		t.Errorf("MarkDeleting of a marked branch = %+v, %v, want no directory and the one straggling file", marked, err)
 	}
 }
+
+// TestDeleting proves the read of the branches being deleted: one query
+// of the deleting directories under an active parent, in id order, paged
+// from the start to the limit; no rows is no error; and a limit below 1
+// is refused before any SQL.
+func TestDeleting(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, fallback,
+		sqltest.Response{Columns: directoryColumns, Rows: append(
+			directoryIn("A", blobfs.RootID, "a", blobfs.DirectoryStatusDeleting, 2).Rows,
+			directoryIn("B", "P", "b", blobfs.DirectoryStatusDeleting, 3).Rows...)},
+		noDirectory(),
+	)
+	roots, err := s.Directories.Deleting(ctx, db, 10)
+	if err != nil || len(roots) != 2 || roots[0].ID != "A" || roots[1].ID != "B" || roots[1].Status != blobfs.DirectoryStatusDeleting {
+		t.Fatalf("Deleting = %+v, %v, want A and B, deleting", roots, err)
+	}
+	none, err := s.Directories.Deleting(ctx, db, 1)
+	if err != nil || len(none) != 0 {
+		t.Errorf("Deleting with no branch being deleted = %+v, %v, want none", none, err)
+	}
+	calls := queries(rec)
+	wantWhere := "JOIN blobfs_directory p ON p.id = d.parent_id\nWHERE d.status = 'deleting' AND p.status = 'active'\nORDER BY d.id\n OFFSET $1 ROWS FETCH NEXT $2 ROWS ONLY"
+	if len(calls) != 2 || !strings.HasSuffix(calls[0].SQL, wantWhere) || !slices.Equal(calls[0].Args, []any{0, 10}) || !slices.Equal(calls[1].Args, []any{0, 1}) {
+		t.Errorf("Deleting ran %v, want the roots' read %q from offset 0 to each limit", calls, wantWhere)
+	}
+	for _, limit := range []int{0, -1} {
+		if _, err := s.Directories.Deleting(ctx, db, limit); err == nil {
+			t.Errorf("Deleting(%d) = nil, want a refusal", limit)
+		}
+	}
+	if n := len(rec.Calls()); n != 2 {
+		t.Errorf("the refused limits ran SQL: %d calls", n)
+	}
+}
