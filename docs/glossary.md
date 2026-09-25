@@ -143,6 +143,7 @@ full.
   table. blobfs's is `blobfs`, recorded in `blobfs_schema_version`, and a consumer declares it
   below its own.
 - **Public schema**: the tables, columns, constraint names, referential actions, and migration
-  set, all of which change only in a major release.
+  set, all of which change only in a major release from v1.0, and before it only in a minor
+  release whose changelog marks the change breaking.
 - **Constraint name**: a name of the form `blobfs_<kind>_<table>_<detail>`, which a violation
   carries to the consumer.

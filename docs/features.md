@@ -500,8 +500,9 @@ and returns what the session mapped.
 ## The schema
 
 The tables, their columns, the constraint and index names, the referential actions, and the
-migration set are public API under semantic versioning: a change to any of them is a major
-release. The PostgreSQL form ships as the `postgres` sub-module's migration set; a consumer on
+migration set are public API under semantic versioning: from v1.0, a change to any of them is a
+major release, and before v1.0 it is a minor release whose changelog marks it breaking. The
+PostgreSQL form ships as the `postgres` sub-module's migration set; a consumer on
 another migration tool authors the same DDL from this section.
 
 ### `blobfs_directory`

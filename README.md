@@ -77,9 +77,10 @@ Four conventions the library keeps are stricter than a reader might expect:
 - The base module depends on `sqlate` and `golang.org/x/text` and nothing else: no driver, no
   dialect module, no object store. An engine's driver and dialect enter only through its
   sub-module, and an object store only through the consumer's own adapter.
-- The schema is public API under semantic versioning: the tables, columns, constraint names,
-  referential actions, and migration set change only in a major release, and a released
-  migration never changes.
+- The schema is public API under semantic versioning: from v1.0, the tables, columns,
+  constraint names, referential actions, and migration set change only in a major release.
+  Before v1.0, a minor release may change them, and its changelog marks the change breaking. A
+  released migration never changes.
 - The library imports no object store. It reaches the consumer's through two one-method
   interfaces the consumer implements: every write asks whether the store accepts a key, and
   only a sweep, which the consumer runs, deletes an object. The protocols' own steps never
