@@ -70,28 +70,27 @@ import (
 // serialize or form a cycle as Serializes says, with IsWithin and Path
 // terminating on the cycle and a Move repairing it, and which serializable
 // isolation refuses on every variant); Listing (both listings against a
-// plain query, by default, which hides deleting rows, and with
-// IncludeDeleting, the page boundaries, the counted total's rules for
-// empty and continued pages, the total under concurrent inserts, and the
+// plain query, with deleting rows hidden by default and shown with
+// IncludeDeleting, the page boundaries, the counted total's rules for empty
+// and continued pages, the total under concurrent inserts, and the
 // refusals); Keyset (every cursorable sort walked to the end against the
-// baseline and an offset walk, without and then with a sort index); and
-// Branches (MarkDeleting's counts over a three-level branch against the
-// baseline, the marked rows read back deleting, the root and a missing
-// directory refused, a repeated mark converging and reaching stragglers,
-// every create, ensure, and move a deleting directory refuses, with the
-// same refusals as the baseline, a marked branch hidden from the listings
-// and shown by IncludeDeleting, the listing of a deleting directory
-// refused, a cursor issued before a mark continuing without the marked
-// rows, and Deleting's roots against a plain query); and Sweeps
-// (Store.Sweep draining the branches the earlier groups left, then, on
-// both stores, nothing to do, a full sweep of a three-level branch with
-// its hook, a crash between an object's delete and its row's purge
-// finished by the next pass, stragglers, the batch bound's More, a hook
-// that aborts a removal, a refused branch that holds back none behind
-// it, and the stale reclaim's age over abandoned writes and stopped
-// deletes). Branches runs after the other groups because the branches it
-// marks stay in the tree, and Deleting reads them all; Sweeps runs last
-// because its first pass removes them.
+// baseline and an offset walk, without and then with a sort index); Branches
+// (MarkDeleting's counts over a three-level branch against the baseline, the
+// marked rows read back deleting, the root and a missing directory refused,
+// a repeated mark converging and reaching stragglers, every create, ensure,
+// and move a deleting directory refuses, with the same refusals as the
+// baseline, a marked branch hidden from the listings and shown by
+// IncludeDeleting, the listing of a deleting directory refused, a cursor
+// issued before a mark continuing without the marked rows, and Deleting's
+// roots against a plain query); and Sweeps (Store.Sweep draining the
+// branches the earlier groups left, then, on both stores, nothing to do, a
+// full sweep of a three-level branch with its hook, a crash between an
+// object's delete and its row's purge finished by the next pass, stragglers,
+// the batch bound's More, a hook that aborts a removal, a refused branch
+// that holds back none behind it, and the stale reclaim's age over abandoned
+// writes and stopped deletes). Branches runs after the other groups because
+// the branches it marks stay in the tree, and Deleting reads them all;
+// Sweeps runs last because its first pass removes them.
 func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, engine data.Engine) {
 	t.Helper()
 	dialect := db.Dialect()

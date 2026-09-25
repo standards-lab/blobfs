@@ -191,10 +191,10 @@ func (s *suite) renameDirectory(t *testing.T) {
 
 // moveDirectoryRefusals checks the move's refusals against the baseline,
 // each leaving the row unchanged: a name held under the new parent is
-// ErrNameTaken under the unique constraint, while a file of that name is
-// no conflict; a missing parent is ErrNotFound from the read of the parent
-// the update's predicate refused; a missing directory is ErrNotFound; a stale version is
-// ErrVersionMismatch; and a refused name is a NameError.
+// ErrNameTaken under the unique constraint, while a file of that name is no
+// conflict; a missing parent is ErrNotFound from the read of the parent the
+// update's predicate refused; a missing directory is ErrNotFound; a stale
+// version is ErrVersionMismatch; and a refused name is a NameError.
 func (s *suite) moveDirectoryRefusals(t *testing.T) {
 	p := s.mkdir(t, "taken-"+t.Name())
 	s.mkdirUnder(t, p.ID, "held")

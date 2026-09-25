@@ -70,11 +70,11 @@
 //
 // The directory_status migration adds a directory's status, active or
 // deleting, under the check blobfs_cc_directory_status, and leaves every
-// existing row active. It adds two partial indexes for the sweeper's reads,
-// each over the few rows its predicate names, never the table:
+// existing row active. It adds two partial indexes for the sweep's reads,
+// each over the few rows its predicate names, never the table.
 // blobfs_ix_directory_deleting holds the deleting directories, which the
-// read of the branches being deleted scans, and blobfs_ix_file_stale holds
-// the pending and deleting files by (updated_at, id), which the read of the
+// read of the branches being deleted scans. blobfs_ix_file_stale holds the
+// pending and deleting files by (updated_at, id), which the read of the
 // stale rows scans oldest first without a sort. The engine's path
 // resolution returns the status with the rest of the directory's columns.
 //

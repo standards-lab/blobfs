@@ -106,13 +106,14 @@ func (s *suite) moveFile(t *testing.T) {
 }
 
 // moveFileRefusals checks the file move's refusals against the baseline,
-// each leaving the row unchanged: a name held in the target by a row of
-// any status, a deleting one included, is ErrNameTaken under the unique
+// each leaving the row unchanged: a name held in the target by a row of any
+// status, a deleting one included, is ErrNameTaken under the unique
 // constraint; a missing directory is ErrNotFound from the read of the
-// directory the update's predicate refused; a stale version is ErrVersionMismatch; a deleting row is ErrDeleting, at
-// its own version and at the version the mover read before a concurrent
-// Delete advanced it, and never a version mismatch; a missing file is
-// ErrNotFound; and a refused name is a NameError.
+// directory the update's predicate refused; a stale version is
+// ErrVersionMismatch; a deleting row is ErrDeleting, at its own version and
+// at the version the mover read before a concurrent Delete advanced it, and
+// never a version mismatch; a missing file is ErrNotFound; and a refused
+// name is a NameError.
 func (s *suite) moveFileRefusals(t *testing.T) {
 	src := s.mkdir(t, "refuse-src-"+t.Name())
 	dst := s.mkdir(t, "refuse-dst-"+t.Name())

@@ -65,10 +65,9 @@ func TestSweepRefusesBeforeSQL(t *testing.T) {
 }
 
 // TestSweepNothingToDo proves a pass with no branch being deleted is the
-// roots' read alone and a zero result; with StaleOlderThan it is that
-// read and the read of the stale rows, pending and deleting, oldest
-// first, before an instant
-// the age before now, from offset 0 to the batch.
+// roots' read alone and a zero result; with StaleOlderThan it is that read
+// and the read of the stale rows, pending and deleting, oldest first, before
+// an instant the age before now, from offset 0 to the batch.
 func TestSweepNothingToDo(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, noDirectory())

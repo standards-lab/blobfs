@@ -4,10 +4,10 @@
 -- every directory beneath it deleting, advances each one's version, and
 -- stamps updated_at. One recursive walk starts at the directory and follows
 -- parent_id downward, so its cost is the size of the branch and never the
--- size of the tree; the walk descends through directories already deleting,
--- so a mark repeated after a straggler's create reaches it, and the status
--- predicate leaves a row already deleting as it is, so a repeated mark
--- advances no version twice. The anchor's parent_id predicate keeps the
+-- size of the tree. The walk descends through directories already deleting,
+-- so a mark repeated after a straggler's create reaches the straggler. The
+-- status predicate leaves a row already deleting as it is, so a repeated
+-- mark advances no version twice. The anchor's parent_id predicate keeps the
 -- statement from ever marking the root, which Go refuses before this runs.
 -- The affected count is the number of directories this mark moved to
 -- deleting; none means the directory does not exist or its branch is

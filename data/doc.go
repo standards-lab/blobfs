@@ -49,10 +49,11 @@
 // first step: it reports whether it created the row, resumed a pending one
 // an earlier write left, or found the name present. There is no failed
 // status: a stop leaves the row pending for a retry, and an abandoned write
-// is deleted like any file, or reclaimed by a sweep. The two-phase delete is Delete, which marks the
-// row deleting and returns it with its key, and returns a row already
-// deleting as it is; then the object delete; then Purge, which removes the
-// row, succeeds on a row already gone, and refuses one that is not deleting.
+// is deleted like any file, or reclaimed by a sweep. The two-phase delete is
+// Delete, which marks the row deleting and returns it with its key, and
+// returns a row already deleting as it is; then the object delete; then
+// Purge, which removes the row, succeeds on a row already gone, and refuses
+// one that is not deleting.
 // Every other mutation refuses a deleting row, and a deleting row keeps its
 // name until it is purged. Hold is the library's half of the
 // reference-then-delete rule: a consumer holds a file's row in the
@@ -60,8 +61,8 @@
 // same row lock, waits for that transaction. Find and FindByName read a file
 // whatever its status, and Move moves or renames one, guarded by version,
 // without touching its key. AtVersion guards the calls that act on a row
-// the caller read and take no version argument, Hold, Delete,
-// Directories.Delete, and MarkDeleting, so a row that moved on is
+// the caller read and take no version argument: Hold, Delete,
+// Directories.Delete, and MarkDeleting. A row that moved on is then
 // query.ErrVersionMismatch.
 //
 // Each handle lists one directory's contents, anchored on its id: List reads
@@ -89,17 +90,17 @@
 //
 // Store.Sweep runs one bounded pass that finishes the deletes callers began
 // and did not complete. For each branch root it marks the branch again,
-// which reaches a straggler a create that raced the first mark left
-// active, then walks the branch through the listings with IncludeDeleting:
-// it deletes each file's object through the consumer's ObjectDeleter,
-// purges the file's row, and removes each directory once it is empty,
-// with OnRemoveDirectory's function run in the same transaction for the
-// consumer's own rows. With StaleOlderThan it also reclaims the pending and
-// deleting file rows a stopped protocol left, older than the age. Batch
-// bounds the records a pass handles, and SweepResult.More reports work
-// remaining. The pass keeps no state and every step is idempotent, so a
-// stopped pass is finished by the next; a refusal stops the branch or row
-// it meets, not the pass.
+// which reaches any straggler, a row a create that raced the first mark
+// left active. It then walks the branch through the listings with
+// IncludeDeleting: it deletes each file's object through the consumer's
+// ObjectDeleter, purges the file's row, and removes each directory once it
+// is empty, running OnRemoveDirectory's function in the same transaction
+// for the consumer's own rows. With StaleOlderThan it also reclaims the
+// pending and deleting file rows a stopped protocol left, older than the
+// age. Batch bounds the records a pass handles, and SweepResult.More
+// reports work remaining. The pass keeps no state and every step is
+// idempotent, so the next pass finishes a stopped one. A refusal stops the
+// branch or row it meets, not the pass.
 //
 // Three operations are variation points, where an engine may do better than
 // standard SQL: the tree lock that serializes directory moves, path
@@ -125,14 +126,14 @@
 // query.ErrVersionMismatch, with the expected and current versions in the
 // text; a step a deleting row refuses, or a deleting directory it reaches,
 // is blobfs.ErrDeleting, whatever version the caller holds, and a status
-// change the transition table
-// refuses is a blobfs.TransitionError. A violation of one of blobfs's own
-// constraints becomes blobfs.ErrNameTaken, blobfs.ErrIDTaken,
-// blobfs.ErrNotFound, blobfs.ErrRootDirectory, or, on a directory delete,
-// blobfs.ErrNotEmpty, carried by a blobfs.ViolationError. A violation of a
-// constraint blobfs does not own returns unclassified on a write, wrapped
-// with the operation's context. On a delete, a foreign key blobfs does not
-// own is a consumer's row that references the one being removed, which the
-// package reports as blobfs.ErrReferenced by the violation's class, with the
-// constraint's name reachable for the consumer to match.
+// change the transition table refuses is a blobfs.TransitionError. A
+// violation of one of blobfs's own constraints becomes blobfs.ErrNameTaken,
+// blobfs.ErrIDTaken, blobfs.ErrNotFound, blobfs.ErrRootDirectory, or, on a
+// directory delete, blobfs.ErrNotEmpty, carried by a blobfs.ViolationError.
+// A violation of a constraint blobfs does not own returns unclassified on a
+// write, wrapped with the operation's context. On a delete, a foreign key
+// blobfs does not own is a consumer's row that references the one being
+// removed, which the package reports as blobfs.ErrReferenced by the
+// violation's class, with the constraint's name reachable for the consumer
+// to match.
 package data

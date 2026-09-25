@@ -173,11 +173,11 @@ func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID,
 // insert runs create_directory under id and returns the row as the
 // database holds it. The name is normalized and validated already. A
 // constraint violation is classified through the write mapping, and an
-// insert that selected no row from its parent by reading the parent, and
-// either is returned without context, so each caller adds its own. The
-// read of an insert that selected no row finds nothing, or finds a row
-// another insert left under a caller-supplied id; either way nothing was
-// inserted, and the parent says why.
+// insert that selected no row from its parent by a read of the parent;
+// either refusal is returned without context, so each caller adds its own.
+// The returning command's read of an insert that selected no row finds
+// nothing, or finds a row another insert left under a caller-supplied id;
+// either way nothing was inserted, and the parent says why.
 func (d *Directories) insert(ctx context.Context, sess sqlate.Session, id, parentID, name string) (blobfs.Directory, error) {
 	dir, changed, err := d.create.One(ctx, sess, query.Args{"id": id, "parent_id": parentID, "name": name})
 	switch {
@@ -196,7 +196,8 @@ func (d *Directories) insert(ctx context.Context, sess sqlate.Session, id, paren
 // removes a row without a parent. A directory that still has child
 // directories or files is blobfs.ErrNotEmpty, reported by the foreign keys
 // blobfs_fk_directory_parent and blobfs_fk_file_directory, since there is no
-// cascade; a consumer removes the contents first, deepest first. A
+// cascade; a consumer that wants a directory gone with everything in it
+// marks its branch with MarkDeleting and lets Store.Sweep remove it. A
 // consumer's own foreign key into blobfs_directory refuses the removal as
 // blobfs.ErrReferenced, with the sqlate.ConstraintError reachable. A
 // directory that does not exist is blobfs.ErrNotFound. Delete runs one
@@ -234,32 +235,33 @@ func (d *Directories) Delete(ctx context.Context, sess sqlate.Session, id string
 	return fmt.Errorf("data: delete directory %s: %w", id, versionMismatch(o.version, dir.Version))
 }
 
-// Marked is what Directories.MarkDeleting moved to deleting: the number of
-// directories, the one named and those beneath it, and the number of files
+// Marked counts the rows Directories.MarkDeleting moved to deleting:
+// Directories the directory named and those beneath it, and Files the files
 // in them. A row that was deleting already is not counted, so a repeated
-// mark reports only what it reached anew, and none when nothing was.
+// mark reports only what it reached anew, and zero when it reached nothing.
 type Marked struct {
 	Directories int64
 	Files       int64
 }
 
 // MarkDeleting is the first step of a branch's delete: it marks the
-// directory with id, every directory beneath it, and every file in them
-// blobfs.DirectoryStatusDeleting and blobfs.StatusDeleting, advancing the
-// version of each row it changes, and reports how many of each it changed.
+// directory with id and every directory beneath it
+// blobfs.DirectoryStatusDeleting, and every file in them
+// blobfs.StatusDeleting, advancing the version of each row it changes, and
+// reports how many of each it changed.
 // From then on the branch is closed: a create, an ensure, or a move under a
 // deleting directory is blobfs.ErrDeleting, and so is a move of a directory
 // or file out of one. A mark is never undone; the branch's rows are removed
 // by the file delete's later steps and by Delete, deepest first.
 //
-// It runs in tx under the tree lock, LockTree, so the branch the two
-// statements walk is not reshaped by a move between them: one recursive
-// update marks the directories and a second one, over the same walk, marks
-// the files. The lock does not stop a create that read the parent as
-// active before the mark committed; such a straggler lands in the branch
-// active, and a repeated mark, which walks through rows already deleting,
-// reaches it. The file update takes each file's row lock, so it waits on a
-// Files.Hold another transaction took, as Files.Delete does.
+// It runs two statements in tx under the tree lock, LockTree: one recursive
+// update marks the directories, and a second, over the same walk, marks the
+// files. The lock keeps a move from reshaping the branch between them. It
+// does not stop a create that read the parent as active before the mark
+// committed: such a straggler lands in the branch active, and a repeated
+// mark, which walks through rows already deleting, reaches it. The file
+// update takes each file's row lock, so it waits on a Files.Hold another
+// transaction took, as Files.Delete does.
 //
 // The root is blobfs.ErrRootDirectory, refused before any SQL, and neither
 // statement ever marks a row without a parent. A directory that does not
@@ -311,15 +313,15 @@ func (d *Directories) MarkDeleting(ctx context.Context, tx *sqlate.Tx, id string
 }
 
 // Deleting returns at most limit of the roots of the branches being
-// deleted, in id order: each directory that is deleting under a parent
-// that is active, the directory a MarkDeleting named, and none beneath it,
-// since a mark reaches every directory in its branch. It is how a sweeper
-// finds the branches whose delete stopped before their rows were removed;
-// the rest of each branch is reached from its root, through the listings
-// with IncludeDeleting. No branch being deleted returns no rows and no
-// error. A limit below 1 is refused before any SQL. Its cost is the
-// deleting rows where the engine indexes them, as the postgres migrations
-// do, and the directory table where it does not.
+// deleted, in id order. A root is a deleting directory under an active
+// parent, the directory a MarkDeleting named; no directory beneath it is
+// returned, since a mark reaches every directory in its branch. Deleting is
+// how a sweep finds the branches whose delete stopped before their rows
+// were removed; the rest of each branch is reached from its root through
+// the listings with IncludeDeleting. When no branch is being deleted it
+// returns no rows and no error. A limit below 1 is refused before any SQL.
+// Its cost is the deleting rows where the engine indexes them, as the
+// postgres migrations do, and the directory table where it does not.
 func (d *Directories) Deleting(ctx context.Context, sess sqlate.Session, limit int) ([]blobfs.Directory, error) {
 	if limit < 1 {
 		return nil, fmt.Errorf("data: deleting directories: the limit %d is below 1", limit)

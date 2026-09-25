@@ -75,8 +75,8 @@ func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...Hold
 // file that does not exist is blobfs.ErrNotFound, whether the id never
 // existed or a concurrent delete purged it first. With AtVersion, the row
 // moves to deleting only at that version, in the same statement; a row at
-// another version is query.ErrVersionMismatch and is left as it is, while a
-// row already deleting is returned as a retry is, whatever the version.
+// another version is query.ErrVersionMismatch and is left as it is, and a
+// row already deleting is returned, as for a retry, whatever the version.
 //
 // It takes a *sqlate.Tx because it is the delete's half of the
 // reference-then-delete rule: its update takes the row's lock and waits on a

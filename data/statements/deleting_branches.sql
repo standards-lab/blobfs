@@ -7,7 +7,7 @@
 -- never listed. The rows come in id order, one page of at most fetch rows
 -- past offset through the query library's paging pattern, which an engine
 -- without the standard form overrides; the caller binds offset 0, so a
--- sweeper reads the first roots and, having removed them, the next.
+-- sweep reads the first roots and, having removed them, the next.
 --
 -- The status predicate is an engine's to index: the postgres migrations
 -- keep a partial index of the deleting directories, so the statement reads

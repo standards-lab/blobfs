@@ -1,6 +1,6 @@
 // Package blobfs is the root package of blobfs: the model of a SQL-backed
 // tree of directories and file metadata over an object store the library
-// imports nothing of and reaches only through interfaces the consumer
+// does not import and reaches only through interfaces the consumer
 // implements.
 //
 // The package is Go only. It holds the entity types package data scans

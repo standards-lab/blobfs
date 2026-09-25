@@ -67,9 +67,8 @@ func (d *Directories) List(ctx context.Context, sess sqlate.Session, parentID st
 // cannot be continued are refused with a query.CursorError before any
 // SQL. A cursor is a position in the name order, not a bookmark on the
 // parent: the library does not record parentID in it. Deleting
-// directories are hidden and a deleting parent refused as List hides and
-// refuses them, so a directory marked after the cursor was issued is not
-// on the pages past it.
+// directories are hidden and a deleting parent is refused, as in List, so a
+// directory marked after the cursor was issued is not on the pages past it.
 func (d *Directories) Continue(ctx context.Context, sess sqlate.Session, parentID string, req query.Directives, after query.Cursor, size int, opts ...ListOption) (query.Collection[blobfs.Directory], error) {
 	req, include := listing(req, string(blobfs.DirectoryStatusDeleting), opts)
 	c, err := d.list.Continue(ctx, sess, req, after, size, query.With("parent_id", parentID))
@@ -84,9 +83,9 @@ func (d *Directories) Continue(ctx context.Context, sess sqlate.Session, parentI
 
 // listing resolves a listing's options over req: the directives the
 // listing runs, and whether IncludeDeleting was given. Without it the
-// directives carry, after the caller's filters, one that hides the rows
-// whose status is deleting, the listing's own spelling of it; the
-// caller's slice is never appended to in place.
+// directives carry one filter after the caller's, status not deleting,
+// where deleting is the listing's own spelling of the status; the caller's
+// slice is never appended to in place.
 func listing(req query.Directives, deleting string, opts []ListOption) (query.Directives, bool) {
 	var o listOptions
 	for _, opt := range opts {

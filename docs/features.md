@@ -57,9 +57,9 @@ always, and `ErrDeleting` as well when `From` is `deleting`.
 `DirectoryStatus` is a directory row's status, a string type with two values,
 `DirectoryStatusActive` and `DirectoryStatusDeleting`, which binds and scans as text as `Status`
 does. Every directory is active until `Directories.MarkDeleting` marks its branch, and no change
-leaves `deleting`, so the type has no transition table. `Valid` reports whether a value is one of
-the two, and `Mutable` whether a directory in that status accepts a create beneath it and a move
-into it, out of it, or of itself, which only `deleting` does not.
+leaves `deleting`, so the type has no transition table. `Valid` reports whether a value is one
+of the two. `Mutable` reports whether a directory in that status accepts a create beneath it and
+a move into it, out of it, or of itself; only a deleting directory refuses them.
 
 ### Keys
 
@@ -117,9 +117,10 @@ The names of the constraints the persistence package classifies are constants:
 | `ConstraintForeignKeyFileDirectory` | `blobfs_fk_file_directory` | `ErrNotFound` on a write, `ErrNotEmpty` on a delete |
 
 A create or a move whose parent or directory does not exist is refused before the foreign key is
-reached: the statement selects nothing from a missing or deleting directory, and the store reads the
-directory to report a plain `ErrNotFound` or `ErrDeleting`. The foreign key reports a write only
-when the directory is removed between that read and the write, as a `ViolationError`.
+reached: the statement selects nothing from a missing or deleting directory, and the store reads
+the directory to report a plain `ErrNotFound` or `ErrDeleting`. The foreign key refuses a write,
+as a `ViolationError`, only when the directory is removed between the statement's read of it and
+the write.
 
 ## data: the persistence package
 
@@ -160,10 +161,10 @@ correct only inside a transaction take a `*sqlate.Tx`: `Directories.Move`,
 `Directories.LockTree`, `Directories.MarkDeleting`, `Files.Hold`, and `Files.Delete`. `Sweep`
 takes the `*sqlate.DB` itself, since it opens transactions of its own.
 
-`AtVersion(v)` is the one option of the calls that act on a row the caller read, `Files.Hold`,
-`Files.Delete`, `Directories.Delete`, and `Directories.MarkDeleting`: the call acts only while the
-row is at version `v`, and a row at another version is `query.ErrVersionMismatch`. A row already
-deleting is `Files.Hold`'s `ErrDeleting`, and the retry of `Files.Delete` and
+`AtVersion(v)` is the one option of the calls that act on a row the caller read: `Files.Hold`,
+`Files.Delete`, `Directories.Delete`, and `Directories.MarkDeleting`. The call acts only while
+the row is at version `v`, and a row at another version is `query.ErrVersionMismatch`. A row
+already deleting is `ErrDeleting` to `Files.Hold`, and a retry to `Files.Delete` and
 `Directories.MarkDeleting`, which converges whatever the version. Its type is `VersionOption`;
 `HoldOption` and `DeleteOption` are aliases of it.
 
@@ -237,12 +238,13 @@ two opposing moves leave on a variant that does not serialize. On a loop, `IsWit
 directory within every directory on its chain and none off it, and `Path` reports `ErrCycle`. A
 `Move` of a directory on the loop back under the root passes the check and repairs the tree.
 
-`Delete` of a directory with children or files is `ErrNotEmpty`, deleting rows included; there is no
-cascade. A consumer that wants a directory gone with everything in it marks its branch and sweeps it
-(see [deleting a branch](#deleting-a-branch)). A consumer's own foreign key into `blobfs_directory`
-refuses the delete as `ErrReferenced`, and a consumer that keeps a row about the directory removes
-it in the same transaction as the directory. With `AtVersion`, the directory is removed only at that
-version, in the same statement, and a read tells a directory at another version from a missing one.
+`Delete` of a directory with children or files is `ErrNotEmpty`, deleting rows included; there
+is no cascade. A consumer that wants a directory gone with everything in it marks its branch and
+sweeps it (see [deleting a branch](#deleting-a-branch)). A consumer's own foreign key into
+`blobfs_directory` refuses the delete as `ErrReferenced`, and a consumer that keeps a row about
+the directory removes it in the same transaction as the directory. With `AtVersion`, the
+directory is removed only at that version, in the same statement, and a read tells a directory
+at another version from a missing one.
 
 On a store whose `Serializes` reports false, see [moves](concepts.md#moves) for the three ways
 to make directory moves safe.
@@ -271,9 +273,9 @@ to make directory moves safe.
 | `WritePresent` | an available or deleting row, returned unchanged | the caller's decision: a put refuses the name, a copy skips or replaces it, a seeder skips it |
 
 The lookup-first behavior inside and outside a transaction is `Directories.Ensure`'s. A found
-row keeps its own id and key whatever `WithID` supplied. In a deleting directory, a file the
-mark reached is found `WritePresent` and deleting, and a name no row holds is `Create`'s
-`ErrDeleting`.
+row keeps its own id and key whatever `WithID` supplied. In a deleting directory, `Ensure`
+reports a file the mark reached as `WritePresent`, its row deleting, and refuses a name no row
+holds with `Create`'s `ErrDeleting`.
 
 A pending row may be moved: its key is fixed at the insert, and a retry of its write finds it
 by its new name. `Complete`, `Move`, and `Delete` return the row in the single-statement form
@@ -294,11 +296,11 @@ must take no new reference. `AtVersion(v)` makes the hold match only at version 
 that acts on a listing without reading the row again in its transaction.
 
 `Delete` waits on a `Hold` another transaction took, so once it returns, every reference a hold
-admitted has committed; the consumer checks for its own references in `tx`, after the call. `Delete`
-with `AtVersion` moves the row only at that version; a row already deleting is returned as a retry
-is, whatever the version. `Purge` refused by a consumer's foreign key leaves the row deleting, with
-the `sqlate.ConstraintError` reachable so the consumer matches the constraint's name against its
-own.
+admitted has committed; the consumer checks for its own references in `tx`, after the call.
+`Delete` with `AtVersion` moves the row only at that version; a row already deleting is
+returned, as for a retry, whatever the version. `Purge` refused by a consumer's foreign key
+leaves the row deleting, with the `sqlate.ConstraintError` reachable so the consumer matches the
+constraint's name against its own.
 
 ### Listings
 
@@ -314,12 +316,13 @@ The key of both is `name`; the object key is not a declared field. The listing o
 the depth-one directories. A directory that does not exist lists no rows and a total of zero.
 
 Both listings hide deleting rows: each appends a filter, `status` not `deleting`, after the
-caller's own, so neither the page nor the total holds a directory of a branch being deleted or a
-file whose delete began or whose branch was marked. A filter on the file listing's `status`
-narrows it to one stage of the write. The listing of a directory that is itself deleting is
-`ErrDeleting`, told by a read of the directory after the page. `IncludeDeleting()`, a
-`ListOption`, lists every status, so a filter on `status` reaches the delete's stage too, and
-lists a deleting directory without the read; it is how the work of a delete is found.
+caller's own, so neither the page nor the total holds a deleting row: a directory of a branch
+being deleted, or a file whose delete began or whose branch was marked. A filter on the file
+listing's `status` narrows it to one stage of the write. The listing of a directory that is
+itself deleting is `ErrDeleting`, told by a read of the directory after the page. With
+`IncludeDeleting()`, a `ListOption`, a listing shows every status, so a filter on `status`
+reaches the delete's stage too, and lists a deleting directory without the read. The option is
+how the work of a delete is found.
 
 - `List(ctx, sess, id, req, page, opts...)` reads page `page.Number` of `page.Size` rows, both
   at least 1.
@@ -361,18 +364,19 @@ Both return a `query.Collection[T]`: `Items`, `Total`, `More`, and `Next`.
 A branch is a directory with everything beneath it. [Concepts](concepts.md#deleting-a-branch)
 explains the two stages; this section states their rules.
 
-`MarkDeleting(ctx, tx, id, opts...)` runs under the tree lock, `LockTree`, in `tx`: one recursive
-update marks the directory and every directory beneath it `DirectoryStatusDeleting`, and a second
-over the same walk marks every file in them `StatusDeleting`. Each row it changes advances its
-version once and has its `updated_at` stamped; a row already deleting is left as it is. It returns
-`Marked`, `Directories` and `Files`, the rows this call moved to deleting, so a repeated mark
-reports only what it reached anew. The walk descends through directories already deleting, so a
-repeated mark reaches a straggler, an active row a create that read its parent before the first
-mark committed left in the branch. The file update takes each row's lock, so it waits on a `Hold`
-another transaction took. The root is `ErrRootDirectory` before any SQL, and a directory that does
-not exist is `ErrNotFound`. With `AtVersion`, the directory is read under the lock and marked only
-at that version; a directory already deleting is the mark's retry, whatever the version. The walk
-costs the size of the branch, never of the tree, and terminates on a loop in the tree.
+`MarkDeleting(ctx, tx, id, opts...)` runs in `tx` under the tree lock, `LockTree`. One recursive
+update marks the directory and every directory beneath it `DirectoryStatusDeleting`, and a
+second, over the same walk, marks every file in them `StatusDeleting`. Each row it changes
+advances its version once and has its `updated_at` stamped; a row already deleting is left as it
+is. It returns `Marked`, whose `Directories` and `Files` count the rows this call moved to
+deleting, so a repeated mark reports only what it reached anew. The walk descends through
+directories already deleting, so a repeated mark reaches a straggler: an active row left in the
+branch by a create that read its parent before the first mark committed. The file update takes
+each row's lock, so it waits on a `Hold` another transaction took. The root is
+`ErrRootDirectory` before any SQL, and a directory that does not exist is `ErrNotFound`. With
+`AtVersion`, the directory is read under the lock and marked only at that version; a directory
+already deleting is the mark's retry, whatever the version. The walk costs the size of the
+branch, never of the tree, and terminates on a loop in the tree.
 
 After the mark, a deleting directory refuses every operation that would add to the branch or take
 from it, with `ErrDeleting`, whatever version the caller holds:
@@ -388,8 +392,8 @@ from it, with `ErrDeleting`, whatever version the caller holds:
 `Find`, `FindByName`, `FindByPath`, and `Path` read a deleting directory as any other, and its
 `Status` says so. `Complete` and `Hold` of a marked file are refused as for any deleting file.
 
-`Deleting(ctx, sess, limit)` returns the roots of the branches being deleted: each directory that
-is deleting under a parent that is active, the directory a mark named, and none beneath it. The
+`Deleting(ctx, sess, limit)` returns the roots of the branches being deleted: each deleting
+directory under an active parent, which is the directory a mark named, and none beneath it. The
 rest of each branch is reached from its root through the listings with `IncludeDeleting`. It is
 the sweep's read, and a consumer's own tool can run it. The PostgreSQL migration indexes the
 deleting directories, so the read costs them and not the table.
@@ -397,23 +401,23 @@ deleting directories, so the read costs them and not the table.
 ### The sweep
 
 `Store.Sweep(ctx, db, objects, opts...)` runs one bounded pass that finishes the deletes callers
-began and did not complete, and returns a `SweepResult`. `db` is the `*sqlate.DB`, not a session:
-the pass reads and purges on the pool, deletes objects outside any transaction, so no row lock is
-held across a call to the store, and opens one transaction for each mark, each directory's
-removal, and each pending row's delete.
+began and did not complete, and returns a `SweepResult`. `db` is the `*sqlate.DB`, not a
+session. The pass reads and purges on the pool and deletes objects outside any transaction, so
+it holds no row lock across a call to the store, and it opens one transaction for each mark,
+each directory's removal, and each pending row's delete.
 
-`objects` is an `ObjectDeleter`, the consumer's store as the sweep calls it:
-`DeleteObject(ctx, key) error`. It must be idempotent, a missing object being success, since a pass
-may delete an object a stopped pass deleted already and a pending row's object may never have been
+`objects` is an `ObjectDeleter`, the consumer's store as the sweep calls it: `DeleteObject(ctx,
+key) error`. It must be idempotent, treating a missing object as success, since a pass may
+delete an object a stopped pass deleted already, and a pending row's object may never have been
 stored. An error leaves that file's row deleting for the next pass.
 
 For each branch root `Deleting` returns, in id order, the pass marks the branch again in a
-transaction of its own, then walks it depth first through the listings with `IncludeDeleting`: in
-each directory it deletes every file's object and then purges the file's row, then empties and
-removes each child directory the same way, then removes the directory itself. Each removal runs in
-a transaction of its own, guarded by the version the pass read the directory at. A row still
-active in the branch, a straggler that landed after this pass's mark, stops the branch's walk with
-`More` set, and so does a directory refused as `ErrNotEmpty` for the same reason.
+transaction of its own, then walks it depth first through the listings with `IncludeDeleting`.
+In each directory it deletes every file's object and purges the file's row, empties and removes
+each child directory the same way, and then removes the directory itself. Each removal runs in a
+transaction of its own, guarded by the version the pass read the directory at. A row still
+active in the branch, a straggler that landed after this pass's mark, stops the branch's walk
+with `More` set, and so does a directory refused as `ErrNotEmpty` for the same reason.
 
 | Option | Effect |
 |---|---|
@@ -421,22 +425,22 @@ active in the branch, a straggler that landed after this pass's mark, stops the 
 | `OnRemoveDirectory(fn)` | Runs `fn(ctx, tx, dir)` in the transaction that removes each directory, before the removal, with the directory as the pass read it. An error rolls the removal back and leaves the branch for the next pass; `fn` runs again on each attempt, with nothing of an aborted attempt left. |
 | `StaleOlderThan(age)` | Also reclaims, from the budget the branches leave, the oldest file rows that are pending or deleting and were last written more than `age` ago: a pending row is moved to deleting at the version the pass read, so a write completed meanwhile is left as it is, then its object is deleted and its row purged. An `age` that is not positive is refused before any SQL. |
 
-`SweepResult` counts what the pass did, each row once, by the step that purged it: `Files`, the
-files of branches, `Directories`, the directories removed, and `Stale`, the stale rows reclaimed.
-`More` reports that the pass stopped at its bound, or at a straggler, with work remaining; a
-caller runs passes while it is true. Nothing to do is a zero result and no error.
+`SweepResult` counts what the pass did, each row once, by the step that purged it: `Files`
+counts the files of branches, `Directories` the directories removed, and `Stale` the stale rows
+reclaimed. `More` reports that the pass stopped at its bound, or at a straggler, with work
+remaining; a caller runs passes while it is true. Nothing to do is a zero result and no error.
 
-A refusal stops the branch or the stale row it meets, not the pass: an object delete's error, the
-hook's, and a purge or removal a consumer's foreign key refuses as `ErrReferenced`. The pass goes on
-to the next, and returns every refusal joined and wrapped as `data: sweep: ...`, with the result
-counting what it did.
+A refusal stops the branch or the stale row it meets, not the pass. The refusals are an object
+delete's error, the hook's error, and a purge or removal a consumer's foreign key refuses as
+`ErrReferenced`. The pass goes on to the next branch or row and returns every refusal joined and
+wrapped as `data: sweep: ...`, with the result counting what it did.
 
 `StaleOlderThan`'s `age` must exceed the longest write the consumer lets run, counted from the
 write's first step: a write resumed through `Files.Ensure` keeps its row's `updated_at`, and a
-`Complete` of a reclaimed row is `ErrDeleting`, or `ErrNotFound` once the row is purged. The age is
-measured against the consumer's clock and `updated_at` against the database's, so their skew is
-part of the margin. A writer whose `Complete` is refused that way deletes the object it put; see
-[orphaned objects](concepts.md#stale-rows-and-orphaned-objects).
+`Complete` of a reclaimed row is `ErrDeleting`, or `ErrNotFound` once the row is purged. The age
+is measured against the consumer's clock and `updated_at` against the database's, so their skew
+is part of the margin. A writer whose `Complete` is refused that way deletes the object it put;
+see [orphaned objects](concepts.md#stale-rows-and-orphaned-objects).
 
 ### Variants and engines
 
@@ -524,9 +528,9 @@ another migration tool authors the same DDL from this section.
 | `blobfs_cc_directory_status` | check | `status IN ('active', 'deleting')` |
 | `blobfs_ix_directory_deleting` | partial index | `(id) WHERE status = 'deleting'`: the deleting directories alone, which `Deleting` reads |
 
-The migration seeds the root: id `00000000-0000-0000-0000-000000000000`, no parent, name `/`. The
-status column, its check, and its index arrive in the third migration, which leaves every existing
-row active.
+The migration seeds the root: id `00000000-0000-0000-0000-000000000000`, no parent, name `/`.
+The status column, its check, and its index are added by the third migration, which leaves every
+existing row active.
 
 ### `blobfs_file`
 
@@ -701,8 +705,8 @@ outside the store is standard SQL with the dialect's placeholders. The groups, i
 Verify, Directories, Paths, Files, Writes, Deletes, Holds, Moves, Listing, Keyset, Branches, and
 Sweeps. Branches checks the mark's counts, its convergence and stragglers, every refusal a
 deleting directory makes, the listings' hiding, and `Deleting`'s roots; it runs after the other
-groups because the branches it marks stay in the tree. Sweeps runs last, because its first pass
-removes them, and then checks a full sweep with its hook, a pass stopped between an object's
+groups because the branches it marks stay in the tree. Sweeps runs last because its first pass
+removes them; it then checks a full sweep with its hook, a pass stopped between an object's
 delete and its row's purge, stragglers, the batch bound, a hook that aborts a removal, a refused
 branch that holds back nothing behind it, and the stale reclaim's age.
 

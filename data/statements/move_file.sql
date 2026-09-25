@@ -10,14 +10,14 @@
 -- removed, and the row its read returns at the expected version tells that
 -- refusal from a version conflict. The directory predicates keep a deleting
 -- branch closed: the file's current directory and its new one must both be
--- active, so no file leaves a branch marked for removal or enters one, each
--- read through the primary key. The caller reads the two directories to
--- classify their refusal: a deleting one, or a new directory that does not
--- exist, which the predicate refuses before the foreign key
--- blobfs_fk_file_directory could. A name already held in the directory
--- fails the unique constraint blobfs_uq_file_directory_name. A file cannot
--- form a cycle, so no lock and no check precede it, and the session may be
--- the pool or a transaction.
+-- active, so no file leaves a branch marked for removal or enters one. Each
+-- directory is read through the primary key. The caller reads the two
+-- directories to classify their refusal: a deleting one, or a new directory
+-- that does not exist, which the predicate refuses before the foreign key
+-- blobfs_fk_file_directory could. A name already held in the directory fails
+-- the unique constraint blobfs_uq_file_directory_name. A file cannot form a
+-- cycle, so no lock and no check precede it, and the session may be the pool
+-- or a transaction.
 UPDATE blobfs_file
 SET directory_id = {{directory_id:uuid}},
     name = {{name}},

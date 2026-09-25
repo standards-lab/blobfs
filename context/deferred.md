@@ -28,13 +28,13 @@ policy a consumer may not want, or waits for a second consumer to show its shape
   need.
 - **An interleaved directory-and-file listing.** Trigger: a consumer that builds a folder browser.
 - **MySQL and MariaDB.** A second engine sub-module, with its DDL and native forms; its port notes
-  are the work list. Beyond them, two standard-tier statements update `blobfs_directory` and read
-  it in a subquery of the same statement, which MySQL refuses (error 1093):
-  `mark_directory_deleting` and `move_directory`. They are base statements, not variation points,
-  so an engine cannot replace them: a port rewrites them in the base module in a form both engines
-  accept, or makes them variation points first. Their companions `mark_directory_files_deleting`
-  and `move_file` update `blobfs_file` and read `blobfs_directory` in a subquery, which the rule
-  does not reach, since the table read is not the one updated. Trigger: the second SQL engine
+  are the work list. Two standard-tier statements need work beyond them:
+  `mark_directory_deleting` and `move_directory` update `blobfs_directory` and read it in a
+  subquery of the same statement, which MySQL refuses (error 1093). They are base statements, not
+  variation points, so an engine cannot replace them: a port rewrites them in the base module in a
+  form both engines accept, or makes them variation points first. Their companions
+  `mark_directory_files_deleting` and `move_file` are unaffected, since they update `blobfs_file`
+  and read `blobfs_directory` in the subquery. Trigger: the second SQL engine
   (`backlog.second-providers` in the workspace roadmap).
 
 ## Assumptions

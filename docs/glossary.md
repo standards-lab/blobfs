@@ -19,8 +19,9 @@ full.
   UUID, seeded by the schema.
 - **Branch**: a directory with every directory beneath it and every file in them: what a mark
   and a sweep delete together.
-- **Branch root**: the directory a mark named, a deleting directory under an active parent. The
-  roots are what `Directories.Deleting` returns; the rest of a branch is reached from its root.
+- **Branch root**: the directory a mark named: a deleting directory under an active parent.
+  `Directories.Deleting` returns the branch roots, and the rest of a branch is reached from its
+  root.
 - **Name space**: the names one parent holds for one kind of row. Directories and files have
   separate name spaces, so a directory and a file may share a name under one parent.
 - **Name**: a directory's or file's display name, normalized to Unicode NFC and validated before
@@ -60,12 +61,13 @@ full.
 - **Mark**: `Directories.MarkDeleting`, the first step of a branch's delete, which moves every
   directory and file in the branch to deleting and closes the branch: nothing is created in it,
   moved into it, or moved out of it.
-- **Straggler**: a row a create left active in a branch, having read its parent before the mark
-  committed. A repeated mark reaches it, and each pass of the sweep marks its branches again.
+- **Straggler**: an active row in a deleting branch, left by a create that read its parent before
+  the mark committed. A repeated mark reaches it, and each pass of the sweep marks its branches
+  again.
 - **Sweep**: `Store.Sweep`, one bounded, stateless pass that finishes the deletes callers began:
   it deletes the objects of each marked branch through the consumer's `data.ObjectDeleter`,
   purges the rows, removes the directories deepest first, and, when asked, reclaims stale rows.
-- **Stale row**: a file row a protocol left partway and older than the age the sweep is given: a
+- **Stale row**: a file row a protocol left partway, older than the age the sweep is given: a
   pending row whose write never completed, or a deleting row whose purge never ran.
 - **Orphaned object**: an object with no row, left by a put that landed after a sweep had
   deleted its row's object. The write's `Complete` is refused, which tells its writer to delete

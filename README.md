@@ -1,8 +1,8 @@
 # blobfs
 
 A virtual tree of directories and files in SQL over any object store: the metadata lives in the
-database, the bytes live in the store under opaque keys, and the library holds no store of its
-own: it reaches the consumer's only through interfaces the consumer implements.
+database, the bytes live in the store under opaque keys, and the library imports no object store
+and reaches the consumer's only through interfaces the consumer implements.
 
 `github.com/standards-lab/blobfs` is the base module: the root package `blobfs`, the persistence
 package `data`, and its conformance suite `data/datatest`, over `sqlate` and `golang.org/x/text`
@@ -23,9 +23,9 @@ leaves each key opaque: the file's id and its name at upload, never changed and 
 Because the rows and the objects live in two systems with no shared transaction, blobfs exposes
 each protocol that touches an object as steps: the two-phase write inserts a pending row before
 the put, the two-phase delete marks the row deleting before the object delete, and the consumer
-runs its own store's call between the steps. The library imports no object store and calls
-the consumer's only through two one-method interfaces, so it depends on none, and a consumer
-keeps its own store, its own lifecycle, and its own credentials.
+runs its own store's call between the steps. The library calls the consumer's store only through
+two one-method interfaces, so it depends on no object store, and a consumer keeps its own store,
+its own lifecycle, and its own credentials.
 
 ## Documentation
 
@@ -95,9 +95,9 @@ Four conventions the library keeps are stricter than a reader might expect:
   `ValidateName`, `KeyValidator`, the sentinel errors, `ViolationError`, and the constraint
   names.
 - `data` is the persistence package: `New` compiles the `Store`, whose `Directories` and `Files`
-  handles run the operations and listings, and whose `Sweep` finishes the deletes callers began,
-  a marked branch's and a stopped protocol's, calling the consumer's object delete. The package
-  also holds the `Variant` interface, the `Engine` type, and the published patterns.
+  handles run the operations and listings, and whose `Sweep` finishes the deletes of marked
+  branches and stopped protocols through the consumer's object delete. The package also holds
+  the `Variant` interface, the `Engine` type, and the published patterns.
 - `data/datatest` is the conformance suite, `Run`, which an engine or a consumer's own variant
   runs against a live database.
 - `postgres` (sub-module) is the PostgreSQL engine: `Engine`, whose variant takes an advisory

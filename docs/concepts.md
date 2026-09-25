@@ -28,9 +28,9 @@ frozen at upload and goes stale after a rename by design.
 
 blobfs imports no object store. It exposes the steps of each protocol that involves an object,
 and the consumer runs its own put or delete between them. Every write asks the store whether it
-accepts a key, through a one-method interface the consumer wires to its store's own rule. The one
-other call is the sweep's, which deletes objects through a second one-method interface when the
-consumer runs it (see [deleting a branch](#deleting-a-branch)).
+accepts a key, through a one-method interface the consumer wires to its store's own rule. The
+one other call is the sweep's, which deletes objects through a second one-method interface when
+the consumer runs it (see [deleting a branch](#deleting-a-branch)).
 
 ## Directories and files
 
@@ -88,14 +88,15 @@ A file is deleted in two steps around the object delete:
 3. `Files.Purge` removes the row.
 
 Every step is idempotent. `Delete` returns a row that is already deleting as it is, without
-advancing its version again. `Delete` with `data.AtVersion` moves the row only at the version the
-caller read, for a caller that acts on a listing without reading the row again; a row already
-deleting is the delete's retry, which converges whatever the version. `Purge` succeeds when the row
-is already gone, because a retry after a crash cannot tell its own earlier success from a row that
-never existed, and it refuses a row that is not deleting with `blobfs.ErrNotDeleting`, since that
-row's object may still be wanted. A stop at any point is resumed by running the steps again from the
-first. A deleting row is hidden from the listings, so a delete that stops and is never resumed
-leaves a row only a read by id or name, a listing with `data.IncludeDeleting`, or a sweep finds.
+advancing its version again. `Delete` with `data.AtVersion` moves the row only at the version
+the caller read, for a caller that acts on a listing without reading the row again; a row
+already deleting is the delete's retry, which converges whatever the version. `Purge` succeeds
+when the row is already gone, because a retry after a crash cannot tell its own earlier success
+from a row that never existed, and it refuses a row that is not deleting with
+`blobfs.ErrNotDeleting`, since that row's object may still be wanted. A stop at any point is
+resumed by running the steps again from the first. A deleting row is hidden from the listings,
+so a delete that stops and is never resumed leaves a row only a read by id or name, a listing
+with `data.IncludeDeleting`, or a sweep finds.
 
 A deleting row keeps its name until it is purged, so a write of the same name in the window is
 refused as taken. Every mutation other than the delete steps refuses a deleting row with
@@ -118,8 +119,8 @@ A file row's status is one of three, and the root package holds the table of all
 No change leaves `deleting` except the row's removal. A refused change is a
 `blobfs.TransitionError`.
 
-A directory row has a status of its own, `blobfs.DirectoryStatus`, with two values: `active`, which
-every directory is from its insert, and `deleting`, which only [the delete of a
+A directory row has a status of its own, `blobfs.DirectoryStatus`, with two values: `active`,
+which every directory is from its insert, and `deleting`, which only [the delete of a
 branch](#deleting-a-branch) sets and nothing undoes.
 
 ## Who calls each step
@@ -132,6 +133,8 @@ branch](#deleting-a-branch) sets and nothing undoes.
 | `Files.Delete` | the consumer, after its own reference check | a transaction |
 | the object delete | the consumer, through its object store | none |
 | `Files.Purge` | the consumer | the pool or a transaction |
+| `Directories.MarkDeleting` | the consumer, to delete a branch | a transaction |
+| `Store.Sweep` | the consumer, now and then, with its object delete | the pool |
 
 ## Reference-then-delete
 
@@ -142,8 +145,8 @@ its reference, before the insert. The hold takes the row's lock without changing
 and `Files.Delete`, whose update takes the same lock, waits for the holding transaction to end.
 Once `Delete` returns, every reference a hold admitted has committed, so the consumer checks for
 its own references in the same transaction, after the call. A file whose delete has begun cannot
-be held. The mark of a branch takes each of its files' row locks the same way, so it too waits on
-a hold.
+be held. The mark of a branch takes each of its files' row locks the same way, so it too waits
+on a hold.
 
 The consumer's own foreign key is the backstop: `Purge` of a row a consumer's row still
 references is refused with `blobfs.ErrReferenced`, the row stays deleting, and a retry after the
@@ -152,9 +155,9 @@ reference is gone converges.
 ## Moves
 
 A move of a directory or a file is an update of its parent and its name; a rename is a move to
-the same parent. A file move needs nothing more, because a file cannot be its own ancestor. A move
-of anything out of a deleting directory, or into one, is refused with `blobfs.ErrDeleting`, so
-nothing leaves or enters a branch being deleted.
+the same parent. A file move needs nothing more, because a file cannot be its own ancestor. A
+move of anything out of a deleting directory, or into one, is refused with `blobfs.ErrDeleting`,
+so nothing leaves or enters a branch being deleted.
 
 A directory move could make a directory its own ancestor, so `Directories.Move` runs three
 statements in the caller's transaction: it takes the tree lock, checks that the new parent is
@@ -199,12 +202,12 @@ tree.
 A listing reads one directory's contents, one page at a time: `Directories.List` the child
 directories, `Files.List` the files. No operation lists across directories or walks the tree.
 
-A listing hides deleting rows: the directories of a branch being deleted, and the files whose delete
-began or whose branch was marked. It appends a filter on status after the caller's own, so neither
-the page nor the total holds them, and the listing of a directory that is itself deleting is refused
-with `blobfs.ErrDeleting`. A directory that does not exist still lists empty. `data.IncludeDeleting`
-shows deleting rows and lists a deleting directory: it is how a sweep, or a consumer's own tool,
-finds the work of a delete.
+A listing hides deleting rows: the directories of a branch being deleted, and the files whose
+delete began or whose branch was marked. It appends a filter on status after the caller's own,
+so neither the page nor the total holds them, and the listing of a directory that is itself
+deleting is refused with `blobfs.ErrDeleting`. A directory that does not exist still lists
+empty. `data.IncludeDeleting` shows deleting rows and lists a deleting directory: it is how a
+sweep, or a consumer's own tool, finds the work of a delete.
 
 Each listing is a projection of sqlate's `query` package. Its base is an authored statement
 anchored on the directory, and the `query` package composes the caller's `query.Directives`
@@ -240,69 +243,74 @@ and there may be more of them than one pass should hold:
 
 From the mark's commit the branch is hidden and closed. The listings hide its rows, and the
 listing of a directory in it is `blobfs.ErrDeleting`. A create or an ensure under a deleting
-directory, a move into one, and a move of a directory or file out of one are `blobfs.ErrDeleting`:
-nothing enters the branch and nothing leaves it. A read by id, name, or path still finds its rows,
-with their status. A mark is never undone, and the root cannot be marked.
+directory, a move into one, and a move of a directory or file out of one are
+`blobfs.ErrDeleting`: nothing enters the branch and nothing leaves it. A read by id, name, or
+path still finds its rows, with their status. A mark is never undone, and the root cannot be
+marked.
 
 The mark is guarded like the other steps a caller takes on a row it read. `data.AtVersion` marks
 the branch only while its root is at the version the caller read, the directory its user saw and
-confirmed; a directory at another version is `query.ErrVersionMismatch`, and nothing is marked. A
-directory already deleting is the mark's retry, which converges whatever the version and reports
-what it reached anew. Because the mark advances every version it changes, a writer or a mover
-that read a row before the mark is told `blobfs.ErrDeleting`, not that its version is stale.
+confirmed; a directory at another version is `query.ErrVersionMismatch`, and nothing is marked.
+A directory already deleting is the mark's retry, which converges whatever the version and
+reports what it reached anew. Because the mark advances every version it changes, a writer or a
+mover that read a row before the mark is told `blobfs.ErrDeleting`, not that its version is
+stale.
 
 ### Stragglers and convergence
 
-The mark runs under the tree lock, so no move reshapes the branch between its two statements. The
-lock does not stop a create that read its parent as active before the mark committed: that row, a
-straggler, lands in the branch active. A repeated mark reaches it, since the mark walks through
-rows already deleting, and each pass of the sweep marks each branch again before it walks it. A
-straggler that lands after the pass's own mark stops that branch's walk, and the pass reports
-`More`; the next pass marks it and goes on.
+The mark runs under the tree lock, so no move reshapes the branch between its two statements.
+The lock does not stop a create that read its parent as active before the mark committed: that
+row, a straggler, lands in the branch active. A repeated mark reaches it, since the mark walks
+through rows already deleting, and each pass of the sweep marks each branch again before it
+walks it. A straggler that lands after the pass's own mark stops that branch's walk, and the
+pass reports `More`; the next pass marks it and goes on.
 
-The sweep keeps no state. It finds its work in the database on every pass: the roots of the branches
-being deleted, each a deleting directory under an active parent, through `Directories.Deleting`, and
-the rest of each branch through the listings with `data.IncludeDeleting`. Every step it takes is
-idempotent, so a pass stopped at any point, by an error or a crash, is finished by the next, and a
-row another pass removed first counts as done. A pass is bounded by `data.Batch`, a count of
-records, and reports `More` when work remains; a consumer runs passes while `More` is true, and
-again on a schedule of its own. A refusal stops the branch or row it meets, not the pass: the pass
-goes on to the next, so a row refused on every pass holds back nothing behind it, and returns every
-refusal joined, with its result counting what it did.
+The sweep keeps no state. On every pass it finds its work in the database:
+`Directories.Deleting` returns the roots of the branches being deleted, each a deleting
+directory under an active parent, and the listings with `data.IncludeDeleting` reach the rest of
+each branch. Every step it takes is idempotent, so a pass stopped at any point, by an error or a
+crash, is finished by the next, and a row another pass removed first counts as done. A pass is
+bounded by `data.Batch`, a count of records, and reports `More` when work remains; a consumer
+runs passes while `More` is true, and again on a schedule of its own. A refusal stops the branch
+or row it meets, not the pass: the pass goes on to the next, so a row refused on every pass
+holds back nothing behind it. The pass returns every refusal joined, with a result that counts
+what it did.
 
 ### The consumer's own rows
 
 A consumer's row that references a directory in the branch, such as the owner row that binds a
-top-level directory to a unit (see [ownership](#ownership-stays-with-the-consumer)), would refuse
-the directory's removal through its foreign key as `blobfs.ErrReferenced`. `data.OnRemoveDirectory`
-runs the consumer's function in the transaction that removes each directory, before the removal, so
-the consumer's row goes with the directory or neither goes; an error from the function leaves the
-directory, deleting, for the next pass. A consumer's reference to a file refuses the file's purge
-the same way; the file stays deleting and each pass reports the refusal until the reference is gone.
-A consumer that holds its files before referencing them keeps the reference-then-delete rule across
-a branch: the mark waits on a hold as `Files.Delete` does.
+top-level directory to a unit (see [ownership](#ownership-stays-with-the-consumer)), would
+refuse the directory's removal through its foreign key as `blobfs.ErrReferenced`.
+`data.OnRemoveDirectory` runs the consumer's function in the transaction that removes each
+directory, before the removal, so the consumer's row goes with the directory or neither goes. An
+error from the function leaves the directory deleting for the next pass. A consumer's reference
+to a file refuses the file's purge the same way: the file stays deleting, and each pass reports
+the refusal until the reference is gone. A consumer that holds its files before referencing them
+keeps the reference-then-delete rule across a branch: the mark waits on a hold as `Files.Delete`
+does.
 
 ### Stale rows and orphaned objects
 
 Both file protocols can stop partway and never be resumed: a write after its first step leaves a
-pending row, and a delete after `Files.Delete` leaves a deleting row, hidden from the listings yet
-still holding its name. These are stale rows. With `data.StaleOlderThan(age)`, a pass also reclaims
-the file rows in either status last written longer ago than `age`, oldest first, from the budget the
-branches leave: a pending row is moved to deleting at the version the pass read, so a write that
-completed in the meantime is left as it is, and then the row's object is deleted and the row purged.
+pending row, and a delete after `Files.Delete` leaves a deleting row, hidden from the listings
+yet still holding its name. These are stale rows. With `data.StaleOlderThan(age)`, a pass also
+reclaims the stale rows last written longer ago than `age`, oldest first, from the budget the
+branches leave. It moves a pending row to deleting at the version the pass read, so a write that
+completed in the meantime is left as it is, then deletes the row's object and purges the row.
 Without the option a pass reclaims no stale row.
 
-A sweep deletes an object before it purges the object's row, so no row it removes leaves an object
-behind. One case it cannot close: a write whose put lands after its pending row was reclaimed, or
-after its branch was swept, leaves an object with no row, and the write's `Complete` fails,
-`blobfs.ErrDeleting` while the row is still deleting and `blobfs.ErrNotFound` once it is purged. The
-case is inherent, since the put and the row share no transaction and the library never puts an
-object. A consumer bounds it by choosing the age longer than its longest write, counted from the
-write's first step, since a write resumed through `Files.Ensure` keeps its row's `updated_at`; the
-reclaim then never overtakes a write still running. A branch's sweep has no age, so a write into a
-branch that is being deleted can still lose that race; a writer whose `Complete` is refused either
-way deletes the object it put, under the key it holds. An object whose writer stopped after the put
-is found only by listing the store's keys, the reconciler the library defers.
+A sweep deletes an object before it purges the object's row, so no row it removes leaves an
+object behind. It cannot close one case: a write whose put lands after its pending row was
+reclaimed, or after its branch was swept, leaves an object with no row. The write's `Complete`
+then fails, with `blobfs.ErrDeleting` while the row is still deleting and `blobfs.ErrNotFound`
+once it is purged. The case is inherent, since the put and the row share no transaction and the
+library never puts an object. A consumer bounds it by choosing an age longer than its longest
+write, counted from the write's first step, since a write resumed through `Files.Ensure` keeps
+its row's `updated_at`; the reclaim then never overtakes a write still running. A branch's sweep
+has no age, so a write into a branch being deleted can still lose that race. Either way, a
+writer whose `Complete` is refused deletes the object it put, under the key it holds. An object
+whose writer stopped after the put is found only by listing the store's keys, the reconciler the
+library defers.
 
 ## Ownership stays with the consumer
 
@@ -315,10 +323,11 @@ composes ownership through its own tables, at the grain its domain needs:
   constraints, such as a partial unique index for one active file per unit.
 
 The consumer's check runs around the library's listing, never inside it. A consumer's row that
-references a directory is removed with it, through the sweep's hook when a branch is deleted (see
-[the consumer's own rows](#the-consumers-own-rows)). For its own read models, blobfs publishes the
-column lists of its two entities as patterns, `blobfs.directory_columns` and `blobfs.file_columns`,
-which a consumer's statements include so they scan into `blobfs.Directory` and `blobfs.File`.
+references a directory is removed with it, through the sweep's hook when a branch is deleted
+(see [the consumer's own rows](#the-consumers-own-rows)). For its own read models, blobfs
+publishes the column lists of its two entities as patterns, `blobfs.directory_columns` and
+`blobfs.file_columns`, which a consumer's statements include so they scan into
+`blobfs.Directory` and `blobfs.File`.
 
 ## Engines and variants
 

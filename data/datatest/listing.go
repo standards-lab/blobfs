@@ -259,9 +259,9 @@ func (s *suite) directoriesUnder(t *testing.T, mode listingMode, path, dir strin
 
 // fileOffsetWalk reads the file listing of dir, called with opts, page by
 // page by number until a page reports no More, checking that every page
-// after an earlier one's More holds rows, that a short page is the last, and that every
-// counted page with rows reports the same total, and returns the ids
-// concatenated and the total, query.NoTotal when the pages carried none.
+// after an earlier one's More holds rows, that a short page is the last, and
+// that every counted page with rows reports the same total, and returns the
+// ids concatenated and the total, query.NoTotal when the pages carried none.
 func (s *suite) fileOffsetWalk(t *testing.T, dir string, req query.Directives, size int, opts ...data.ListOption) ([]string, int) {
 	t.Helper()
 	var ids []string

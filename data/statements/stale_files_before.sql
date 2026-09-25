@@ -4,8 +4,8 @@
 -- pending row a Files.Create or Files.Ensure inserted whose write never
 -- completed, and each deleting row whose Files.Delete committed and whose
 -- Files.Purge never ran, older than the age the caller chose. Either row
--- holds its name, and a deleting one is hidden from the listings, so
--- nothing but a sweep finds it. The caller computes before from its own
+-- holds its name, and a deleting one is hidden from the listings unless
+-- the caller asks for it. The caller computes before from its own
 -- clock and the age; updated_at is stamped by the database, so the two
 -- clocks' skew is part of the margin. The rows come oldest first, ties
 -- broken by id, one page of at most fetch rows past offset through the

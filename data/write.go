@@ -109,10 +109,10 @@ type moveEnds struct {
 }
 
 // readMoveEnds reads from, a moved row's current parent, and to, its new
-// one, through byID in sess, for a move whose update changed no row: its
-// status predicates refuse a move out of or into a deleting directory, and
-// a new parent that does not exist, before the foreign key could. from is
-// nil for the root, which has no parent.
+// one, through byID in sess, for a move whose update changed no row. The
+// update's status predicates refuse a move out of or into a deleting
+// directory, and a move under a new parent that does not exist, before the
+// foreign key could. from is nil for the root, which has no parent.
 func readMoveEnds(ctx context.Context, sess sqlate.Session, byID query.Rows[blobfs.Directory], from *string, to string) (moveEnds, error) {
 	var ends moveEnds
 	if from != nil {

@@ -13,16 +13,16 @@ The schema for the delete of a branch.
 
 ### Added
 
-- Migration 0003, `directory_status`: the column `blobfs_directory.status`, `text NOT NULL
-  DEFAULT 'active'`, which leaves every existing row active; the check
-  `blobfs_cc_directory_status`, `status IN ('active', 'deleting')`; and two partial indexes for
-  the sweeper's reads, `blobfs_ix_directory_deleting` on `blobfs_directory (id)` of the deleting
-  directories, and `blobfs_ix_file_stale` on `blobfs_file (updated_at, id)` of the pending and
-  deleting files. The migration ships its down, and the golden test pins both files.
+- Migration 0003, `directory_status`, which adds the column `blobfs_directory.status`, `text
+  NOT NULL DEFAULT 'active'`, leaving every existing row active, and the check
+  `blobfs_cc_directory_status`, `status IN ('active', 'deleting')`. It also adds two partial
+  indexes for the sweep's reads: `blobfs_ix_directory_deleting` on `blobfs_directory (id)` of
+  the deleting directories, and `blobfs_ix_file_stale` on `blobfs_file (updated_at, id)` of the
+  pending and deleting files. The migration ships its down, and the golden test pins both files.
 - The integration tier: the conformance suite's new groups over the baseline and the engine's
   variant; the directory status check as the engine reports its violation; and plan-shape and
   buffer-bound assertions for the read of the branch roots through
-  `blobfs_ix_directory_deleting` and the stale read through `blobfs_ix_file_stale`, in the
+  `blobfs_ix_directory_deleting`, and for the stale read through `blobfs_ix_file_stale` in the
   index's order with no sort.
 
 ### Changed

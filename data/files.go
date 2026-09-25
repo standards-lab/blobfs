@@ -218,10 +218,11 @@ func newFile(op string, keys blobfs.KeyValidator, name string, opts []CreateOpti
 // database holds it. The name is normalized and validated and the key
 // validated already. A constraint violation is classified through the
 // write mapping, and an insert that selected no row from its directory by
-// reading the directory, and either is returned without context, so each
-// caller adds its own. The read of an insert that selected no row finds
-// nothing, or finds a row another insert left under a caller-supplied id;
-// either way nothing was inserted, and the directory says why.
+// a read of the directory; either refusal is returned without context, so
+// each caller adds its own. The returning command's read of an insert that
+// selected no row finds nothing, or finds a row another insert left under
+// a caller-supplied id; either way nothing was inserted, and the directory
+// says why.
 func (f *Files) insert(ctx context.Context, sess sqlate.Session, id, directoryID, name, key, contentType string) (blobfs.File, error) {
 	file, changed, err := f.create.One(ctx, sess, query.Args{
 		"id": id, "directory_id": directoryID, "name": name, "key": key, "content_type": contentType,

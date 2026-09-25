@@ -33,9 +33,9 @@ import (
 // marked, is hidden: the listing appends a filter on status after req's
 // own, so neither the page nor the total holds one, and a directory that
 // is itself deleting is blobfs.ErrDeleting, told by a read of the
-// directory after the page. IncludeDeleting shows deleting files, so a
-// filter on status reaches the delete protocol's stage too, and lists a
-// deleting directory, without the read.
+// directory after the page. With IncludeDeleting the listing shows
+// deleting files, so a filter on status reaches the delete protocol's stage
+// too, and it lists a deleting directory without the read.
 func (f *Files) List(ctx context.Context, sess sqlate.Session, directoryID string, req query.Directives, page query.Page, opts ...ListOption) (query.Collection[blobfs.File], error) {
 	req, include := listing(req, string(blobfs.StatusDeleting), opts)
 	c, err := f.list.List(ctx, sess, req, page, query.With("directory_id", directoryID))
@@ -63,9 +63,9 @@ func (f *Files) List(ctx context.Context, sess sqlate.Session, directoryID strin
 // any cursor under a sort that cannot be continued are refused with a
 // query.CursorError before any SQL. A cursor is a position in the order,
 // not a bookmark on the directory: the library does not record
-// directoryID in it. Deleting files are hidden and a deleting directory
-// refused as List hides and refuses them, so a file marked after the
-// cursor was issued is not on the pages past it.
+// directoryID in it. Deleting files are hidden and a deleting directory is
+// refused, as in List, so a file marked after the cursor was issued is not
+// on the pages past it.
 func (f *Files) Continue(ctx context.Context, sess sqlate.Session, directoryID string, req query.Directives, after query.Cursor, size int, opts ...ListOption) (query.Collection[blobfs.File], error) {
 	req, include := listing(req, string(blobfs.StatusDeleting), opts)
 	c, err := f.list.Continue(ctx, sess, req, after, size, query.With("directory_id", directoryID))

@@ -130,10 +130,11 @@ func ops(rec *sqltest.Recorder) string {
 // TestNew proves the catalog builds with the two sources, every statement
 // compiles, and the inventory: twenty-four statements, all standard tier;
 // the directory move, the two steps of a branch's mark, the two file
-// deletes, and the two file holds the ones requiring a transaction; and the seven returning commands, the directory
-// ones reading their row back through directory_by_id and the file ones
-// through file_by_id. The fallback's dialect renders no single-statement
-// form and the returning dialect renders one per command.
+// deletes, and the two file holds the ones requiring a transaction; and the
+// seven returning commands, the directory ones reading their row back
+// through directory_by_id and the file ones through file_by_id. The
+// fallback's dialect renders no single-statement form and the returning
+// dialect renders one per command.
 func TestNew(t *testing.T) {
 	want := []string{
 		"complete_file", "create_directory", "create_file", "delete_directory", "delete_directory_at_version",

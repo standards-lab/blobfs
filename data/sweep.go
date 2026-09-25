@@ -26,14 +26,14 @@ type ObjectDeleter interface {
 	DeleteObject(ctx context.Context, key string) error
 }
 
-// SweepResult is what one pass of Store.Sweep did: the files of branches
-// being deleted whose objects it deleted and whose rows it purged, the
-// directories it removed, and the stale rows it reclaimed, pending or
-// deleting, outside the branches' walks (see StaleOlderThan). Each row is
-// counted once, by the step that purged it. More reports
-// that the pass stopped at its Batch bound, or at a row that reached a
-// branch after the branch's mark, with work remaining; a caller runs
-// passes while More is true.
+// SweepResult is what one pass of Store.Sweep did. Files counts the files
+// of branches being deleted whose objects it deleted and whose rows it
+// purged, Directories the directories it removed, and Stale the stale rows,
+// pending or deleting, it reclaimed outside the branches' walks (see
+// StaleOlderThan). Each row is counted once, by the step that purged it.
+// More reports that the pass stopped with work remaining, at its Batch
+// bound or at a row that reached a branch after the branch's mark; a
+// caller runs passes while More is true.
 type SweepResult struct {
 	Files       int
 	Directories int
@@ -52,7 +52,7 @@ type SweepResult struct {
 //
 // For each branch root Directories.Deleting returns, in id order, the pass
 // first marks the branch again, in a transaction of its own, which reaches
-// any straggler a create that raced the first mark left active in it. It
+// any straggler: a row a create that raced the first mark left active. It
 // then walks the branch depth first through the listings with
 // IncludeDeleting. In each directory it deletes every file's object and
 // then purges the file's row, as the file delete's last two steps do; then
@@ -61,30 +61,30 @@ type SweepResult struct {
 // the root last. Each directory is removed in a transaction of its own,
 // guarded by the version the pass read it at, with OnRemoveDirectory's
 // function run first in the same transaction. A row still active in the
-// branch when the pass reaches it, one that landed after this pass's mark,
-// or a directory refused as blobfs.ErrNotEmpty for the same reason, stops
-// the branch's walk with More set, and the next pass marks it. With
-// StaleOlderThan, the budget the branches leave reclaims the oldest stale
-// rows (see StaleOlderThan). A deleting row inside a branch the walk has
-// not reached yet may be among them; it is finished there, as the walk
-// would have, and counted once, since the purged row is in no later read.
+// branch when the pass reaches it, a straggler that landed after this
+// pass's mark, stops the branch's walk with More set, and so does a
+// directory refused as blobfs.ErrNotEmpty for the same reason; the next
+// pass marks the straggler. With StaleOlderThan, the pass spends the budget
+// the branches leave on the oldest stale rows (see StaleOlderThan). A
+// deleting row inside a branch the walk has not reached yet may be among
+// them; it is finished there, as the walk would have finished it, and
+// counted once, since the purged row is in no later read.
 //
 // Batch bounds the records the pass handles. When the pass spends the
-// bound, it reads whether any work remains, a branch being deleted or,
-// with StaleOlderThan, a stale row past its age, and reports that as
-// More.
+// bound, it reads whether any work remains, a branch being deleted or, with
+// StaleOlderThan, a stale row past its age, and reports the answer as More.
 //
-// It takes the *sqlate.DB and not a session: it reads and purges on the
-// pool, deletes objects outside any transaction, so no row lock is held
-// across a call to the object store, and opens one transaction for each
-// mark, each directory's removal, and each pending row's delete, which a
-// *sqlate.Tx cannot. A refusal stops the branch or the stale row it
-// meets, not the pass: an object delete's error, a hook's, and a purge or
-// removal a consumer's foreign key refuses, as blobfs.ErrReferenced. The
-// pass goes on to the next branch or row, so a row refused on every pass
-// does not hold back the work behind it, and returns every refusal joined
-// and wrapped as "data: sweep: ...", with the result counting what it
-// did. A Batch below 1 and a StaleOlderThan age that is not positive are
+// It takes the *sqlate.DB and not a session because it opens one
+// transaction for each mark, each directory's removal, and each pending
+// row's delete, which a *sqlate.Tx cannot. It reads and purges on the pool
+// and deletes objects outside any transaction, so no row lock is held
+// across a call to the object store. A refusal stops the branch or the
+// stale row it meets, not the pass. The refusals are an object delete's
+// error, a hook's error, and a purge or removal a consumer's foreign key
+// refuses as blobfs.ErrReferenced. The pass goes on to the next branch or
+// row, so a row refused on every pass does not hold back the work behind
+// it, and returns every refusal joined and wrapped as "data: sweep: ...",
+// with the result counting what it did. A Batch below 1 and a StaleOlderThan age that is not positive are
 // refused before any SQL. Nothing to do is a zero result and no error.
 func (s *Store) Sweep(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, opts ...SweepOption) (SweepResult, error) {
 	o := sweepOptions{batch: defaultBatch}
@@ -282,8 +282,8 @@ func (w *sweep) finish(ctx context.Context, f blobfs.File) error {
 // then finished; one that moved on since the read, completed or gone, is
 // skipped and spends nothing. A deleting row is past that step, so it is
 // finished at once. A row refused is skipped too, its refusal returned
-// with the others', and so is a row this pass was refused already in a
-// branch's walk.
+// with the others', and so is a row whose finish this pass was already
+// refused in a branch's walk.
 func (w *sweep) stale(ctx context.Context) []error {
 	rows, err := w.store.Files.stale.All(ctx, w.db, query.Args{"before": w.before, "offset": 0, "fetch": w.budget})
 	if err != nil {

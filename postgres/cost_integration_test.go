@@ -4,19 +4,19 @@ package postgres_test
 
 // This file holds the plan-shape and cost regression assertions for the
 // statements the store runs: the listing under query.TotalNone and under
-// query.TotalExact, the cursor page by name and by the row-value
-// comparison over a consumer's created_at index, the baseline's path walk
-// step and the variant's one-statement resolution, the recursive walks up
-// the tree, the protocol steps, each command in its single-statement
-// form, the read of the roots of the branches being deleted, and the read
-// of the stale files a caller left partway through a protocol. Each test seeds a fixture in its own throwaway database, captures
-// a statement as the store composes it or takes it from the store's
-// inventory, explains it with EXPLAIN (ANALYZE, BUFFERS) through
-// internal/dbtest, and asserts a plan shape and a buffer bound, never a
-// time, logging the buffers it measured. The bounds carry a wide margin
-// over the measured value and sit well below what the regression each
-// test guards against would read. A plan shape is asserted only where the
-// fixture is large enough for the index to be the planner's own choice,
+// query.TotalExact, the cursor page by name and by the row-value comparison
+// over a consumer's created_at index, the baseline's path walk step and the
+// variant's one-statement resolution, the recursive walks up the tree, the
+// protocol steps, each command in its single-statement form, the read of the
+// roots of the branches being deleted, and the read of the stale files a
+// caller left partway through a protocol. Each test seeds a fixture in its
+// own throwaway database, captures a statement as the store composes it or
+// takes it from the store's inventory, explains it with EXPLAIN (ANALYZE,
+// BUFFERS) through internal/dbtest, and asserts a plan shape and a buffer
+// bound, never a time, logging the buffers it measured. The bounds carry a
+// wide margin over the measured value and sit well below what the regression
+// each test guards against would read. A plan shape is asserted only where
+// the fixture is large enough for the index to be the planner's own choice,
 // and the tests never disable a plan type.
 
 import (
@@ -356,15 +356,15 @@ func TestPathPlans(t *testing.T) {
 // move protocols finds its row through the primary key: each returning
 // command in the single-statement form sqlate's postgres dialect renders
 // (create excepted, which has no lookup to plan), each hold, the baseline's
-// and the variant's locking reads, and the purge, and the read by id plan an index scan on blobfs_pk_file or
-// blobfs_pk_directory with the id as the index condition, with no
-// sequential scan, each reading at most 32 buffers. The regression is a
-// predicate the primary key cannot serve, which scans the table on every
-// step. A tenth of the fixture's files are pending, as writes in flight
-// and abandoned leave them, so the partial index of the stale rows, which
-// a fixture with a single pending row and a single deleting row would make
-// the cheapest path to either, is not the planner's choice for a step by
-// id.
+// and the variant's locking reads, and the purge, and the read by id plan an
+// index scan on blobfs_pk_file or blobfs_pk_directory with the id as the
+// index condition, with no sequential scan, each reading at most 32 buffers.
+// The regression is a predicate the primary key cannot serve, which scans
+// the table on every step. A tenth of the fixture's files are pending, as
+// writes in flight and abandoned leave them, so the partial index of the
+// stale rows, which a fixture with a single pending row and a single
+// deleting row would make the cheapest path to either, is not the planner's
+// choice for a step by id.
 func TestProtocolStepPlans(t *testing.T) {
 	e := openCost(t, stepSizes)
 	stmts := statementsByName(e.store)
