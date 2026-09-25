@@ -31,8 +31,7 @@ v0.2.0` ships.
   deleting file rows older than an age. A refusal stops the branch or row it meets and is
   returned joined with the others; the pass goes on.
 - `AtVersion` guards `Files.Delete`, `Directories.Delete`, and `Directories.MarkDeleting` as it
-  guards `Files.Hold`. Its type is `VersionOption`, and `HoldOption` and `DeleteOption` are
-  aliases of it.
+  guards `Files.Hold`. Its type is `VersionOption`.
 - `ListOption` and `IncludeDeleting`, which makes a listing show every status and list a
   deleting directory.
 - The statements `mark_directory_deleting`, `mark_directory_files_deleting`,
@@ -42,6 +41,8 @@ v0.2.0` ships.
 
 ### Changed
 
+- **Breaking:** `HoldOption` is replaced by `VersionOption`, which `Files.Hold`,
+  `Files.Delete`, `Directories.Delete`, and `Directories.MarkDeleting` take.
 - **Breaking:** the published pattern `blobfs.directory_columns` includes `d.status`, so a
   consumer's statement that includes it needs the migration that adds the column, and a scan
   into a type of its own needs the field.

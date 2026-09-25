@@ -165,8 +165,7 @@ takes the `*sqlate.DB` itself, since it opens transactions of its own.
 `Files.Delete`, `Directories.Delete`, and `Directories.MarkDeleting`. The call acts only while
 the row is at version `v`, and a row at another version is `query.ErrVersionMismatch`. A row
 already deleting is `ErrDeleting` to `Files.Hold`, and a retry to `Files.Delete` and
-`Directories.MarkDeleting`, which converges whatever the version. Its type is `VersionOption`;
-`HoldOption` and `DeleteOption` are aliases of it.
+`Directories.MarkDeleting`, which converges whatever the version. Its type is `VersionOption`.
 
 ### Patterns
 

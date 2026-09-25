@@ -36,8 +36,8 @@ import (
 // another version is query.ErrVersionMismatch, with the expected and
 // current versions in the text. When the hold holds no row, the row is
 // read once more, in tx, to classify.
-func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...HoldOption) error {
-	var o holdOptions
+func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) error {
+	var o versionOptions
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -87,8 +87,8 @@ func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...Hold
 // Purge while one remains. The update is a returning command: the
 // single-statement form where the dialect renders RETURNING, and otherwise
 // the fallback, the update and a read of the row.
-func (f *Files) Delete(ctx context.Context, tx *sqlate.Tx, id string, opts ...DeleteOption) (blobfs.File, error) {
-	var o holdOptions
+func (f *Files) Delete(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) (blobfs.File, error) {
+	var o versionOptions
 	for _, opt := range opts {
 		opt(&o)
 	}

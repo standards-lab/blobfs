@@ -27,7 +27,7 @@ func TestHoldFile(t *testing.T) {
 	ctx := context.Background()
 	// hold runs one hold of F inside a transaction over the scripted
 	// responses and returns its error and the recorder.
-	hold := func(t *testing.T, responses []sqltest.Response, opts ...data.HoldOption) (*sqltest.Recorder, error) {
+	hold := func(t *testing.T, responses []sqltest.Response, opts ...data.VersionOption) (*sqltest.Recorder, error) {
 		t.Helper()
 		s, db, rec := openStore(t, fallback, responses...)
 		_, err := db.Transact(ctx, func(tx *sqlate.Tx) (struct{}, error) {

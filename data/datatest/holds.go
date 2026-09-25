@@ -38,7 +38,7 @@ func (s *suite) heldRowUnchanged(t *testing.T, dir string) {
 	for _, status := range []blobfs.Status{blobfs.StatusAvailable, blobfs.StatusPending} {
 		id := s.insertFile(t, dir, "held-"+status.String()+".txt", status)
 		before := s.file(t, id)
-		for _, opts := range [][]data.HoldOption{nil, {data.AtVersion(before.Version)}} {
+		for _, opts := range [][]data.VersionOption{nil, {data.AtVersion(before.Version)}} {
 			if err := s.holdIn(id, opts...); err != nil {
 				t.Fatalf("Hold of a %s row with %d options: %v", status, len(opts), err)
 			}
@@ -61,14 +61,14 @@ func (s *suite) holdRefusals(t *testing.T, dir string) {
 	for _, c := range []struct {
 		name string
 		id   string
-		opts []data.HoldOption
+		opts []data.VersionOption
 		want error
 		not  error
 	}{
-		{"StaleVersion", stale, []data.HoldOption{data.AtVersion(2)}, query.ErrVersionMismatch, blobfs.ErrDeleting},
+		{"StaleVersion", stale, []data.VersionOption{data.AtVersion(2)}, query.ErrVersionMismatch, blobfs.ErrDeleting},
 		{"Deleting", deletingID, nil, blobfs.ErrDeleting, query.ErrVersionMismatch},
-		{"DeletingAtItsOldVersion", deletingID, []data.HoldOption{data.AtVersion(before.Version)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
-		{"DeletingAtItsVersion", deletingID, []data.HoldOption{data.AtVersion(deleting.Version)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
+		{"DeletingAtItsOldVersion", deletingID, []data.VersionOption{data.AtVersion(before.Version)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
+		{"DeletingAtItsVersion", deletingID, []data.VersionOption{data.AtVersion(deleting.Version)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
 		{"Missing", blobfs.NewID(), nil, blobfs.ErrNotFound, blobfs.ErrDeleting},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -201,7 +201,7 @@ type deleteResult struct {
 
 // holdIn runs Hold through the store under test in a transaction of its
 // own and commits it.
-func (s *suite) holdIn(id string, opts ...data.HoldOption) error {
+func (s *suite) holdIn(id string, opts ...data.VersionOption) error {
 	_, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (struct{}, error) {
 		return struct{}{}, s.store.Files.Hold(s.ctx, tx, id, opts...)
 	})

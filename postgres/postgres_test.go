@@ -206,7 +206,7 @@ func TestHoldFileSQL(t *testing.T) {
 	}
 	locked := sqltest.Response{Columns: []string{"id"}, Rows: [][]driver.Value{{"F"}}}
 	none := sqltest.Response{Columns: []string{"id"}}
-	hold := func(t *testing.T, responses []sqltest.Response, opts ...data.HoldOption) (*sqltest.Recorder, error) {
+	hold := func(t *testing.T, responses []sqltest.Response, opts ...data.VersionOption) (*sqltest.Recorder, error) {
 		t.Helper()
 		s, db, rec := openStore(t, responses...)
 		_, err := db.Transact(ctx, func(tx *sqlate.Tx) (struct{}, error) {
@@ -242,12 +242,12 @@ func TestHoldFileSQL(t *testing.T) {
 	for _, r := range []struct {
 		name string
 		read sqltest.Response
-		opts []data.HoldOption
+		opts []data.VersionOption
 		want error
 		not  error
 	}{
-		{"Deleting", fileRow(blobfs.StatusDeleting, 2), []data.HoldOption{data.AtVersion(1)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
-		{"StaleVersion", fileRow(blobfs.StatusAvailable, 3), []data.HoldOption{data.AtVersion(1)}, query.ErrVersionMismatch, blobfs.ErrDeleting},
+		{"Deleting", fileRow(blobfs.StatusDeleting, 2), []data.VersionOption{data.AtVersion(1)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
+		{"StaleVersion", fileRow(blobfs.StatusAvailable, 3), []data.VersionOption{data.AtVersion(1)}, query.ErrVersionMismatch, blobfs.ErrDeleting},
 		{"Missing", sqltest.Response{Columns: fileColumns}, nil, blobfs.ErrNotFound, blobfs.ErrDeleting},
 	} {
 		t.Run(r.name, func(t *testing.T) {

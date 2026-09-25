@@ -206,11 +206,11 @@ func (d *Directories) insert(ctx context.Context, sess sqlate.Session, id, paren
 // transaction. With AtVersion, the directory is removed only at that
 // version, in the same statement; a directory at another version is
 // query.ErrVersionMismatch, told apart from a missing one by a read.
-func (d *Directories) Delete(ctx context.Context, sess sqlate.Session, id string, opts ...DeleteOption) error {
+func (d *Directories) Delete(ctx context.Context, sess sqlate.Session, id string, opts ...VersionOption) error {
 	if id == blobfs.RootID {
 		return fmt.Errorf("data: delete directory %s: %w", id, blobfs.ErrRootDirectory)
 	}
-	var o holdOptions
+	var o versionOptions
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -277,7 +277,7 @@ func (d *Directories) MarkDeleting(ctx context.Context, tx *sqlate.Tx, id string
 	if id == blobfs.RootID {
 		return Marked{}, fmt.Errorf("data: mark directory %s deleting: %w", id, blobfs.ErrRootDirectory)
 	}
-	var o holdOptions
+	var o versionOptions
 	for _, opt := range opts {
 		opt(&o)
 	}

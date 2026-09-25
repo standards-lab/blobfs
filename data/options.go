@@ -55,18 +55,10 @@ func WithID(id string) CreateOption {
 // VersionOption configures a call that acts on a row the caller read,
 // beyond its required arguments: Files.Hold, Files.Delete,
 // Directories.Delete, and Directories.MarkDeleting.
-type VersionOption func(*holdOptions)
+type VersionOption func(*versionOptions)
 
-// HoldOption configures one call of Files.Hold beyond its required
-// arguments.
-type HoldOption = VersionOption
-
-// DeleteOption configures one call of Files.Delete or Directories.Delete
-// beyond its required arguments.
-type DeleteOption = VersionOption
-
-// holdOptions collects what the version options set.
-type holdOptions struct {
+// versionOptions collects what the version options set.
+type versionOptions struct {
 	version    int64
 	hasVersion bool
 }
@@ -80,7 +72,7 @@ type holdOptions struct {
 // query.ErrVersionMismatch. A file or directory that is already deleting is
 // the delete's or the mark's retry, which converges whatever the version.
 func AtVersion(version int64) VersionOption {
-	return func(o *holdOptions) {
+	return func(o *versionOptions) {
 		o.version = version
 		o.hasVersion = true
 	}

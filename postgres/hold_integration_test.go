@@ -73,8 +73,8 @@ func TestHoldWritesNoTuple(t *testing.T) {
 
 	for _, c := range []struct {
 		name string
-		opts []data.HoldOption
-	}{{"Plain", nil}, {"AtVersion", []data.HoldOption{data.AtVersion(1)}}} {
+		opts []data.VersionOption
+	}{{"Plain", nil}, {"AtVersion", []data.VersionOption{data.AtVersion(1)}}} {
 		t.Run(c.name, func(t *testing.T) {
 			id, err := insertFile(ctx, db, dir.ID, "held-"+c.name+".txt", "available")
 			if err != nil {
