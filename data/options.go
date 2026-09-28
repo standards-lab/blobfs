@@ -138,7 +138,9 @@ func Batch(n int) SweepOption {
 // of a branch, before the removal, with the directory as the pass read it:
 // where a consumer removes its own rows that reference the directory. An
 // error from fn rolls the removal back and leaves the branch for the next
-// pass, which runs fn again with nothing of the aborted attempt left.
+// pass, which runs fn again with nothing of the aborted attempt left. Of
+// two passes that race to one directory, the loser finds it gone and rolls
+// its transaction back, fn's work with it, so fn's effect commits once.
 func OnRemoveDirectory(fn func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error) SweepOption {
 	return func(o *sweepOptions) { o.onRemove = fn }
 }

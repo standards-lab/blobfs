@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ func (s *suite) sweeps(t *testing.T) {
 	t.Run("HookAborts", s.sweepHookAborts)
 	t.Run("RefusalDoesNotBlock", s.sweepRefusalDoesNotBlock)
 	t.Run("Stale", s.sweepStale)
+	t.Run("ConcurrentPasses", s.sweepConcurrent)
 }
 
 // errObjectStore is what a failing objectStore reports.
@@ -459,6 +461,82 @@ func (s *suite) sweepStale(t *testing.T) {
 		}
 		if f, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "stopped.txt", "text/plain"); err != nil || f.Status != blobfs.StatusPending {
 			t.Errorf("Create over the finished delete's name = %+v, %v, want a new pending row", f, err)
+		}
+	}
+}
+
+// syncObjects is an ObjectDeleter safe for concurrent passes: it counts
+// each key's deletes under a lock.
+type syncObjects struct {
+	mu      sync.Mutex
+	deleted map[string]int
+}
+
+func (o *syncObjects) DeleteObject(_ context.Context, key string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.deleted[key]++
+	return nil
+}
+
+// sweepConcurrent checks that passes running at the same time converge,
+// against the baseline: four passes of a small batch, each looping while
+// More, sweep two marked branches with owner rows on their tops. Every
+// pass ends without error, every row and owner row is gone, and every
+// object was deleted at least once; a pass that loses a race to another
+// finds the row gone and counts it done.
+func (s *suite) sweepConcurrent(t *testing.T) {
+	for i, store := range []*data.Store{s.store, s.baseline} {
+		var branches []branch
+		var keys []string
+		for j := range 2 {
+			b := s.newBranch(t, fmt.Sprintf("concurrent-%d-%d-%s", i, j, t.Name()))
+			s.own(t, b.top.ID)
+			keys = append(keys, s.keys(t, branchFiles(b)...)...)
+			if _, err := s.mark(store, b.top.ID); err != nil {
+				t.Fatalf("MarkDeleting: %v", err)
+			}
+			branches = append(branches, b)
+		}
+		objects := &syncObjects{deleted: map[string]int{}}
+		hook := data.OnRemoveDirectory(func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error {
+			_, err := tx.ExecContext(ctx, "DELETE FROM datatest_owner WHERE directory_id = "+s.db.Dialect().Placeholder(1), dir.ID)
+			return err
+		})
+		var wg sync.WaitGroup
+		errs := make([]error, 4)
+		for p := range errs {
+			wg.Go(func() {
+				for range 50 {
+					r, err := s.sweep(store, objects, data.Batch(2), hook)
+					if err != nil {
+						errs[p] = err
+						return
+					}
+					if !r.More {
+						return
+					}
+				}
+				errs[p] = errors.New("the pass did not finish in 50 rounds")
+			})
+		}
+		wg.Wait()
+		for p, err := range errs {
+			if err != nil {
+				t.Errorf("concurrent pass %d: %v", p, err)
+			}
+		}
+		for _, b := range branches {
+			s.wantDirectoriesGone(t, b.top.ID, b.mid.ID, b.leaf.ID)
+			s.wantFilesGone(t, branchFiles(b)...)
+			if n := s.count(t, s.db, "SELECT COUNT(*) FROM datatest_owner WHERE directory_id = "+s.db.Dialect().Placeholder(1), b.top.ID); n != 0 {
+				t.Errorf("the owner row of %s survived its directory's removal", b.top.ID)
+			}
+		}
+		for _, key := range keys {
+			if objects.deleted[key] == 0 {
+				t.Errorf("the object %s was never deleted", key)
+			}
 		}
 	}
 }
