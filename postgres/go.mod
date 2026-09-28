@@ -20,3 +20,7 @@ require (
 )
 
 tool github.com/standards-lab/sqlate/sqlint/cmd/sqlint
+
+// Temporary: points at the unreleased base until blobfs v0.2.0 is tagged;
+// the release removes it.
+replace github.com/standards-lab/blobfs => ../

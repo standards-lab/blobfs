@@ -33,3 +33,10 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 )
+
+// Temporary: points at the unreleased modules until blobfs v0.2.0 and
+// postgres/v0.2.0 are tagged; the release removes it.
+replace (
+	github.com/standards-lab/blobfs => ../
+	github.com/standards-lab/blobfs/postgres => ../postgres
+)
