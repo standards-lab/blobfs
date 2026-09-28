@@ -4,7 +4,7 @@ go 1.27
 
 require (
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/standards-lab/blobfs v0.1.0
+	github.com/standards-lab/blobfs v0.2.0
 	github.com/standards-lab/sqlate v0.4.0
 	github.com/standards-lab/sqlate/postgres v0.4.0
 )
@@ -20,7 +20,3 @@ require (
 )
 
 tool github.com/standards-lab/sqlate/sqlint/cmd/sqlint
-
-// Temporary: points at the unreleased base until blobfs v0.2.0 is tagged;
-// the release removes it.
-replace github.com/standards-lab/blobfs => ../
