@@ -7,7 +7,7 @@ changelog covers this sub-module only; the base module keeps its own.
 
 ## [Unreleased]
 
-## [v0.2.0] - 2026-09-25
+## [v0.2.0] - 2026-09-28
 
 The schema for the delete of a branch.
 

@@ -7,7 +7,7 @@ the `postgres` sub-module keeps its own.
 
 ## [Unreleased]
 
-## [v0.2.0] - 2026-09-25
+## [v0.2.0] - 2026-09-28
 
 The delete of a branch, a directory with everything beneath it: the branch is marked deleting in
 one transaction and removed by a bounded, stateless sweep, which also reclaims the rows a stopped
