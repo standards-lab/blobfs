@@ -2,6 +2,7 @@ package datatest
 
 import (
 	"errors"
+	"github.com/standards-lab/sqlate/query"
 	"sync"
 	"testing"
 
@@ -107,11 +108,8 @@ func (s *suite) createDirectory(t *testing.T) {
 }
 
 // createDirectoryRefusals checks Create's and Ensure's refusals against the
-// baseline: a taken name in either spelling, a missing parent, and a taken
-// id, each by its sentinel over its constraint in the same text on both
-// stores, Ensure finding the taken name instead of refusing it; and the
-// refusals before any SQL, an invalid name and an invalid id, which leave
-// no row.
+// baseline, by sentinel and constraint or in the same text, and the
+// refusals before any SQL, which leave no row.
 func (s *suite) createDirectoryRefusals(t *testing.T) {
 	parent := s.mkdir(t, "refusals-"+t.Name())
 	taken := s.mkdirUnder(t, parent.ID, composed)
@@ -125,12 +123,12 @@ func (s *suite) createDirectoryRefusals(t *testing.T) {
 	}{
 		{"NameTaken", parent.ID, composed, nil, blobfs.ErrNameTaken, blobfs.ConstraintUniqueDirectoryParentName},
 		{"NameTakenDecomposed", parent.ID, decomposed, nil, blobfs.ErrNameTaken, blobfs.ConstraintUniqueDirectoryParentName},
-		{"MissingParent", blobfs.NewID(), "orphan", nil, blobfs.ErrNotFound, blobfs.ConstraintForeignKeyDirectoryParent},
+		{"MissingParent", blobfs.NewID(), "orphan", nil, blobfs.ErrNotFound, ""},
 		{"IDTaken", parent.ID, "twin", []data.CreateOption{data.WithID(taken.ID)}, blobfs.ErrIDTaken, blobfs.ConstraintPrimaryKeyDirectory},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := s.store.Directories.Create(s.ctx, s.db, c.parent, c.dir, c.opts...)
-			wantViolation(t, err, c.want, c.constraint)
+			wantRefusal(t, err, c.want, c.constraint)
 			_, base := s.baseline.Directories.Create(s.ctx, s.db, c.parent, c.dir, c.opts...)
 			wantSameError(t, err, base)
 			found, created, err := s.store.Directories.Ensure(s.ctx, s.db, c.parent, c.dir, c.opts...)
@@ -142,7 +140,7 @@ func (s *suite) createDirectoryRefusals(t *testing.T) {
 				}
 				return
 			}
-			wantViolation(t, err, c.want, c.constraint)
+			wantRefusal(t, err, c.want, c.constraint)
 			wantSameError(t, err, base)
 		})
 	}
@@ -210,14 +208,9 @@ func (s *suite) ensureDirectory(t *testing.T) {
 	}
 }
 
-// ensureDirectoryConcurrent checks the race on the pool, forced: two
-// callers ensure the same name at once through a pool that holds each
-// caller's lookup until both have looked, so both find no row and both
-// insert. The engine blocks the second insert on the unique constraint
-// until the first commits and then refuses it, and the second caller
-// recovers by looking the row up: exactly one creates it, both return the
-// same row, the lookup runs a third time, and the parent holds one row of
-// the name.
+// ensureDirectoryConcurrent checks the race on the pool, forced through
+// racingPool: exactly one caller creates the row, both return it, the
+// lookup runs a third time, and the parent holds one row of the name.
 func (s *suite) ensureDirectoryConcurrent(t *testing.T) {
 	parent := s.mkdir(t, "ensure-concurrent-"+t.Name())
 	pool := s.racingPool(t, "directory_by_name")
@@ -277,14 +270,22 @@ func (s *suite) findDirectoryByName(t *testing.T) {
 	}
 }
 
-// deleteDirectory checks Delete against the schema: the root refused
-// before any SQL; a directory with a child directory, with a file, or
-// with a file whose delete has begun refused as ErrNotEmpty under the
-// foreign key that names what remains; a directory a consumer's row
-// references refused as ErrReferenced under the consumer's constraint; a
-// missing directory ErrNotFound; and an empty directory removed, after
-// which its name is free again.
+// deleteDirectory checks Delete against the schema: the root, a directory
+// with a child, a file, or a deleting file, one a consumer's row
+// references, a missing one, and an empty one removed, its name then free.
 func (s *suite) deleteDirectory(t *testing.T) {
+	guarded := s.mkdir(t, "delete-guarded-"+t.Name())
+	if err := s.store.Directories.Delete(s.ctx, s.db, guarded.ID, data.AtVersion(guarded.Version+1)); !errors.Is(err, query.ErrVersionMismatch) {
+		t.Errorf("Delete at a stale version = %v, want ErrVersionMismatch", err)
+	}
+	s.directory(t, guarded.ID)
+	if err := s.store.Directories.Delete(s.ctx, s.db, guarded.ID, data.AtVersion(guarded.Version)); err != nil {
+		t.Errorf("Delete at the current version = %v", err)
+	}
+	if err := s.store.Directories.Delete(s.ctx, s.db, guarded.ID, data.AtVersion(guarded.Version)); !errors.Is(err, blobfs.ErrNotFound) {
+		t.Errorf("a guarded Delete of a removed directory = %v, want ErrNotFound", err)
+	}
+
 	if err := s.store.Directories.Delete(s.ctx, s.db, blobfs.RootID); !errors.Is(err, blobfs.ErrRootDirectory) {
 		t.Errorf("Delete(root) = %v, want ErrRootDirectory", err)
 	}

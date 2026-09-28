@@ -13,11 +13,8 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// TestFindByPathChecks proves the path checks run before any SQL: a
-// leading slash, which the library does not read as a path from the root,
-// an empty segment, a trailing slash, and a segment ValidateName refuses
-// (., .., an over-long name) are ErrInvalidPath, the refused segment
-// matches ErrInvalidName as well, and nothing reaches the driver.
+// TestFindByPathChecks checks each malformed path is ErrInvalidPath before
+// any SQL, a refused segment matching ErrInvalidName too.
 func TestFindByPathChecks(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
@@ -37,12 +34,8 @@ func TestFindByPathChecks(t *testing.T) {
 	}
 }
 
-// TestFindByPathWalks proves the baseline's reads: the start by id and
-// then one directory_by_name read per segment, each bound to the directory
-// the previous read returned and the normalized name; the empty path is
-// the start read alone; a start that no directory holds is ErrNotFound
-// with no further read and no prefix; and a missing segment is ErrNotFound
-// naming the prefix that failed, the walk stopping there.
+// TestFindByPathWalks checks the baseline's reads, one per segment, and
+// its ErrNotFound for a missing start or segment.
 func TestFindByPathWalks(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,
@@ -72,7 +65,7 @@ func TestFindByPathWalks(t *testing.T) {
 		t.Errorf("FindByPath(F, b) = %v, want ErrNotFound with no prefix", err)
 	}
 	_, err = s.Directories.FindByPath(ctx, db, "A", "b/missing/deeper")
-	if !errors.Is(err, blobfs.ErrNotFound) || !strings.HasSuffix(err.Error(), "from A at b/missing: "+blobfs.ErrNotFound.Error()) {
+	if !errors.Is(err, blobfs.ErrNotFound) || !strings.HasSuffix(err.Error(), "from A: at b/missing: "+blobfs.ErrNotFound.Error()) {
 		t.Errorf("FindByPath(A, b/missing/deeper) = %v, want ErrNotFound naming the failing prefix", err)
 	}
 
@@ -96,12 +89,8 @@ func TestFindByPathWalks(t *testing.T) {
 	}
 }
 
-// TestPathComposes proves the path is composed from the ancestor chain,
-// whatever order its rows arrive in: the root alone is /, a chain is the
-// names below the root joined by slashes, no chain is ErrNotFound, a
-// chain that does not reach the root is refused, and a chain that loops,
-// with the start on the loop or below it, is ErrCycle. The statement runs
-// once per call, whatever the depth.
+// TestPathComposes checks the path is composed from the ancestor rows in
+// any order, and the refusals of a missing, broken, or looping chain.
 func TestPathComposes(t *testing.T) {
 	ctx := context.Background()
 	cols := []string{"id", "parent_id", "name"}

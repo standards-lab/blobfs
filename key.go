@@ -6,7 +6,7 @@ import (
 	"unicode"
 )
 
-// KeyValidator is the one question blobfs asks of the object store:
+// KeyValidator is the one question a write asks of the object store:
 // whether it accepts a key. A consumer wires its store's key validation to
 // this interface at its composition root, so blobfs validates a key before
 // it stores the key in a pending row and never imports the store's

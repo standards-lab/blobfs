@@ -110,9 +110,7 @@ func TestFindFile(t *testing.T) {
 	}
 }
 
-// TestFindFileByName proves the lookup binds the directory and the
-// normalized name, reports no row as ErrNotFound, and refuses an invalid
-// name before any SQL.
+// TestFindFileByName checks the normalized lookup and its refusals.
 func TestFindFileByName(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, fileResponse("F", nfcName, blobfs.StatusPending, 1), noFile())
@@ -135,13 +133,8 @@ func TestFindFileByName(t *testing.T) {
 	}
 }
 
-// TestCreateFileForms proves Create inserts the pending row and returns it
-// in either form: under the fallback on the pool, the insert and the read
-// by id in a transaction of its own; inside the caller's transaction, the
-// same two statements in it; and under the returning dialect, one
-// statement. The insert binds the id, the directory, the normalized name,
-// the key built from the id and the name, and the declared content type,
-// with the pending status in its text.
+// TestCreateFileForms checks Create's pending insert and its bindings in
+// the fallback, on the pool and in a transaction, and in one statement.
 func TestCreateFileForms(t *testing.T) {
 	ctx := context.Background()
 	id := blobfs.NewID()
@@ -169,10 +162,11 @@ func TestCreateFileForms(t *testing.T) {
 			t.Errorf("%s (in tx %v): ops = %q, want %q", c.form.name, c.inTx, got, c.ops)
 		}
 		inserts := callsTo(rec, "INSERT INTO blobfs_file")
-		if len(inserts) != 1 || !strings.Contains(inserts[0].SQL, "'pending'") || strings.Contains(inserts[0].SQL, "RETURNING") != c.form.single {
+		if len(inserts) != 1 || !strings.Contains(inserts[0].SQL, "'pending'") || !strings.Contains(inserts[0].SQL, "d.status = 'active'") ||
+			strings.Contains(inserts[0].SQL, "RETURNING") != c.form.single {
 			t.Fatalf("%s: the insert is %v", c.form.name, inserts)
 		}
-		if want := []any{id, blobfs.RootID, nfcName, id + "/" + nfcName, "application/pdf"}; !slices.Equal(inserts[0].Args, want) {
+		if want := []any{id, nfcName, id + "/" + nfcName, "application/pdf", blobfs.RootID}; !slices.Equal(inserts[0].Args, want) {
 			t.Errorf("%s: the insert bound %v, want %v", c.form.name, inserts[0].Args, want)
 		}
 	}
@@ -184,17 +178,13 @@ func TestCreateFileForms(t *testing.T) {
 	}
 	calls := rec.Calls()
 	minted, _ := calls[1].Args[0].(string)
-	if _, err := blobfs.ParseID(minted); err != nil || calls[1].Args[3] != minted+"/a.txt" || !slices.Equal(calls[2].Args, []any{minted}) {
+	if _, err := blobfs.ParseID(minted); err != nil || calls[1].Args[2] != minted+"/a.txt" || !slices.Equal(calls[2].Args, []any{minted}) {
 		t.Errorf("the insert bound %v and the read %v, want a minted id, the key built from it, and the read by it", calls[1].Args, calls[2].Args)
 	}
 }
 
-// TestCreateFileRefusals proves the checks before any SQL, an invalid
-// name, a key the store refuses, and a supplied id that is the nil UUID or
-// no UUID, and the classification of blobfs's constraints on the insert in
-// both forms, each a ViolationError naming the constraint with the
-// driver's text hidden. A check violation is no constraint the write
-// mapping names, so it passes through as the driver reported it.
+// TestCreateFileRefusals checks the refusals before any SQL and the
+// classification of blobfs's constraints in both forms.
 func TestCreateFileRefusals(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
@@ -240,6 +230,34 @@ func TestCreateFileRefusals(t *testing.T) {
 		}
 	}
 
+	// An insert that selected no row reads the directory to classify it.
+	for _, f := range forms {
+		for _, c := range []struct {
+			directory sqltest.Response
+			want      error
+		}{
+			{noDirectory(), blobfs.ErrNotFound},
+			{directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusDeleting, 2), blobfs.ErrDeleting},
+		} {
+			s, db, rec := openStore(t, f, append(unchangedFile(f, noFile()), c.directory)...)
+			_, err := s.Files.Create(ctx, db, accepting{}, "D", "ok.txt", "text/plain")
+			var ve *blobfs.ViolationError
+			if !errors.Is(err, c.want) || errors.As(err, &ve) {
+				t.Errorf("%s: Create under a directory the insert did not select = %v, want %v", f.name, err, c.want)
+			}
+			if reads := callsTo(rec, "SELECT d.id"); len(reads) != 1 || !slices.Equal(reads[0].Args, []any{"D"}) {
+				t.Errorf("%s: the directory reads are %v, want one by the directory's id", f.name, reads)
+			}
+		}
+	}
+	// A caller-supplied id another row carries does not make an insert that
+	// selected nothing a success: the read found that row unchanged.
+	s, db, _ = openStore(t, fallback, sqltest.Response{Affected: 0}, fileResponse("F", "other.txt", blobfs.StatusAvailable, 1),
+		directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusDeleting, 2))
+	if _, err = s.Files.Create(ctx, db, accepting{}, "D", "ok.txt", "text/plain", data.WithID(blobfs.NewID())); !errors.Is(err, blobfs.ErrDeleting) {
+		t.Errorf("Create whose read found another row = %v, want ErrDeleting", err)
+	}
+
 	s, db, _ = openStore(t, fallback, violation("blobfs_ck_file_name", sqlate.ErrCheckViolation))
 	_, err = s.Files.Create(ctx, db, accepting{}, blobfs.RootID, "ok.txt", "text/plain")
 	var ve *blobfs.ViolationError
@@ -248,9 +266,8 @@ func TestCreateFileRefusals(t *testing.T) {
 	}
 }
 
-// TestCreateFileKeyBoundary proves the key is validated by the store's
-// rules as given: a name whose key sits exactly at a rune limit is
-// accepted, and one rune over is refused before any SQL.
+// TestCreateFileKeyBoundary checks a key at the store's rune limit is
+// accepted and one rune over refused before any SQL.
 func TestCreateFileKeyBoundary(t *testing.T) {
 	ctx := context.Background()
 	const limit = 60
@@ -261,7 +278,7 @@ func TestCreateFileKeyBoundary(t *testing.T) {
 	if _, err := s.Files.Create(ctx, db, runeLimit(limit), blobfs.RootID, fits, "text/plain"); err != nil {
 		t.Fatalf("Create at the boundary: %v", err)
 	}
-	key, _ := rec.Calls()[0].Args[3].(string)
+	key, _ := rec.Calls()[0].Args[2].(string)
 	if n := utf8.RuneCountInString(key); n != limit || len(key) <= limit {
 		t.Errorf("the key bound is %d runes in %d bytes, want %d runes in more bytes", n, len(key), limit)
 	}
@@ -275,13 +292,8 @@ func TestCreateFileKeyBoundary(t *testing.T) {
 	}
 }
 
-// TestEnsureFile proves the insert-or-find in both forms: a free name is
-// the lookup and Create's statements, created; a pending row is one
-// lookup, resumed; an available or a deleting row is one lookup, present,
-// with the row's status telling which; and a writer that wins between the
-// lookup and the insert on the pool is recovered by one more lookup, whose
-// row is reported by its status. Inside a transaction the same race
-// returns ErrNameTaken and no further statement runs.
+// TestEnsureFile checks the insert-or-find and its WriteOutcome in both
+// forms, the race on the pool and inside a transaction included.
 func TestEnsureFile(t *testing.T) {
 	ctx := context.Background()
 	for _, f := range forms {
@@ -348,9 +360,8 @@ func TestEnsureFile(t *testing.T) {
 	}
 }
 
-// TestEnsureFileRefusals proves the checks that run before any SQL, the
-// same as Create's: an invalid name, a key the store refuses, and a
-// supplied id that is the nil UUID or no UUID.
+// TestEnsureFileRefusals checks Ensure refuses what Create refuses before
+// any SQL.
 func TestEnsureFileRefusals(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
@@ -371,15 +382,8 @@ func TestEnsureFileRefusals(t *testing.T) {
 	}
 }
 
-// TestCompleteFile proves the last step of a write in both forms: the
-// guarded update binds the object's facts, the id, and the expected
-// version, carries the status predicate, and returns the available row.
-// When it changes no row, the row its read returned classifies the
-// refusal with no further statement: no row is ErrNotFound; a deleting
-// row, at any version, a TransitionError from deleting, which matches
-// ErrDeleting; any other row at another version query.ErrVersionMismatch
-// naming both versions; and an available row at the expected version a
-// TransitionError from available.
+// TestCompleteFile checks the guarded update in both forms and each
+// refusal classified from the row its read returns.
 func TestCompleteFile(t *testing.T) {
 	ctx := context.Background()
 	obj := blobfs.Object{Size: 42, ContentType: "text/plain", ETag: `"abc"`}
@@ -407,8 +411,7 @@ func TestCompleteFile(t *testing.T) {
 			}
 
 			// complete runs Complete of F at version 1 over a command that
-			// changed no row, with the read returning read, and returns its
-			// ops it ran and its error.
+			// changed no row, its read returning read.
 			complete := func(read sqltest.Response) (string, error) {
 				s, db, rec := openStore(t, f, unchangedFile(f, read)...)
 				_, err := s.Files.Complete(ctx, db, "F", 1, obj)
@@ -440,10 +443,7 @@ func TestCompleteFile(t *testing.T) {
 					t.Errorf("Complete of a %s row = %v; ErrDeleting should match for deleting only", status, err)
 				}
 			}
-			// A deleting row outranks a stale version: Delete advanced the
-			// version past the one the writer read, and no version will
-			// complete the row. An available row at another version is the
-			// plain conflict.
+			// Deleting outranks the stale version.
 			got, err = complete(fileResponse("F", "a.txt", blobfs.StatusDeleting, 2))
 			var te *blobfs.TransitionError
 			if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !errors.As(err, &te) || te.From != blobfs.StatusDeleting {
@@ -456,9 +456,8 @@ func TestCompleteFile(t *testing.T) {
 			if !errors.Is(err, query.ErrVersionMismatch) || errors.Is(err, blobfs.ErrInvalidTransition) || !strings.Contains(err.Error(), "expected 1, current 2") {
 				t.Errorf("Complete of an available row at another version = %v, want ErrVersionMismatch", err)
 			}
-			// A pending row at the expected version the update did not
-			// change is no state the statement can leave; it is reported,
-			// not taken for success.
+			// A pending row the update left unchanged is reported, not
+			// taken for success.
 			_, err = complete(fileResponse("F", "a.txt", blobfs.StatusPending, 1))
 			if err == nil || errors.Is(err, blobfs.ErrInvalidTransition) || !strings.Contains(err.Error(), "pending at version 1") {
 				t.Errorf("Complete refused over a pending row = %v, want an error naming the row's state", err)
@@ -467,14 +466,8 @@ func TestCompleteFile(t *testing.T) {
 	}
 }
 
-// TestMoveFile proves the file move in both forms: one guarded command on
-// the pool bound to the directory, the normalized name, the id, and the
-// expected version, with the status predicate in its text and the key
-// untouched, returning the moved row; a refused name before any SQL; and
-// the outcomes of the guard: a missing row is ErrNotFound, a moved version
-// ErrVersionMismatch, a deleting row ErrDeleting at any version,
-// a missing directory ErrNotFound through the foreign key, and a taken name
-// ErrNameTaken through the unique constraint.
+// TestMoveFile checks the guarded move in both forms and each refusal,
+// classified from the row's read and the two directories' reads.
 func TestMoveFile(t *testing.T) {
 	ctx := context.Background()
 	for _, f := range forms {
@@ -493,8 +486,8 @@ func TestMoveFile(t *testing.T) {
 			}
 			update := callsTo(rec, "UPDATE blobfs_file")[0]
 			command, _, _ := strings.Cut(update.SQL, "RETURNING")
-			if !strings.Contains(command, "AND status <> 'deleting'") || strings.Contains(command, "key") {
-				t.Errorf("the update is %q, want the status predicate and no key column", update.SQL)
+			if !strings.Contains(command, "AND status <> 'deleting'") || strings.Count(command, "status = 'active'") != 2 || strings.Contains(command, "key") {
+				t.Errorf("the update is %q, want the status predicates and no key column", update.SQL)
 			}
 			if !slices.Equal(update.Args, []any{"P", nfcName, "F", int64(1)}) {
 				t.Errorf("the update bound %v, want the directory, the normalized name, the id, and the expected version", update.Args)
@@ -508,22 +501,46 @@ func TestMoveFile(t *testing.T) {
 			if err := move(unchangedFile(f, noFile())...); !errors.Is(err, blobfs.ErrNotFound) {
 				t.Errorf("Move of a missing row = %v, want ErrNotFound", err)
 			}
-			err = move(unchangedFile(f, fileResponse("F", "a", blobfs.StatusAvailable, 3))...)
+			// active scripts the reads of the file's directory and the new
+			// one, both active, after an update that changed nothing.
+			active := []sqltest.Response{directoryResponse(blobfs.RootID, "", "/", 1), directoryResponse("P", blobfs.RootID, "p", 1)}
+			err = move(append(unchangedFile(f, fileResponse("F", "a", blobfs.StatusAvailable, 3)), active...)...)
 			if !errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "expected 1, current 3") {
 				t.Errorf("Move at a stale version = %v, want ErrVersionMismatch naming both versions", err)
 			}
+			for _, version := range []int64{1, 3} {
+				// Deleting at either end outranks the stale version.
+				from := fileIn("F", "S", "a", blobfs.StatusAvailable, version)
+				err = move(append(unchangedFile(f, from), directoryIn("S", blobfs.RootID, "s", blobfs.DirectoryStatusDeleting, 2))...)
+				if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "the directory S is deleting") {
+					t.Errorf("Move out of a deleting directory at version %d = %v, want ErrDeleting", version, err)
+				}
+				err = move(append(unchangedFile(f, from), directoryResponse("S", blobfs.RootID, "s", 1), directoryIn("P", blobfs.RootID, "p", blobfs.DirectoryStatusDeleting, 2))...)
+				if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "the directory P is deleting") {
+					t.Errorf("Move into a deleting directory at version %d = %v, want ErrDeleting", version, err)
+				}
+			}
+			// A missing new directory is refused by the predicate first.
+			missing := []sqltest.Response{directoryResponse(blobfs.RootID, "", "/", 1), noDirectory()}
+			err = move(append(unchangedFile(f, fileResponse("F", "a", blobfs.StatusAvailable, 1)), missing...)...)
+			var ve *blobfs.ViolationError
+			if !errors.Is(err, blobfs.ErrNotFound) || errors.As(err, &ve) {
+				t.Errorf("Move into a missing directory = %v, want ErrNotFound", err)
+			}
+			err = move(append(unchangedFile(f, fileResponse("F", "a", blobfs.StatusAvailable, 3)), missing...)...)
+			if !errors.Is(err, query.ErrVersionMismatch) {
+				t.Errorf("Move into a missing directory at a stale version = %v, want ErrVersionMismatch", err)
+			}
 			for _, version := range []int64{1, 2} {
-				// A deleting row outranks a stale version: Delete advanced
-				// the version past the one the mover read.
+				// Deleting outranks the stale version.
 				err = move(unchangedFile(f, fileResponse("F", "a", blobfs.StatusDeleting, version))...)
 				if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "the row is deleting") {
 					t.Errorf("Move of a deleting row at version %d = %v, want ErrDeleting and not a version mismatch", version, err)
 				}
 			}
-			// An available row at the expected version the update did not
-			// change is no state the statement can leave; it is reported,
-			// not taken for success.
-			err = move(unchangedFile(f, fileResponse("F", "a", blobfs.StatusAvailable, 1))...)
+			// An available row the update left unchanged is reported, not
+			// taken for success.
+			err = move(append(unchangedFile(f, fileResponse("F", "a", blobfs.StatusAvailable, 1)), active...)...)
 			if err == nil || errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "available at version 1") {
 				t.Errorf("Move refused over an available row = %v, want an error naming the row's state", err)
 			}

@@ -11,11 +11,17 @@ full.
   serves several isolated trees runs one install per tree.
 - **Entity**: one of the two row types, `blobfs.Directory` and `blobfs.File`, whose `json` tags
   are the scan and binding contract of their tables.
-- **Directory**: a row of `blobfs_directory`: a node of the tree with a parent and a name.
+- **Directory**: a row of `blobfs_directory`: a node of the tree with a parent, a name, and a
+  status, active or deleting.
 - **File**: a row of `blobfs_file`: a file's metadata, the directory it sits in, its status, and
   its key. The bytes are the consumer's, in its object store.
 - **Root**: the one directory with no parent, named `/`, with the id `blobfs.RootID`, the nil
   UUID, seeded by the schema.
+- **Branch**: a directory with every directory beneath it and every file in them: what a mark
+  and a sweep delete together.
+- **Branch root**: the directory a mark named: a deleting directory under an active parent.
+  `Directories.Deleting` returns the branch roots, and the rest of a branch is reached from its
+  root.
 - **Name space**: the names one parent holds for one kind of row. Directories and files have
   separate name spaces, so a directory and a file may share a name under one parent.
 - **Name**: a directory's or file's display name, normalized to Unicode NFC and validated before
@@ -29,36 +35,50 @@ full.
 - **Sanitized name**: the key's name segment, the display name at upload with the characters an
   object store refuses replaced, frozen so an operator browsing the container can read it.
 - **Key validator**: the consumer's adapter over its store's key rule, `blobfs.KeyValidator`:
-  the one thing blobfs asks of an object store.
+  the one thing a write asks of an object store.
+- **Object deleter**: the consumer's adapter over its store's delete, `data.ObjectDeleter`: the
+  one call a sweep makes to an object store, idempotent over a missing object.
 
 ## The protocols
 
 - **Status**: a file row's place in the write and delete protocols: `pending`, `available`, or
   `deleting`.
+- **Directory status**: a directory row's place in the delete of a branch,
+  `blobfs.DirectoryStatus`: `active` until a mark, then `deleting` until the row is removed.
 - **Pending**: a row inserted before its object exists. A stopped write leaves its row pending,
   where a retry resumes it.
 - **Available**: a row whose object exists, with the size, content type, and entity tag the
   store reported.
-- **Deleting**: a row whose object is being removed. It keeps its name until it is purged, and
-  every mutation but the delete steps refuses it.
+- **Deleting**: a file row whose object is being removed, or a directory whose branch is; see
+  [the two-phase delete](concepts.md#the-two-phase-delete).
 - **Transition**: a change of status the table in the root package allows. No transition leaves
   `deleting` except the row's removal.
 - **Two-phase write**: `Create` (or `Ensure`) inserts the pending row, the consumer puts the
   object under its key, and `Complete` makes the row available.
 - **Two-phase delete**: `Delete` marks the row deleting and returns its key, the consumer
   deletes the object, and `Purge` removes the row. Every step is safe to repeat.
+- **Mark**: `Directories.MarkDeleting`, the first step of a branch's delete, which moves every
+  directory and file in the branch to deleting and closes the branch.
+- **Straggler**: an active row in a deleting branch, left by a create that read its parent before
+  the mark committed. A repeated mark reaches it, and each pass of the sweep marks its branches
+  again.
+- **Sweep**: `Store.Sweep`, one bounded, stateless pass that finishes the deletes callers began:
+  it deletes the objects of each marked branch through the consumer's `data.ObjectDeleter`,
+  purges the rows, removes the directories deepest first, and, when asked, reclaims stale rows.
+- **Stale row**: a file row a protocol left partway, older than the age the sweep is given: a
+  pending row whose write never completed, or a deleting row whose purge never ran.
+- **Orphaned object**: an object with no row, left by a put that landed after a sweep had
+  deleted its row's object. The write's `Complete` is refused, which tells its writer to delete
+  the object it put.
 - **Write outcome**: what `Files.Ensure` did with a name: created a pending row, resumed a
   pending row an earlier write left, or found the name present.
 - **Hold**: `Files.Hold`, a lock on a file's row for the rest of a transaction, taken without
-  changing the row. It is the library's half of reference-then-delete, and a variation point:
-  the baseline takes it with a self-assigning update, the PostgreSQL engine with
-  `SELECT ... FOR NO KEY UPDATE`, which writes no row version.
+  changing the row: the library's half of reference-then-delete, and a variation point.
 - **Reference-then-delete**: the rule that a consumer holds a file in the transaction that
   inserts a reference to it, so the reference and a delete of the file serialize on the file's
   row.
 - **Tree lock**: the lock a directory move takes before its cycle check, so two opposing moves
-  run one after the other. The baseline has none; the PostgreSQL engine's is an advisory lock
-  held until the transaction ends.
+  run one after the other; see [moves](concepts.md#moves).
 - **Cycle check**: `Directories.IsWithin`, run by a directory move, which refuses a new parent
   inside the moved directory's own subtree.
 - **Serializes**: whether a variant's tree lock serializes directory moves across transactions.
@@ -72,7 +92,8 @@ full.
 - **Published patterns**: the column lists of the two entities, `blobfs.directory_columns` and
   `blobfs.file_columns`, which a consumer's own statements include.
 - **Listing**: one page of one directory's child directories or files, a sqlate projection
-  anchored on the directory's id, with the caller's filters and sort composed onto it.
+  anchored on the directory's id, with the caller's filters and sort composed onto it. A listing
+  hides deleting rows unless it is called with `data.IncludeDeleting`.
 - **Directives** (sqlate): a listing request's sorts, filters, and whether it counts the
   total.
 - **Cursor** (sqlate): an opaque position in a listing's order that `Continue` reads the next
@@ -85,9 +106,9 @@ full.
   `RETURNING`, on an engine whose dialect renders the clause.
 - **Fallback** (sqlate): a returning command run as the command and then its read, in one
   transaction, on an engine whose dialect does not render `RETURNING`.
-- **Guarded step**: an update that runs only at the version the caller read, and reports
-  `query.ErrVersionMismatch` otherwise, or `blobfs.ErrDeleting` for a deleting file row, whose
-  refusal outranks the version.
+- **Guarded step**: an update that runs only at the version the caller read; see [deleting
+  outranks the version](concepts.md#deleting-outranks-the-version). `data.AtVersion` guards the
+  steps that take no version argument.
 - **Violation**: a database constraint violation mapped to a blobfs sentinel, reported as a
   `blobfs.ViolationError` that names the sentinel and the constraint.
 
@@ -95,8 +116,9 @@ full.
 
 - **Tier** (sqlate): the portability a statement declares. A standard statement runs on any
   engine; a native one uses a feature of one engine and carries a port note.
-- **Baseline**: `data.Standard`, the standard-tier variant every store runs unless an engine
-  replaces it, complete on any engine `sqlate` has a dialect for.
+- **Baseline**: the standard-tier variant `data.New` binds, which every store runs unless an
+  engine replaces it and which an engine receives as its `base`, complete on any engine `sqlate`
+  has a dialect for.
 - **Variation point**: an operation an engine can do better than standard SQL: the tree lock,
   path resolution, and a file's hold.
 - **Variant**: an implementation of the variation points, `data.Variant`, that the store
@@ -116,6 +138,7 @@ full.
   table. blobfs's is `blobfs`, recorded in `blobfs_schema_version`, and a consumer declares it
   below its own.
 - **Public schema**: the tables, columns, constraint names, referential actions, and migration
-  set, all of which change only in a major release.
+  set, all of which change only in a major release from v1.0, and before it only in a minor
+  release whose changelog marks the change breaking.
 - **Constraint name**: a name of the form `blobfs_<kind>_<table>_<detail>`, which a violation
   carries to the consumer.

@@ -7,6 +7,54 @@ the `postgres` sub-module keeps its own.
 
 ## [Unreleased]
 
+## [v0.2.0] - 2026-09-28
+
+The delete of a branch, a directory with everything beneath it: the branch is marked deleting in
+one transaction and removed by a bounded, stateless sweep, which also reclaims the rows a stopped
+write or delete left. It needs the `postgres` sub-module's migration 0003, which `postgres
+v0.2.0` ships.
+
+### Added
+
+- `DirectoryStatus`, with `DirectoryStatusActive` and `DirectoryStatusDeleting`, `Valid`, and
+  `Mutable`, and `Directory.Status`.
+- `Directories.MarkDeleting`, the first step of a branch's delete, which marks a directory with
+  everything beneath it deleting and returns `Marked`, the counts of rows it changed.
+- `Directories.Deleting`, the roots of the branches being deleted, in id order.
+- `Store.Sweep`, one bounded pass that removes marked branches through the consumer's
+  `ObjectDeleter`, with `SweepResult` and the options `Batch`, `OnRemoveDirectory`, and
+  `StaleOlderThan`, which reclaims stale pending and deleting file rows.
+- `AtVersion` guards `Files.Delete`, `Directories.Delete`, and `Directories.MarkDeleting` as it
+  guards `Files.Hold`. Its type is `VersionOption`.
+- `ListOption` and `IncludeDeleting`, which makes a listing show every status and list a
+  deleting directory.
+- The statements `mark_directory_deleting`, `mark_directory_files_deleting`,
+  `deleting_branches`, and `stale_files_before`, in the store's inventory and its `Verify`.
+- `data/datatest`: the groups Branches and Sweeps, which run after the others.
+
+### Changed
+
+- **Breaking:** `HoldOption` is replaced by `VersionOption`, which `Files.Hold`,
+  `Files.Delete`, `Directories.Delete`, and `Directories.MarkDeleting` take.
+- **Breaking:** the statements `delete_directory`, `delete_file`, and `hold_file` take a
+  nullable `version`, which `AtVersion` binds and which guards nothing when NULL, and
+  `hold_file_at_version` is folded into `hold_file`: the store's inventory no longer lists it.
+- **Breaking:** `Engine` takes its baseline as a `Variant`:
+  `func(catalog *query.Catalog, dialect sqlate.Dialect, base Variant) (Variant, error)`.
+- **Breaking:** `Standard` is unexported. The baseline reaches an engine only as its `base`
+  argument, which a variant embeds through the `Variant` interface.
+- **Breaking:** `Variant` gains `Statements() []query.Statement` and
+  `Verify(ctx, sess) error`, the variant's own inventory, which `Store.Statements` lists and
+  `Store.Verify` runs. A variant that embeds the one it is given gains both.
+- **Breaking:** the published pattern `blobfs.directory_columns` includes `d.status`, which
+  needs migration 0003 and a field in a consumer's own scan type.
+- **Breaking:** a deleting directory is closed: a create or an ensure under it, a move into or
+  out of it, and a move of it are `ErrDeleting`.
+- **Breaking:** the listings hide deleting rows, and the listing of a deleting directory is
+  `ErrDeleting`, unless called with `IncludeDeleting`. The directory listing declares `status`.
+- **Breaking:** a create or a move whose parent or directory does not exist is a plain
+  `ErrNotFound`, no longer a `ViolationError`, unless the directory is removed mid-statement.
+
 ## [v0.1.0] - 2026-09-24
 
 The first release: a SQL-backed tree of directories and file metadata over an object store the
@@ -47,5 +95,6 @@ library never calls.
 - `data/datatest`, the conformance suite: `Run` checks a store over any engine against the
   baseline on a live database, the hold's refusals and interleavings with a delete included.
 
-[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.2.0...HEAD
+[v0.2.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.2.0
 [v0.1.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.1.0

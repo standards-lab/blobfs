@@ -38,7 +38,7 @@ func (s *suite) heldRowUnchanged(t *testing.T, dir string) {
 	for _, status := range []blobfs.Status{blobfs.StatusAvailable, blobfs.StatusPending} {
 		id := s.insertFile(t, dir, "held-"+status.String()+".txt", status)
 		before := s.file(t, id)
-		for _, opts := range [][]data.HoldOption{nil, {data.AtVersion(before.Version)}} {
+		for _, opts := range [][]data.VersionOption{nil, {data.AtVersion(before.Version)}} {
 			if err := s.holdIn(id, opts...); err != nil {
 				t.Fatalf("Hold of a %s row with %d options: %v", status, len(opts), err)
 			}
@@ -49,10 +49,8 @@ func (s *suite) heldRowUnchanged(t *testing.T, dir string) {
 	}
 }
 
-// holdRefusals checks the hold's refusals against the baseline: a stale
-// version is ErrVersionMismatch; a deleting row is ErrDeleting whatever
-// version is asked for, and never a version mismatch; and a missing row
-// is ErrNotFound. None changes the row.
+// holdRefusals checks the hold's refusals against the baseline, none of
+// which changes the row.
 func (s *suite) holdRefusals(t *testing.T, dir string) {
 	stale := s.insertFile(t, dir, "stale.txt", blobfs.StatusAvailable)
 	deletingID := s.insertFile(t, dir, "deleting.txt", blobfs.StatusAvailable)
@@ -61,14 +59,14 @@ func (s *suite) holdRefusals(t *testing.T, dir string) {
 	for _, c := range []struct {
 		name string
 		id   string
-		opts []data.HoldOption
+		opts []data.VersionOption
 		want error
 		not  error
 	}{
-		{"StaleVersion", stale, []data.HoldOption{data.AtVersion(2)}, query.ErrVersionMismatch, blobfs.ErrDeleting},
+		{"StaleVersion", stale, []data.VersionOption{data.AtVersion(2)}, query.ErrVersionMismatch, blobfs.ErrDeleting},
 		{"Deleting", deletingID, nil, blobfs.ErrDeleting, query.ErrVersionMismatch},
-		{"DeletingAtItsOldVersion", deletingID, []data.HoldOption{data.AtVersion(before.Version)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
-		{"DeletingAtItsVersion", deletingID, []data.HoldOption{data.AtVersion(deleting.Version)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
+		{"DeletingAtItsOldVersion", deletingID, []data.VersionOption{data.AtVersion(before.Version)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
+		{"DeletingAtItsVersion", deletingID, []data.VersionOption{data.AtVersion(deleting.Version)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
 		{"Missing", blobfs.NewID(), nil, blobfs.ErrNotFound, blobfs.ErrDeleting},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -90,11 +88,8 @@ func (s *suite) holdRefusals(t *testing.T, dir string) {
 	}
 }
 
-// holdThenDelete checks the first interleaving: a holder inserts its
-// reference under the hold; a Delete that starts meanwhile waits for the
-// holder to commit and then runs, and the reference is there for the
-// consumer's own check after the Delete to see, and for the foreign key
-// to refuse Purge on.
+// holdThenDelete checks the first interleaving: a Delete that starts under
+// a hold waits for the holder's commit, then sees its reference.
 func (s *suite) holdThenDelete(t *testing.T, dir string) {
 	s.createFileReferences(t)
 	id := s.insertFile(t, dir, "held-then-deleted.txt", blobfs.StatusAvailable)
@@ -201,7 +196,7 @@ type deleteResult struct {
 
 // holdIn runs Hold through the store under test in a transaction of its
 // own and commits it.
-func (s *suite) holdIn(id string, opts ...data.HoldOption) error {
+func (s *suite) holdIn(id string, opts ...data.VersionOption) error {
 	_, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (struct{}, error) {
 		return struct{}{}, s.store.Files.Hold(s.ctx, tx, id, opts...)
 	})

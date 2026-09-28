@@ -12,10 +12,12 @@ import (
 // changed row is a breaking change to the schema's version line. The pins
 // start at the module's first release, v0.1.0.
 var released = map[string]string{
-	"0001_directory.up.sql":   "dc9b2f45d590bd5d06f897c40bb8ab9983aed40beb323fc7a44ac83574301b46",
-	"0001_directory.down.sql": "7193988c04d57b6b7729c0daa0523ee70e3c920e12baec2897ce720d5e274ba9",
-	"0002_file.up.sql":        "bafff9b9d797e61791ecbcdfd5df7db414fb2ddb2259e547b87eaa0eed454712",
-	"0002_file.down.sql":      "adbf56e6f4f0ab977bcb8b3e7874bae41fe3eebf7e7a610e9cda98c162f3b14c",
+	"0001_directory.up.sql":          "dc9b2f45d590bd5d06f897c40bb8ab9983aed40beb323fc7a44ac83574301b46",
+	"0001_directory.down.sql":        "7193988c04d57b6b7729c0daa0523ee70e3c920e12baec2897ce720d5e274ba9",
+	"0002_file.up.sql":               "bafff9b9d797e61791ecbcdfd5df7db414fb2ddb2259e547b87eaa0eed454712",
+	"0002_file.down.sql":             "adbf56e6f4f0ab977bcb8b3e7874bae41fe3eebf7e7a610e9cda98c162f3b14c",
+	"0003_directory_status.up.sql":   "e536c7e118ca68f31933cc2add6320991c6e110dbc749dd3e461f2969521ec5e",
+	"0003_directory_status.down.sql": "727c7d8a7ed6ee2257b4f24691a48184841fa84b2e6e0ce892790a0e5c1a8753",
 }
 
 // TestGoldenHashes checks every embedded migration file against the

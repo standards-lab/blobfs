@@ -7,6 +7,46 @@ changelog covers this sub-module only; the base module keeps its own.
 
 ## [Unreleased]
 
+## [v0.2.0] - 2026-09-28
+
+The schema for the delete of a branch.
+
+### Added
+
+- Migration 0003, `directory_status`, which adds the column `blobfs_directory.status`, `text
+  NOT NULL DEFAULT 'active'`, leaving every existing row active, and the check
+  `blobfs_cc_directory_status`, `status IN ('active', 'deleting')`. It also adds two partial
+  indexes for the sweep's reads: `blobfs_ix_directory_deleting` on `blobfs_directory (id)` of
+  the deleting directories, and `blobfs_ix_file_stale` on `blobfs_file (updated_at, id)` of the
+  pending and deleting files. The migration ships its down, which drops each of the four by name
+  and re-activates every deleting directory, a branch marked or half swept included, while its
+  files stay deleting. The golden test pins both files.
+- Migration 0003 runs in one transaction, and neither its index builds nor its check's
+  validation is concurrent. The `ALTER TABLE` locks `blobfs_directory` against reads and writes
+  while the check reads every row, and each index build locks its table, `blobfs_directory` or
+  `blobfs_file`, against writes while it reads every row; each lock lasts until the migration
+  commits, a time that grows with the tables. A consumer with large tables applies it in a
+  maintenance window.
+- The integration tier: the conformance suite's new groups, the directory status check's
+  violation, and plan assertions for the reads through the two new indexes.
+
+### Changed
+
+- **Breaking:** the engine runs against blobfs v0.2.0, whose statements read the status column,
+  so a consumer applies migration 0003 before it runs the new version; `Up` applies it with the
+  rest of the set.
+- `resolve_path` returns the directory's status with its other columns, as
+  `blobfs.directory_columns` now lists them.
+- **Breaking:** `Engine` takes its baseline as a `data.Variant`, as blobfs v0.2.0's
+  `data.Engine` declares.
+- **Breaking:** `Variant` is unexported. `Engine` returns the variant as a `data.Variant`, which
+  lists and verifies its own statements through `Statements` and `Verify`.
+- **Breaking:** `lock_file` takes a nullable `version`, which `data.AtVersion` binds and which
+  guards nothing when NULL, and `lock_file_at_version` is folded into it: the variant's
+  inventory no longer lists it.
+
+Requires `github.com/standards-lab/blobfs v0.2.0` and `github.com/standards-lab/sqlate v0.4.0`.
+
 ## [v0.1.0] - 2026-09-24
 
 The first release of the PostgreSQL engine.
@@ -31,5 +71,6 @@ The first release of the PostgreSQL engine.
 
 Requires `github.com/standards-lab/blobfs v0.1.0` and `github.com/standards-lab/sqlate v0.4.0`.
 
-[Unreleased]: https://github.com/standards-lab/blobfs/compare/postgres/v0.1.0...HEAD
+[Unreleased]: https://github.com/standards-lab/blobfs/compare/postgres/v0.2.0...HEAD
+[v0.2.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.2.0
 [v0.1.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.1.0

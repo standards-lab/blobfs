@@ -16,23 +16,11 @@ import (
 )
 
 // opposingMoves is the tree lock's proof: transaction A moves X under Y
-// while transaction B moves Y under X, each through the full
-// Directories.Move, interleaved through a wrapper of the variant under
-// test that pauses each move once its lock has returned, with the commits
-// held by the suite. A starts first and reaches the pause holding the
-// lock; B then starts.
-//
-// When the store serializes, B blocks inside the lock while A holds it,
-// through A's check and update and until A commits; B's lock then
-// returns, and B's check sees X under Y and refuses with ErrCycle: no
-// cycle exists. When the store does not serialize, B passes the no-op
-// lock at once, A's check and update run and stay uncommitted, B's check
-// then runs against the same committed state and passes, B's update
-// waits on A's row locks and runs once A commits, both commit, and X and
-// Y are each other's ancestor and unreachable from the root, which the
-// suite asserts with a walk down from the root and a bounded walk up from
-// each. It then checks that IsWithin and Path terminate on the cycle with
-// their defined answers, and repairs it through Move.
+// while B moves Y under X, each through Directories.Move, interleaved by a
+// gated wrapper of the variant that pauses each move after its lock. When
+// the store serializes, B blocks in the lock until A commits and is then
+// ErrCycle. When it does not, both commit and X and Y form a cycle
+// detached from the root, which the check asserts, walks, and repairs.
 func (s *suite) opposingMoves(t *testing.T) {
 	x := s.mkdir(t, "x-"+t.Name())
 	y := s.mkdir(t, "y-"+t.Name())
@@ -76,11 +64,8 @@ func (s *suite) opposingMoves(t *testing.T) {
 	if err := <-a.moved; err != nil {
 		t.Fatalf("A's move on a variant that does not serialize: %v", err)
 	}
-	// A's update is uncommitted, so B's check sees X still under the root
-	// and passes. B's update then waits on the row locks A's update took,
-	// so B returns only once A commits; a B that returned ErrCycle would
-	// mean its check ran after A's commit, which the no-op lock cannot
-	// cause.
+	// A's update is uncommitted, so B's check passes; B's update waits on
+	// A's row locks and returns only once A commits.
 	close(releaseB)
 	select {
 	case err := <-b.moved:
@@ -105,9 +90,8 @@ func (s *suite) opposingMoves(t *testing.T) {
 	if err := <-b.done; err != nil {
 		t.Fatalf("B's commit: %v", err)
 	}
-	// The proof that a variant without the lock forms a cycle: both moves
-	// committed, X is under Y and Y is under X, neither is reachable from
-	// the root, and each is its own ancestor.
+	// Both moves committed: X and Y are each other's ancestor, unreachable
+	// from the root.
 	xr, yr := s.directory(t, x.ID), s.directory(t, y.ID)
 	if xr.ParentID == nil || yr.ParentID == nil || *xr.ParentID != y.ID || *yr.ParentID != x.ID {
 		t.Fatalf("after both commits x's parent is %v and y's is %v, want each the other", xr.ParentID, yr.ParentID)
@@ -119,9 +103,8 @@ func (s *suite) opposingMoves(t *testing.T) {
 		t.Error("the two directories are not each their own ancestor; no cycle formed")
 	}
 	s.walksTerminate(t, x.ID, y.ID)
-	// Repair through the store, so the rest of the database stays
-	// walkable: Y goes back under the root, which is not within the loop,
-	// so the cycle check passes; X stays under Y.
+	// Repair through the store so the database stays walkable: Y back under
+	// the root, off the loop, so the cycle check passes.
 	if _, err := s.move(t, y.ID, blobfs.RootID, y.Name, yr.Version); err != nil {
 		t.Fatalf("the repairing move of y under the root: %v", err)
 	}
@@ -132,14 +115,9 @@ func (s *suite) opposingMoves(t *testing.T) {
 	s.wantPath(t, x.ID, "/"+y.Name+"/moved")
 }
 
-// walksTerminate checks the upward walks on the detached cycle x and y
-// form, each parent of the other, through the store under test and the
-// baseline, each call under a deadline so a walk that never terminates
-// fails the check rather than hanging it. IsWithin terminates with a
-// defined answer: each directory on the loop is within the other and
-// within itself, and within nothing off the loop, the root among them.
-// Path terminates with ErrCycle, for a directory on the loop and for one
-// below it.
+// walksTerminate checks IsWithin and Path terminate on the cycle x and y
+// form, with their defined answers, on both stores, each call under a
+// deadline so a walk that never ends fails rather than hangs.
 func (s *suite) walksTerminate(t *testing.T, x, y string) {
 	t.Helper()
 	child := s.mkdirUnder(t, x, "below-the-loop")
@@ -172,16 +150,9 @@ func (s *suite) walksTerminate(t *testing.T, x, y string) {
 	}
 }
 
-// opposingSerializableMoves is the standard-tier alternative to the lock,
-// checked on every variant: the same two opposing moves, each in a
-// transaction the caller opened at serializable isolation, interleaved as
-// on a variant without the lock (both past their locks, A's update
-// uncommitted when B's check runs). The engine then refuses one of the
-// two, at its update or at its commit, with sqlate.ErrSerializationFailure,
-// and no cycle forms. On a serializing variant B's snapshot predates A's
-// commit all the same, because the lock statement is B's first and takes
-// the snapshot before it blocks, so B is refused at its update instead of
-// at its check.
+// opposingSerializableMoves checks, on every variant, that two opposing
+// moves at serializable isolation, interleaved as without the lock, end
+// with one refused as sqlate.ErrSerializationFailure and no cycle.
 func (s *suite) opposingSerializableMoves(t *testing.T) {
 	x := s.mkdir(t, "sx-"+t.Name())
 	y := s.mkdir(t, "sy-"+t.Name())
@@ -241,11 +212,12 @@ func (s *suite) opposingSerializableMoves(t *testing.T) {
 
 // gatedStore builds a store over a gated wrapper of the variant the
 // engine under test builds, through an engine that wraps it, against the
-// suite's catalog and dialect.
+// suite's catalog and dialect, and checks that the wrapper lists and
+// verifies the variant's own statements through the embedding.
 func (s *suite) gatedStore(t *testing.T) (*gated, *data.Store) {
 	t.Helper()
 	g := &gated{arrived: make(chan chan struct{})}
-	gate := func(c *query.Catalog, d sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+	gate := func(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Variant, error) {
 		v, err := s.engine(c, d, base)
 		if err != nil {
 			return nil, err
@@ -257,15 +229,20 @@ func (s *suite) gatedStore(t *testing.T) (*gated, *data.Store) {
 	if err != nil {
 		t.Fatalf("data.New over the gated variant: %v", err)
 	}
+	// The wrapper embeds the variant, so it lists and verifies the
+	// engine's own statements as the store under test does.
+	if got, want := len(store.Statements()), len(s.store.Statements()); got != want {
+		t.Errorf("the gated store lists %d statements, want the %d of the store under test", got, want)
+	}
+	if err := store.Verify(s.ctx, s.db); err != nil {
+		t.Errorf("Verify of the gated store: %v", err)
+	}
 	return g, store
 }
 
 // gated wraps a variant so that every LockTree, once the wrapped lock has
-// returned, sends a release channel of its own on arrived and waits on
-// it before it returns. The suite drives two moves through it and decides
-// when each proceeds past its lock, in arrival order; on a serializing
-// variant a second lock call blocks inside the wrapped lock and never
-// reaches arrived until the first transaction ends.
+// returned, sends a release channel on arrived and waits on it, letting
+// the suite decide when each move proceeds past its lock.
 type gated struct {
 	data.Variant
 	arrived chan chan struct{}
@@ -342,9 +319,7 @@ func (s *suite) startMove(store *data.Store, id, parentID string, version int64,
 }
 
 // reachable counts how many of the two directories a walk down from the
-// root reaches. A directory in a cycle is never reached, because its
-// chain of parents never arrives at the root, so the walk terminates
-// whatever the two directories' state.
+// root reaches; a directory in a cycle is never reached.
 func (s *suite) reachable(t *testing.T, x, y string) int {
 	t.Helper()
 	p := s.db.Dialect().Placeholder
@@ -392,15 +367,11 @@ func awaitOrFail(t *testing.T, done <-chan error, msg string) error {
 	}
 }
 
-// racingPool is the pool with the first two runs of one lookup gated:
-// each, once its lookup has run, waits until the other's has run too, so
-// two concurrent Ensure calls through it both find no row before either
-// inserts. That forces the race Ensure recovers from on the pool: both
-// insert, the engine blocks the second insert on the unique constraint
-// until the first commits and then refuses it, and the second caller looks
-// the row up once more. It embeds the pool, so it is a sqlate.Beginner and
-// reports errors as the pool does, and every other statement passes
-// through; the fallback's own transaction runs on the pool itself.
+// racingPool is the pool with the first two runs of one lookup gated, each
+// waiting after its lookup until the other's has run, so two concurrent
+// Ensure calls both find no row and both insert: the race Ensure recovers
+// from on the pool. It embeds the pool, so every other statement, and the
+// fallback's own transaction, runs on the pool itself.
 type racingPool struct {
 	*sqlate.DB
 	lookup string

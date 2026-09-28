@@ -3,26 +3,20 @@
 package postgres_test
 
 // This file holds the plan-shape and cost regression assertions for the
-// statements the store runs: the listing under query.TotalNone and under
-// query.TotalExact, the cursor page by name and by the row-value
-// comparison over a consumer's created_at index, the baseline's path walk
-// step and the variant's one-statement resolution, the recursive walks up
-// the tree, and the protocol steps, each command in its single-statement
-// form. Each test seeds a fixture in its own throwaway database, captures
-// a statement as the store composes it or takes it from the store's
-// inventory, explains it with EXPLAIN (ANALYZE, BUFFERS) through
-// internal/dbtest, and asserts a plan shape and a buffer bound, never a
-// time, logging the buffers it measured. The bounds carry a wide margin
-// over the measured value and sit well below what the regression each
-// test guards against would read. A plan shape is asserted only where the
-// fixture is large enough for the index to be the planner's own choice,
-// and the tests never disable a plan type.
+// statements the store runs. Each test seeds a fixture in its own
+// database, explains a statement as the store composes it with EXPLAIN
+// (ANALYZE, BUFFERS) through internal/dbtest, and asserts a plan shape and
+// a buffer bound, never a time. The bounds carry a wide margin over the
+// measured value and sit well below what the guarded regression would
+// read. A plan shape is asserted only where the fixture makes the index
+// the planner's own choice, and no test disables a plan type.
 
 import (
 	"context"
 	"database/sql"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/standards-lab/sqlate"
 	sqlatepg "github.com/standards-lab/sqlate/postgres"
@@ -116,12 +110,27 @@ func one(t *testing.T, db *sqlate.DB, op func(sess sqlate.Session) error) call {
 	return rec.calls[0]
 }
 
-// explainList captures the file listing of dir as the store composes it
-// and explains it.
-func (e costEnv) explainList(t *testing.T, dir string, req query.Directives, page query.Page) dbtest.Plan {
+// page runs a listing through a recorder over db and returns its page, the
+// first of its two queries; the second, the directory's read by id, is
+// covered by TestProtocolStepPlans.
+func page(t *testing.T, db *sqlate.DB, op func(sess sqlate.Session) error) call {
 	t.Helper()
-	c := one(t, e.db, func(sess sqlate.Session) error {
-		_, err := e.store.Files.List(e.ctx, sess, dir, req, page)
+	rec := &recorder{DB: db}
+	if err := op(rec); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.calls) != 2 || !strings.Contains(rec.calls[1].sql, "WHERE d.id = CAST($1 AS uuid)") {
+		t.Fatalf("the listing ran %d queries, want its page and the read of its directory", len(rec.calls))
+	}
+	return rec.calls[0]
+}
+
+// explainList captures the file listing of dir as the store composes it,
+// deleting files hidden, and explains it.
+func (e costEnv) explainList(t *testing.T, dir string, req query.Directives, pg query.Page) dbtest.Plan {
+	t.Helper()
+	c := page(t, e.db, func(sess sqlate.Session) error {
+		_, err := e.store.Files.List(e.ctx, sess, dir, req, pg)
 		return err
 	})
 	return e.ex.Explain(e.ctx, t, c.sql, c.args...)
@@ -130,7 +139,7 @@ func (e costEnv) explainList(t *testing.T, dir string, req query.Directives, pag
 // explainContinue captures the page past after and explains it.
 func (e costEnv) explainContinue(t *testing.T, dir string, req query.Directives, after query.Cursor) dbtest.Plan {
 	t.Helper()
-	c := one(t, e.db, func(sess sqlate.Session) error {
+	c := page(t, e.db, func(sess sqlate.Session) error {
 		_, err := e.store.Files.Continue(e.ctx, sess, dir, req, after, costPageSize)
 		return err
 	})
@@ -148,20 +157,13 @@ func (e costEnv) cursorAt(t *testing.T, dir string, req query.Directives, number
 	return c.Next
 }
 
-// TestListingPlans proves the listing's plan under each total mode on the
-// big directory. Under query.TotalNone the first page and a page
-// continued by cursor from the middle, sorted by name in either
-// direction, are an index scan on blobfs_uq_file_directory_name in the
-// key's order, with no sort, no window, and no sequential scan, the
-// continued page's keyset comparison an index condition, each reading at
-// most 96 buffers; the regression is a keyset predicate the index cannot
-// serve, which reads the directory up to the cursor. Under
-// query.TotalExact the first page reads the directory once, through its
-// index, under one WindowAgg, with no subplan that would count a second
-// time, and reads at most three times the directory's own heap pages; the
-// regression is a total over the table instead of the directory, or a
-// second pass. The whole table's pages exceed that bound, and the counted
-// page exceeds the uncounted one's, so both bounds have teeth.
+// TestListingPlans checks the listing's plan on the big directory, deleting
+// files hidden: under TotalNone the first and a continued page, either
+// direction, are an index scan on blobfs_uq_file_directory_name with no
+// sort, window, or sequential scan; under TotalExact the first page reads
+// the directory once under one WindowAgg. The bounds catch a keyset
+// predicate the index cannot serve, a total over the table, and a second
+// pass.
 func TestListingPlans(t *testing.T) {
 	e := openCost(t, listingSizes)
 	big := e.tree.Big.ID
@@ -214,15 +216,10 @@ func TestListingPlans(t *testing.T) {
 	}
 }
 
-// TestRowValueCursorCost proves that a cursor page sorted by created_at
-// over the consumer's (directory_id, created_at) index, under the
-// engine's overlay of the keyset predicate, costs the same wherever the
-// cursor stands: an index scan on that index whose index condition
-// carries the created_at bound of the row-value comparison, with no
-// sequential scan; a cursor in the middle reads at most twice the buffers
-// of a cursor at the start, and each at most 100. The regression is the
-// expanded chain of disjuncts, which the planner applies as a filter over
-// the directory from its start, so the cost grows with the position.
+// TestRowValueCursorCost checks a cursor page by created_at over the
+// consumer's index, under the engine's keyset overlay, is an index scan
+// whose cost does not grow with the cursor's position; the regression is
+// the expanded disjunct chain applied as a filter.
 func TestRowValueCursorCost(t *testing.T) {
 	e := openCost(t, listingSizes)
 	for _, stmt := range []string{sortIndexDDL, "ANALYZE blobfs_file"} {
@@ -263,18 +260,10 @@ func TestRowValueCursorCost(t *testing.T) {
 	}
 }
 
-// TestPathPlans proves the tree walks cost the depth and not the table.
-// One step of the baseline's walk, directory_by_name, is an index scan on
-// blobfs_uq_directory_parent_name whose condition carries both columns,
-// at most 8 buffers. The variant's resolution of a depth-6 path is one
-// statement, a Recursive Union whose anchor is an index scan on
-// blobfs_pk_directory and whose step is one on the unique constraint,
-// with no sequential scan, at most 8 buffers per segment. The walks up
-// from the chain's deepest directory, directory_ancestors for Path and
-// directory_is_within for the move's cycle check, are each a Recursive
-// Union over blobfs_pk_directory with no sequential scan, at most 8
-// buffers per level. The regression each catches is a step an index
-// cannot serve, which scans the directory table once per level.
+// TestPathPlans checks the tree walks cost the depth and not the table:
+// the baseline's step, the variant's one-statement resolution, and the
+// upward walks of Path and the cycle check, each through an index and no
+// sequential scan, within a per-level buffer bound.
 func TestPathPlans(t *testing.T) {
 	e := openCost(t, stepSizes)
 	stmts := statementsByName(e.store)
@@ -332,19 +321,22 @@ func TestPathPlans(t *testing.T) {
 	}
 }
 
-// TestProtocolStepPlans proves every step of the write, delete, hold, and
-// move protocols finds its row through the primary key: each returning
-// command in the single-statement form sqlate's postgres dialect renders
-// (create excepted, which has no lookup to plan), each hold, the baseline's
-// and the variant's locking reads, and the purge, and the read by id plan an index scan on blobfs_pk_file or
-// blobfs_pk_directory with the id as the index condition, with no
-// sequential scan, each reading at most 32 buffers. The regression is a
-// predicate the primary key cannot serve, which scans the table on every
-// step.
+// TestProtocolStepPlans checks every protocol step, in its single-statement
+// form, finds its row through the primary key, with and without a
+// nullable version, within 32 buffers. A tenth of the fixture's files are
+// pending, so the stale partial index is not the cheapest path to a row by
+// id.
 func TestProtocolStepPlans(t *testing.T) {
 	e := openCost(t, stepSizes)
 	stmts := statementsByName(e.store)
 	const bound = 32
+	if _, err := e.db.ExecContext(e.ctx, "UPDATE blobfs_file SET status = 'pending', size = NULL "+
+		"WHERE id IN (SELECT id FROM blobfs_file ORDER BY id LIMIT 1000)"); err != nil {
+		t.Fatalf("seed the pending rows: %v", err)
+	}
+	if _, err := e.db.ExecContext(e.ctx, "ANALYZE blobfs_file"); err != nil {
+		t.Fatalf("ANALYZE: %v", err)
+	}
 	insert := func(name, status string) string {
 		t.Helper()
 		id, err := insertFile(e.ctx, e.db, e.tree.Big.ID, name, status)
@@ -369,15 +361,17 @@ func TestProtocolStepPlans(t *testing.T) {
 	}{
 		{"complete_file", "blobfs_pk_file", query.Args{"id": pending, "version": int64(1), "size": int64(3), "content_type": "text/plain", "etag": "etag"}},
 		{"move_file", "blobfs_pk_file", query.Args{"id": available, "version": int64(1), "directory_id": e.tree.Chain[0].ID, "name": "moved.txt"}},
-		{"delete_file", "blobfs_pk_file", query.Args{"id": available}},
-		{"hold_file", "blobfs_pk_file", query.Args{"id": available}},
-		{"hold_file_at_version", "blobfs_pk_file", query.Args{"id": available, "version": int64(1)}},
-		{"lock_file", "blobfs_pk_file", query.Args{"id": available}},
-		{"lock_file_at_version", "blobfs_pk_file", query.Args{"id": available, "version": int64(1)}},
+		{"delete_file", "blobfs_pk_file", query.Args{"id": available, "version": nil}},
+		{"delete_file", "blobfs_pk_file", query.Args{"id": available, "version": int64(1)}},
+		{"hold_file", "blobfs_pk_file", query.Args{"id": available, "version": nil}},
+		{"hold_file", "blobfs_pk_file", query.Args{"id": available, "version": int64(1)}},
+		{"lock_file", "blobfs_pk_file", query.Args{"id": available, "version": nil}},
+		{"lock_file", "blobfs_pk_file", query.Args{"id": available, "version": int64(1)}},
 		{"purge_file", "blobfs_pk_file", query.Args{"id": deleting}},
 		{"file_by_id", "blobfs_pk_file", query.Args{"id": available}},
 		{"move_directory", "blobfs_pk_directory", query.Args{"id": dir.ID, "version": int64(1), "parent_id": blobfs.RootID, "name": "moved"}},
-		{"delete_directory", "blobfs_pk_directory", query.Args{"id": empty}},
+		{"delete_directory", "blobfs_pk_directory", query.Args{"id": empty, "version": nil}},
+		{"delete_directory", "blobfs_pk_directory", query.Args{"id": empty, "version": int64(1)}},
 		{"directory_by_id", "blobfs_pk_directory", query.Args{"id": dir.ID}},
 	} {
 		st, ok := stmts[tc.name]
@@ -391,12 +385,12 @@ func TestProtocolStepPlans(t *testing.T) {
 			}
 		}
 		p := e.ex.Explain(e.ctx, t, text, bindArgs(t, st, tc.args)...)
-		t.Logf("%s costs %d buffers", tc.name, p.Buffers)
+		t.Logf("%s with %v costs %d buffers", tc.name, tc.args, p.Buffers)
 		switch {
 		case p.Has("Seq Scan"), !p.Has("Index Scan using " + tc.index), !indexCondHas(p, "id ="):
-			t.Errorf("%s does not find the row through %s:\n%s", tc.name, tc.index, p.Text)
+			t.Errorf("%s with %v does not find the row through %s:\n%s", tc.name, tc.args, tc.index, p.Text)
 		case p.Buffers > bound:
-			t.Errorf("%s reads %d buffers, more than %d:\n%s", tc.name, p.Buffers, bound, p.Text)
+			t.Errorf("%s with %v reads %d buffers, more than %d:\n%s", tc.name, tc.args, p.Buffers, bound, p.Text)
 		}
 	}
 }
@@ -434,4 +428,75 @@ func indexCondHas(p dbtest.Plan, s string) bool {
 		}
 	}
 	return false
+}
+
+// TestDeletingPlan checks deleting_branches reaches its candidates through
+// blobfs_ix_directory_deleting and their parents through the primary key,
+// within a bound set by the deleting directories and not the table.
+func TestDeletingPlan(t *testing.T) {
+	e := openCost(t, stepSizes)
+	if _, err := e.db.Transact(e.ctx, func(tx *sqlate.Tx) (data.Marked, error) {
+		return e.store.Directories.MarkDeleting(e.ctx, tx, e.tree.Chain[2].ID)
+	}); err != nil {
+		t.Fatalf("MarkDeleting: %v", err)
+	}
+	if _, err := e.db.ExecContext(e.ctx, "ANALYZE blobfs_directory"); err != nil {
+		t.Fatalf("ANALYZE: %v", err)
+	}
+	c := one(t, e.db, func(sess sqlate.Session) error {
+		roots, err := e.store.Directories.Deleting(e.ctx, sess, 10)
+		if err == nil && (len(roots) != 1 || roots[0].ID != e.tree.Chain[2].ID) {
+			t.Fatalf("Deleting = %+v, want the marked directory alone", roots)
+		}
+		return err
+	})
+	p := e.ex.Explain(e.ctx, t, c.sql, c.args...)
+	rows := dbtest.Int(e.ctx, t, e.db, "SELECT COUNT(*) FROM blobfs_directory")
+	deleting := dbtest.Int(e.ctx, t, e.db, "SELECT COUNT(*) FROM blobfs_directory WHERE status = 'deleting'")
+	index := dbtest.RelationPages(e.ctx, t, e.db, "blobfs_ix_directory_deleting")
+	bound := deleting + index + 8
+	t.Logf("the roots' read costs %d buffers over %d deleting directories; the bound is %d, the table has %d rows", p.Buffers, deleting, bound, rows)
+	switch {
+	case !p.Has("blobfs_ix_directory_deleting"):
+		t.Errorf("the roots' read does not reach the candidates through the partial index:\n%s", p.Text)
+	case !p.Has("Index Scan using blobfs_pk_directory on blobfs_directory p"), !indexCondHas(p, "id = d.parent_id"):
+		t.Errorf("the roots' read does not read each parent through the primary key:\n%s", p.Text)
+	case p.Buffers > bound:
+		t.Errorf("the roots' read reads %d buffers, more than %d:\n%s", p.Buffers, bound, p.Text)
+	}
+}
+
+// TestStalePlan checks stale_files_before, as Store.Sweep binds it, reads
+// the oldest stale rows through blobfs_ix_file_stale in the index's order,
+// bounded by the age, with no sort, and stops at the page.
+func TestStalePlan(t *testing.T) {
+	e := openCost(t, stepSizes)
+	for _, seed := range []struct{ status, age string }{
+		{"pending", "2 hours"}, {"deleting", "2 hours"}, {"pending", "0 seconds"}, {"deleting", "0 seconds"},
+	} {
+		if _, err := e.db.ExecContext(e.ctx, "UPDATE blobfs_file SET status = $1, updated_at = now() - CAST($2 AS interval) "+
+			"WHERE id IN (SELECT id FROM blobfs_file WHERE status = 'available' ORDER BY id LIMIT 250)", seed.status, seed.age); err != nil {
+			t.Fatalf("seed the stale rows: %v", err)
+		}
+	}
+	if _, err := e.db.ExecContext(e.ctx, "ANALYZE blobfs_file"); err != nil {
+		t.Fatalf("ANALYZE: %v", err)
+	}
+	const fetch = 20
+	st := statementsByName(e.store)["stale_files_before"]
+	args := bindArgs(t, st, query.Args{"before": time.Now().Add(-time.Hour), "offset": 0, "fetch": fetch})
+	p := e.ex.Explain(e.ctx, t, st.Text(), args...)
+	rows := dbtest.Int(e.ctx, t, e.db, "SELECT COUNT(*) FROM blobfs_file")
+	stale := dbtest.Int(e.ctx, t, e.db, "SELECT COUNT(*) FROM blobfs_file WHERE status IN ('pending', 'deleting')")
+	index := dbtest.RelationPages(e.ctx, t, e.db, "blobfs_ix_file_stale")
+	bound := fetch + index + 8
+	t.Logf("the stale read costs %d buffers for a page of %d over %d stale rows; the bound is %d, the table has %d rows", p.Buffers, fetch, stale, bound, rows)
+	switch {
+	case p.Has("Seq Scan"), !p.Has("Index Scan using blobfs_ix_file_stale"), !indexCondHas(p, "updated_at <"):
+		t.Errorf("the stale read does not reach the old stale rows through the partial index:\n%s", p.Text)
+	case p.Has("Sort"):
+		t.Errorf("the stale read sorts the stale rows instead of reading them in the index's order:\n%s", p.Text)
+	case p.Buffers > bound:
+		t.Errorf("the stale read reads %d buffers, more than %d:\n%s", p.Buffers, bound, p.Text)
+	}
 }

@@ -2,6 +2,8 @@ package data
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/standards-lab/sqlate"
@@ -10,25 +12,23 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// Directories is the handle over blobfs_directory rows: the Store's
-// Directories field. Every operation takes the context and the session
-// first and a directory by id; a step that must run inside a transaction
-// takes a *sqlate.Tx instead of a session.
+// Directories is the handle over blobfs_directory rows, the Store's
+// Directories field. Every operation takes a directory by id.
 type Directories struct {
 	variant   Variant
-	byID      query.Rows[blobfs.Directory]
-	byName    query.Rows[blobfs.Directory]
-	list      query.Projection[blobfs.Directory]
+	dirs      directoryReads
+	list      listing[blobfs.Directory]
 	ancestors query.Rows[ancestor]
 	isWithin  query.Rows[int64]
 	create    query.Returning[blobfs.Directory]
-	move      query.RowGuard[blobfs.Directory]
+	move      query.Returning[blobfs.Directory]
 	remove    query.Statement
+	markDirs  query.Statement
+	markFiles query.Statement
+	deleting  query.Rows[blobfs.Directory]
 }
 
-// ancestor is one row of directory_ancestors: a directory's id, parent,
-// and name on the chain up to the root, whose parent is nil and whose
-// name is /.
+// ancestor is one row of directory_ancestors.
 type ancestor struct {
 	ID       string  `json:"id"`
 	ParentID *string `json:"parent_id"`
@@ -36,110 +36,100 @@ type ancestor struct {
 }
 
 // newDirectories binds the directory statements of a compiled set.
-func newDirectories(stmts *query.Statements, variant Variant) *Directories {
+func newDirectories(stmts *query.Statements, dirs directoryReads, variant Variant) *Directories {
 	directory := query.Scanner[blobfs.Directory]()
 	return &Directories{
-		variant:   variant,
-		byID:      stmts.Statement("directory_by_id").Scan(directory),
-		byName:    stmts.Statement("directory_by_name").Scan(directory),
-		list:      stmts.Statement("directory_children").Project(directory),
+		variant: variant,
+		dirs:    dirs,
+		list: listing[blobfs.Directory]{
+			projection: stmts.Statement("directory_children").Project(directory),
+			anchor:     "parent_id",
+			deleting:   string(blobfs.DirectoryStatusDeleting),
+			dirs:       dirs,
+		},
 		ancestors: stmts.Statement("directory_ancestors").Scan(query.Scanner[ancestor]()),
 		isWithin:  stmts.Statement("directory_is_within").Scan(query.Scalar[int64]),
 		create:    stmts.Statement("create_directory").Returning(directory),
-		move: stmts.Statement("move_directory").Returning(directory).
-			Guarded("version", func(d blobfs.Directory) int64 { return d.Version }),
-		remove: stmts.Statement("delete_directory"),
+		move:      stmts.Statement("move_directory").Returning(directory),
+		remove:    stmts.Statement("delete_directory"),
+		markDirs:  stmts.Statement("mark_directory_deleting"),
+		markFiles: stmts.Statement("mark_directory_files_deleting"),
+		deleting:  stmts.Statement("deleting_branches").Scan(directory),
 	}
 }
 
 // Find returns the directory with id, or blobfs.ErrNotFound. The root is
 // Find of blobfs.RootID.
-func (d *Directories) Find(ctx context.Context, sess sqlate.Session, id string) (blobfs.Directory, error) {
-	dir, err := d.byID.One(ctx, sess, query.Args{"id": id})
+func (d *Directories) Find(ctx context.Context, sess sqlate.Session, id string) (_ blobfs.Directory, err error) {
+	defer wrap(&err, "find directory %s", id)
+	dir, err := d.dirs.byID.One(ctx, sess, query.Args{"id": id})
 	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: find directory %s: %w", id, notFound(err))
+		return blobfs.Directory{}, notFound(err)
 	}
 	return dir, nil
 }
 
-// FindByName returns the child of the directory with parentID named name,
-// or blobfs.ErrNotFound. The name is normalized before it is compared, and
-// a name ValidateName refuses is a blobfs.NameError before any SQL, since
-// no row can hold it. Directories and files have separate name spaces: a
-// file of the same name is not found here.
-func (d *Directories) FindByName(ctx context.Context, sess sqlate.Session, parentID, name string) (blobfs.Directory, error) {
-	name, err := validName(name)
-	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: find directory by name: %w", err)
+// FindByName returns the child directory of parentID named name, which is
+// normalized first; a file of the same name is not found. Refusals:
+// blobfs.NameError before any SQL, blobfs.ErrNotFound.
+func (d *Directories) FindByName(ctx context.Context, sess sqlate.Session, parentID, name string) (_ blobfs.Directory, err error) {
+	defer wrap(&err, "find directory %q under %s", name, parentID)
+	if name, err = validName(name); err != nil {
+		return blobfs.Directory{}, err
 	}
 	dir, err := d.findByName(ctx, sess, parentID, name)
 	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: find directory %q under %s: %w", name, parentID, notFound(err))
+		return blobfs.Directory{}, notFound(err)
 	}
 	return dir, nil
 }
 
-// findByName reads the child of parentID named name, already normalized,
-// returning sql.ErrNoRows unmapped when there is none.
+// findByName reads the child of parentID named name, already normalized;
+// sql.ErrNoRows is returned unmapped.
 func (d *Directories) findByName(ctx context.Context, sess sqlate.Session, parentID, name string) (blobfs.Directory, error) {
-	return d.byName.One(ctx, sess, query.Args{"parent_id": parentID, "name": name})
+	return d.dirs.byName.One(ctx, sess, query.Args{"parent_id": parentID, "name": name})
 }
 
-// Create creates a directory named name under the directory with parentID
-// and returns the row as the database holds it. The name is normalized and
-// validated first; a refusal is a blobfs.NameError, and an empty name is
-// one, so no call creates a row without a name. Every row Create writes
-// has a parent, so no call creates a root either: the one root is seeded
-// by the schema. The id is minted, or taken from WithID and checked,
-// before any SQL. A name already held by a directory under the same parent
-// is blobfs.ErrNameTaken, an id another directory carries is
-// blobfs.ErrIDTaken, and a parent that does not exist is
-// blobfs.ErrNotFound.
+// Create creates a directory named name under parentID and returns the
+// row as the database holds it. The name is normalized and validated and
+// the id minted or taken from WithID, before any SQL.
 //
-// The insert is a returning command: it runs in the single-statement form
-// where the dialect renders RETURNING, and otherwise in the fallback, the
-// insert and a read of the row in one transaction, the caller's when sess is
-// a *sqlate.Tx and one of its own when sess is the pool.
-func (d *Directories) Create(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (blobfs.Directory, error) {
-	name, err := validName(name)
-	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: create directory: %w", err)
+// Refusals: blobfs.NameError; blobfs.IDError; blobfs.ErrNameTaken for a
+// name a directory under the parent holds; blobfs.ErrIDTaken;
+// blobfs.ErrNotFound for a missing parent; blobfs.ErrDeleting for a
+// deleting parent.
+func (d *Directories) Create(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (_ blobfs.Directory, err error) {
+	defer wrap(&err, "create directory %q under %s", name, parentID)
+	if name, err = validName(name); err != nil {
+		return blobfs.Directory{}, err
 	}
 	id, err := rowID(opts)
 	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: create directory %q: %w", name, err)
+		return blobfs.Directory{}, err
 	}
-	dir, err := d.insert(ctx, sess, id, parentID, name)
-	if err != nil {
-		return blobfs.Directory{}, fmt.Errorf("data: create directory %q under %s: %w", name, parentID, err)
-	}
-	return dir, nil
+	return d.insert(ctx, sess, id, parentID, name)
 }
 
-// Ensure returns the directory named name under the directory with parentID,
-// creating it when none exists, and reports whether this call created it. It
-// is the insert-or-find a seeder needs: a seeded directory is read on every
-// run after the first, without the seeder catching blobfs.ErrNameTaken and
-// looking the name up itself. The name is normalized and validated and the
-// id resolved as in Create, before any SQL; a found row keeps its own id
-// whatever WithID supplied.
+// Ensure returns the directory named name under parentID, creating it when
+// none exists, and reports whether this call created it: the insert-or-find
+// a seeder runs. It looks the name up first and inserts only when no row
+// holds it; a found row keeps its own id whatever WithID supplied, and an
+// active one is returned without a read of its parent, a straggler under
+// a deleting parent included.
 //
-// The lookup runs first and the insert only when it found no row, so the
-// common case runs no failing statement and composes into a caller's
-// transaction, where a seeder writes its own rows beside the directory. A
-// creator that commits between the lookup and the insert makes the insert
-// fail as blobfs.ErrNameTaken. On the pool the row is then looked up again
-// and returned as found. Inside a transaction the error is returned instead,
-// because on PostgreSQL the failed insert has aborted the transaction, and
-// the caller retries the transaction. The other refusals are Create's.
-func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (blobfs.Directory, bool, error) {
-	name, err := validName(name)
-	if err != nil {
-		return blobfs.Directory{}, false, fmt.Errorf("data: ensure directory: %w", err)
+// Refusals: Create's; blobfs.ErrDeleting for a found directory that is
+// deleting; and, inside a transaction only, blobfs.ErrNameTaken when a
+// creator commits the name between the lookup and the insert, since the
+// failed insert may have aborted the transaction. See Directories in
+// docs/features.md.
+func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (_ blobfs.Directory, _ bool, err error) {
+	defer wrap(&err, "ensure directory %q under %s", name, parentID)
+	if name, err = validName(name); err != nil {
+		return blobfs.Directory{}, false, err
 	}
 	id, err := rowID(opts)
 	if err != nil {
-		return blobfs.Directory{}, false, fmt.Errorf("data: ensure directory %q: %w", name, err)
+		return blobfs.Directory{}, false, err
 	}
 	dir, created, err := insertOrFind(ctx, sess,
 		func(ctx context.Context, sess sqlate.Session) (blobfs.Directory, error) {
@@ -148,48 +138,136 @@ func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID,
 		func(ctx context.Context, sess sqlate.Session) (blobfs.Directory, error) {
 			return d.insert(ctx, sess, id, parentID, name)
 		})
+	if err == nil {
+		err = closed(dir)
+	}
 	if err != nil {
-		return blobfs.Directory{}, false, fmt.Errorf("data: ensure directory %q under %s: %w", name, parentID, err)
+		return blobfs.Directory{}, false, err
 	}
 	return dir, created, nil
 }
 
-// insert runs create_directory under id and returns the row as the
-// database holds it. The name is normalized and validated already. A
-// constraint violation is classified through the write mapping and
-// returned without context, so each caller adds its own.
+// insert runs create_directory and classifies its refusal bare: a
+// violation through the write mapping, and an insert that selected no row
+// by a read of the parent.
 func (d *Directories) insert(ctx context.Context, sess sqlate.Session, id, parentID, name string) (blobfs.Directory, error) {
-	dir, _, err := d.create.One(ctx, sess, query.Args{"id": id, "parent_id": parentID, "name": name})
-	if err != nil {
+	dir, changed, err := d.create.One(ctx, sess, query.Args{"id": id, "parent_id": parentID, "name": name})
+	switch {
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		return blobfs.Directory{}, classifyWrite(err)
+	case err != nil || !changed:
+		return blobfs.Directory{}, d.dirs.refusedUnder(ctx, sess, parentID)
 	}
 	return dir, nil
 }
 
-// Delete removes the directory with id. It takes no version: the one case a
-// stale version would catch, a directory that gained children since the
-// caller read it, the foreign keys already refuse. The root is refused with
-// blobfs.ErrRootDirectory before any SQL, and the statement itself never
-// removes a row without a parent. A directory that still has child
-// directories or files is blobfs.ErrNotEmpty, reported by the foreign keys
-// blobfs_fk_directory_parent and blobfs_fk_file_directory, since there is no
-// cascade; a consumer removes the contents first, deepest first. A
-// consumer's own foreign key into blobfs_directory refuses the removal as
-// blobfs.ErrReferenced, with the sqlate.ConstraintError reachable. A
-// directory that does not exist is blobfs.ErrNotFound. Delete runs one
-// statement, so the session may be the pool or a transaction; a consumer
-// that keeps a row of its own about the directory removes both in one
-// transaction.
-func (d *Directories) Delete(ctx context.Context, sess sqlate.Session, id string) error {
+// Delete removes the empty directory with id, only at the version
+// AtVersion names when it is given. There is no cascade: a branch is
+// deleted with MarkDeleting and Store.Sweep.
+//
+// Refusals: blobfs.ErrRootDirectory before any SQL; blobfs.ErrNotEmpty for
+// a directory with child directories or files; blobfs.ErrReferenced for a
+// consumer's foreign key; blobfs.ErrNotFound; query.ErrVersionMismatch
+// under AtVersion.
+func (d *Directories) Delete(ctx context.Context, sess sqlate.Session, id string, opts ...VersionOption) (err error) {
+	defer wrap(&err, "delete directory %s", id)
+	return d.deleteDirectory(ctx, sess, id, atVersion(opts))
+}
+
+// deleteDirectory is Delete's body, at version when it is not nil, with
+// its errors bare for the sweep.
+func (d *Directories) deleteDirectory(ctx context.Context, sess sqlate.Session, id string, version *int64) error {
 	if id == blobfs.RootID {
-		return fmt.Errorf("data: delete directory %s: %w", id, blobfs.ErrRootDirectory)
+		return blobfs.ErrRootDirectory
 	}
-	n, err := d.remove.Exec(ctx, sess, query.Args{"id": id})
+	n, err := d.remove.Exec(ctx, sess, withVersion(query.Args{"id": id}, version))
+	switch {
+	case err != nil:
+		return classifyDelete(err)
+	case n > 0:
+		return nil
+	case version == nil:
+		return blobfs.ErrNotFound
+	}
+	dir, err := d.dirs.byID.One(ctx, sess, query.Args{"id": id})
 	if err != nil {
-		return fmt.Errorf("data: delete directory %s: %w", id, classifyDelete(err))
+		return notFound(err)
 	}
-	if n == 0 {
-		return fmt.Errorf("data: delete directory %s: %w", id, blobfs.ErrNotFound)
+	return versionMismatch(*version, dir.Version)
+}
+
+// Marked counts the rows Directories.MarkDeleting moved to deleting,
+// directories and files; a row deleting already is not counted.
+type Marked struct {
+	Directories int64
+	Files       int64
+}
+
+// MarkDeleting is the first step of a branch's delete: it marks the
+// directory with id, every directory beneath it, and every file in them
+// deleting, advancing each changed row's version once, and reports what it
+// changed. It runs two statements in tx under the tree lock and waits on a
+// Files.Hold as Files.Delete does. The branch the two statements walk is
+// one branch only where the lock serializes; on a variant whose Serializes
+// is false, a mover's course from Moves in docs/concepts.md covers the
+// mark too. A repeated mark converges and reaches a straggler. See
+// Deleting a branch in docs/concepts.md.
+//
+// Refusals: blobfs.ErrRootDirectory before any SQL; blobfs.ErrNotFound;
+// query.ErrVersionMismatch under AtVersion for an active directory.
+func (d *Directories) MarkDeleting(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) (_ Marked, err error) {
+	defer wrap(&err, "mark directory %s deleting", id)
+	return d.markDeleting(ctx, tx, id, atVersion(opts))
+}
+
+// markDeleting is MarkDeleting's body, at version when it is not nil, with
+// its errors bare for the sweep. The version guards the directories'
+// update in the same statement, and the files' update runs only once that
+// statement marked the directory or found it deleting.
+func (d *Directories) markDeleting(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (Marked, error) {
+	if id == blobfs.RootID {
+		return Marked{}, blobfs.ErrRootDirectory
 	}
-	return nil
+	if err := d.variant.LockTree(ctx, tx); err != nil {
+		return Marked{}, fmt.Errorf("lock tree: %w", err)
+	}
+	args := query.Args{"id": id}
+	dirs, err := d.markDirs.Exec(ctx, tx, withVersion(args, version))
+	if err != nil {
+		return Marked{}, err
+	}
+	if dirs == 0 {
+		// Nothing was marked: the directory is missing, active at another
+		// version, or deleting already, the mark's retry, which the read
+		// tells apart.
+		dir, err := d.dirs.byID.One(ctx, tx, args)
+		switch {
+		case err != nil:
+			return Marked{}, notFound(err)
+		case dir.Status.Mutable() && version != nil:
+			return Marked{}, versionMismatch(*version, dir.Version)
+		case dir.Status.Mutable():
+			return Marked{}, fmt.Errorf("the mark changed no row, yet the directory %s is %s", id, dir.Status)
+		}
+	}
+	files, err := d.markFiles.Exec(ctx, tx, args)
+	if err != nil {
+		return Marked{}, err
+	}
+	return Marked{Directories: dirs, Files: files}, nil
+}
+
+// Deleting returns at most limit roots of the branches being deleted, in
+// id order: each deleting directory under an active parent. A limit below
+// 1 is refused before any SQL.
+func (d *Directories) Deleting(ctx context.Context, sess sqlate.Session, limit int) (_ []blobfs.Directory, err error) {
+	defer wrap(&err, "deleting directories")
+	if limit < 1 {
+		return nil, fmt.Errorf("the limit %d is below 1", limit)
+	}
+	dirs, err := d.deleting.All(ctx, sess, query.Args{"offset": 0, "fetch": limit})
+	if err != nil {
+		return nil, err
+	}
+	return dirs, nil
 }

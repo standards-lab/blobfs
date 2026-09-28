@@ -79,17 +79,23 @@ func begin(t *testing.T, db *sqlate.DB) *sqlate.Tx {
 
 // directoryColumns is the column list of a directory row, as the scripted
 // driver must return it.
-var directoryColumns = []string{"id", "parent_id", "name", "version", "created_at", "updated_at"}
+var directoryColumns = []string{"id", "parent_id", "name", "status", "version", "created_at", "updated_at"}
 
-// directoryResponse scripts one directory row; an empty parent is the
-// root's NULL.
+// directoryResponse scripts one active directory row; an empty parent is
+// the root's NULL.
 func directoryResponse(id, parent, name string, version int64) sqltest.Response {
+	return directoryIn(id, parent, name, blobfs.DirectoryStatusActive, version)
+}
+
+// directoryIn scripts one directory row in status; an empty parent is the
+// root's NULL.
+func directoryIn(id, parent, name string, status blobfs.DirectoryStatus, version int64) sqltest.Response {
 	now := time.Now()
 	var p driver.Value
 	if parent != "" {
 		p = parent
 	}
-	return sqltest.Response{Columns: directoryColumns, Rows: [][]driver.Value{{id, p, name, version, now, now}}}
+	return sqltest.Response{Columns: directoryColumns, Rows: [][]driver.Value{{id, p, name, string(status), version, now, now}}}
 }
 
 // childResponse scripts one directory row under the root at version 1.
@@ -121,19 +127,14 @@ func ops(rec *sqltest.Recorder) string {
 	return strings.Join(out, " ")
 }
 
-// TestNew proves the catalog builds with the two sources, every statement
-// compiles, and the inventory: eighteen statements, all standard tier; the
-// directory move, the file delete, and the two file holds the ones
-// requiring a transaction; and the six returning commands, the directory
-// ones reading their row back through directory_by_id and the file ones
-// through file_by_id. The fallback's dialect renders no single-statement
-// form and the returning dialect renders one per command.
+// TestNew checks the compiled inventory: its size, tiers, the statements
+// requiring a transaction, and the returning commands in each dialect.
 func TestNew(t *testing.T) {
 	want := []string{
-		"complete_file", "create_directory", "create_file", "delete_directory", "delete_file",
-		"directory_ancestors", "directory_by_id", "directory_by_name", "directory_children",
-		"directory_files", "directory_is_within", "file_by_id", "file_by_name", "hold_file", "hold_file_at_version", "move_directory",
-		"move_file", "purge_file",
+		"complete_file", "create_directory", "create_file", "delete_directory",
+		"delete_file", "deleting_branches", "directory_ancestors", "directory_by_id", "directory_by_name", "directory_children",
+		"directory_files", "directory_is_within", "file_by_id", "file_by_name", "hold_file",
+		"mark_directory_deleting", "mark_directory_files_deleting", "move_directory", "move_file", "purge_file", "stale_files_before",
 	}
 	returning := map[string]string{
 		"create_directory": "directory_by_id", "move_directory": "directory_by_id",
@@ -141,7 +142,7 @@ func TestNew(t *testing.T) {
 		"move_file": "file_by_id", "delete_file": "file_by_id",
 	}
 	txRequired := map[string]bool{
-		"move_directory": true, "delete_file": true, "hold_file": true, "hold_file_at_version": true,
+		"move_directory": true, "mark_directory_deleting": true, "mark_directory_files_deleting": true, "delete_file": true, "hold_file": true,
 	}
 	for _, f := range forms {
 		t.Run(f.name, func(t *testing.T) {
@@ -189,10 +190,8 @@ func TestPatterns(t *testing.T) {
 	}
 }
 
-// TestNewWithoutPatterns proves a catalog that lacks either namespace is
-// refused with an error naming what is missing: the blobfs namespace
-// before any statement compiles, and the query library's namespace, whose
-// guard patterns the move includes, by the compile.
+// TestNewWithoutPatterns checks a catalog missing either namespace is
+// refused with an error naming it.
 func TestNewWithoutPatterns(t *testing.T) {
 	c, err := query.NewCatalog(query.Patterns())
 	if err != nil {
@@ -212,11 +211,8 @@ func TestNewWithoutPatterns(t *testing.T) {
 	}
 }
 
-// TestVerify proves Verify prepares every statement as authored, each
-// returning command's single-statement form beside it where the dialect
-// renders one, and each listing's three projection probes: its field
-// contract over the base, a page past a cursor over the name key, and the
-// same page counted, without consuming a response.
+// TestVerify checks Verify prepares every statement, each single-statement
+// form, and each listing's projection probes.
 func TestVerify(t *testing.T) {
 	for _, c := range []struct {
 		form      form
@@ -228,7 +224,7 @@ func TestVerify(t *testing.T) {
 				t.Fatalf("Verify: %v", err)
 			}
 			prepared := rec.SQL(sqltest.OpPrepare)
-			if want := 18 + c.returning + 6; len(prepared) != want {
+			if want := 21 + c.returning + 6; len(prepared) != want {
 				t.Errorf("Verify prepared %d statements, want %d", len(prepared), want)
 			}
 			returning, contracts, cursors, counted := 0, 0, 0, 0
@@ -256,10 +252,10 @@ func TestVerify(t *testing.T) {
 }
 
 // probeVariant is an engine's variant over the baseline with one
-// statement of its own, which it lists and verifies through the optional
-// methods the store asserts.
+// statement of its own, which it lists and verifies through the inventory
+// methods it overrides.
 type probeVariant struct {
-	*data.Standard
+	data.Variant
 	stmts *query.Statements
 }
 
@@ -271,24 +267,19 @@ func (v *probeVariant) Verify(ctx context.Context, sess sqlate.Session) error {
 
 // probeEngine compiles the probe statement against the store's catalog
 // and dialect and embeds the baseline it is given.
-func probeEngine(c *query.Catalog, d sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+func probeEngine(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Variant, error) {
 	stmts, err := c.Compile(fstest.MapFS{
 		"engine/probe_engine.sql": {Data: []byte("--| tier: standard\n-- The engine's own statement.\nSELECT {{> blobfs.directory_columns}}\nFROM blobfs_directory d\nWHERE d.name = {{name:text}}\n")},
 	}, "engine", d)
 	if err != nil {
 		return nil, err
 	}
-	return &probeVariant{Standard: base, stmts: stmts}, nil
+	return &probeVariant{Variant: base, stmts: stmts}, nil
 }
 
-// TestEngineSharesTheBaseline proves an Engine runs over the statements
-// New compiled: the store's inventory is the package's 18 once and then
-// the engine's own, Verify prepares every baseline statement exactly as
-// often as a store without an engine does, and the engine's statement
-// beside them, so no baseline statement is compiled or verified twice and
-// a startup Verify covers the engine's statements too. An engine's error
-// is wrapped as the engine's, and an engine that returns no variant is
-// refused.
+// TestEngineSharesTheBaseline checks an Engine runs over the statements
+// New compiled, with nothing compiled or verified twice, and the refusals
+// of an engine's error and of no variant.
 func TestEngineSharesTheBaseline(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t, fallback, data.WithEngine(probeEngine))
@@ -296,11 +287,23 @@ func TestEngineSharesTheBaseline(t *testing.T) {
 	for _, st := range s.Statements() {
 		names = append(names, st.Name())
 	}
-	if len(names) != 19 || names[18] != "probe_engine" || slices.Contains(names[:18], "probe_engine") {
-		t.Errorf("Statements() = %v, want the package's 18 and then probe_engine", names)
+	if len(names) != 22 || names[21] != "probe_engine" || slices.Contains(names[:21], "probe_engine") {
+		t.Errorf("Statements() = %v, want the package's 21 and then probe_engine", names)
 	}
 	if distinct := slices.Compact(slices.Sorted(slices.Values(names))); len(distinct) != len(names) {
 		t.Errorf("Statements() = %v lists a statement twice", names)
+	}
+	// A consumer's wrapper that embeds the engine's variant inherits its
+	// inventory, so the engine's statement is still listed.
+	wrapped := newStore(t, fallback, data.WithEngine(func(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Variant, error) {
+		v, err := probeEngine(c, d, base)
+		if err != nil {
+			return nil, err
+		}
+		return failingLock{Variant: v}, nil
+	}))
+	if all := wrapped.Statements(); len(all) != 22 || all[21].Name() != "probe_engine" {
+		t.Errorf("a wrapper over the engine's variant lists %d statements, want the package's 21 and then probe_engine", len(all))
 	}
 
 	pool, rec := sqltest.Open(t)
@@ -330,13 +333,13 @@ func TestEngineSharesTheBaseline(t *testing.T) {
 	}
 
 	errEngine := errors.New("no native statements")
-	_, err := data.New(catalog(t), sqltest.Dialect{}, data.WithEngine(func(*query.Catalog, sqlate.Dialect, *data.Standard) (data.Variant, error) {
+	_, err := data.New(catalog(t), sqltest.Dialect{}, data.WithEngine(func(*query.Catalog, sqlate.Dialect, data.Variant) (data.Variant, error) {
 		return nil, errEngine
 	}))
-	if !errors.Is(err, errEngine) || !strings.HasPrefix(err.Error(), "data: engine: ") {
-		t.Errorf("New with a failing engine = %v, want the engine's error wrapped as data: engine", err)
+	if !errors.Is(err, errEngine) || !strings.HasPrefix(err.Error(), "data: new store: engine: ") {
+		t.Errorf("New with a failing engine = %v, want the engine's error wrapped as data: new store: engine", err)
 	}
-	_, err = data.New(catalog(t), sqltest.Dialect{}, data.WithEngine(func(*query.Catalog, sqlate.Dialect, *data.Standard) (data.Variant, error) {
+	_, err = data.New(catalog(t), sqltest.Dialect{}, data.WithEngine(func(*query.Catalog, sqlate.Dialect, data.Variant) (data.Variant, error) {
 		return nil, nil
 	}))
 	if err == nil {
@@ -344,9 +347,8 @@ func TestEngineSharesTheBaseline(t *testing.T) {
 	}
 }
 
-// TestStandardTreeLock proves the baseline's tree lock: it reports that it
-// does not serialize, and inside a transaction it runs no statement at
-// all.
+// TestStandardTreeLock checks the baseline's lock runs no statement and
+// reports that it does not serialize.
 func TestStandardTreeLock(t *testing.T) {
 	s, db, rec := openStore(t, fallback)
 	ctx := context.Background()
@@ -386,13 +388,8 @@ var errLock = errors.New("lock refused")
 
 func (failingLock) LockTree(context.Context, *sqlate.Tx) error { return errLock }
 
-// TestConsumerEngineSwapsOneMethod proves a consumer-supplied variant needs
-// no fork: an Engine that wraps the baseline it is given and overrides the
-// lock is handed to New through WithEngine, New calls it once with the
-// store's catalog and dialect, the store runs the override, and path
-// resolution still runs as the baseline does. The wrapper compiled
-// nothing, so the inventory is the package's own. A lock that fails stops
-// a move before any statement.
+// TestConsumerEngineSwapsOneMethod checks a consumer's Engine overriding
+// the lock alone, with the rest of the baseline running as before.
 func TestConsumerEngineSwapsOneMethod(t *testing.T) {
 	ctx := context.Background()
 	c := catalog(t)
@@ -400,7 +397,7 @@ func TestConsumerEngineSwapsOneMethod(t *testing.T) {
 		v     *lockOverride
 		calls int
 	)
-	engine := func(gotCatalog *query.Catalog, gotDialect sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+	engine := func(gotCatalog *query.Catalog, gotDialect sqlate.Dialect, base data.Variant) (data.Variant, error) {
 		calls++
 		if gotCatalog != c || gotDialect != (sqltest.Dialect{}) || base == nil {
 			t.Errorf("the engine got %p, %v, %v; want the store's catalog %p, its dialect, and a baseline", gotCatalog, gotDialect, base, c)
@@ -430,11 +427,11 @@ func TestConsumerEngineSwapsOneMethod(t *testing.T) {
 	if n := len(rec.SQL(sqltest.OpQuery)); n != 2 {
 		t.Errorf("the walk ran %d queries, want the baseline's 2", n)
 	}
-	if n := len(s.Statements()); n != 18 {
-		t.Errorf("Statements() lists %d, want the persistence package's 18", n)
+	if n := len(s.Statements()); n != 21 {
+		t.Errorf("Statements() lists %d, want the persistence package's 21", n)
 	}
 
-	failing := func(_ *query.Catalog, _ sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+	failing := func(_ *query.Catalog, _ sqlate.Dialect, base data.Variant) (data.Variant, error) {
 		return failingLock{Variant: base}, nil
 	}
 	s = newStore(t, fallback, data.WithEngine(failing))
@@ -462,14 +459,12 @@ func (v *holdOverride) HoldFile(_ context.Context, _ *sqlate.Tx, id string, vers
 	return v.held, nil
 }
 
-// TestHoldIsAVariationPoint proves Files.Hold forwards to the variant's
-// HoldFile with the id and, under AtVersion, the version: a row the
-// variant held ends the call with no statement of the store's own, and a
-// row it did not hold is read once to classify, as over the baseline.
+// TestHoldIsAVariationPoint checks Files.Hold forwards to HoldFile and
+// classifies a refusal by one read.
 func TestHoldIsAVariationPoint(t *testing.T) {
 	ctx := context.Background()
 	v := &holdOverride{held: true}
-	s := newStore(t, fallback, data.WithEngine(func(_ *query.Catalog, _ sqlate.Dialect, base *data.Standard) (data.Variant, error) {
+	s := newStore(t, fallback, data.WithEngine(func(_ *query.Catalog, _ sqlate.Dialect, base data.Variant) (data.Variant, error) {
 		v.Variant = base
 		return v, nil
 	}))
@@ -494,5 +489,69 @@ func TestHoldIsAVariationPoint(t *testing.T) {
 	}
 	if got := ops(rec); got != "begin query" {
 		t.Errorf("the refused hold ran %q, want the one classifying read", got)
+	}
+}
+
+// TestErrorsNamedOnce checks a sample of refusals each carries the
+// "data: " prefix exactly once, at the start, and keeps its sentinel.
+func TestErrorsNamedOnce(t *testing.T) {
+	ctx := context.Background()
+	check := func(t *testing.T, what string, err, want error) {
+		t.Helper()
+		if !errors.Is(err, want) {
+			t.Errorf("%s = %v, want %v", what, err, want)
+			return
+		}
+		if msg := err.Error(); !strings.HasPrefix(msg, "data: ") || strings.Count(msg, "data: ") != 1 {
+			t.Errorf("%s = %q, want the operation named once", what, msg)
+		}
+	}
+	s, db, _ := openStore(t, fallback, noDirectory(), noFile(), sqltest.Response{Affected: 0}, noFile())
+	_, err := s.Directories.Find(ctx, db, "D")
+	check(t, "Directories.Find of a missing row", err, blobfs.ErrNotFound)
+	_, err = s.Files.Find(ctx, db, "F")
+	check(t, "Files.Find of a missing row", err, blobfs.ErrNotFound)
+	tx := begin(t, db)
+	check(t, "Hold of a missing row", s.Files.Hold(ctx, tx, "F"), blobfs.ErrNotFound)
+	_ = tx.Rollback()
+	_, err = s.Directories.Create(ctx, db, blobfs.RootID, "a/b")
+	check(t, "Directories.Create of a refused name", err, blobfs.ErrInvalidName)
+	_, _, err = s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "", "text/plain")
+	check(t, "Files.Ensure of an empty name", err, blobfs.ErrInvalidName)
+	_, err = s.Directories.FindByPath(ctx, db, blobfs.RootID, "/a")
+	check(t, "FindByPath of an absolute path", err, blobfs.ErrInvalidPath)
+	check(t, "Directories.Delete of the root", s.Directories.Delete(ctx, db, blobfs.RootID), blobfs.ErrRootDirectory)
+	_, err = s.Directories.Deleting(ctx, db, 0)
+	check(t, "Deleting below 1", err, err)
+	_, err = s.Sweep(ctx, db, &objectLog{}, data.Batch(0))
+	check(t, "Sweep of a refused batch", err, err)
+
+	failing := newStore(t, fallback, data.WithEngine(func(_ *query.Catalog, _ sqlate.Dialect, base data.Variant) (data.Variant, error) {
+		return failingLock{Variant: base}, nil
+	}))
+	pool, _ := sqltest.Open(t)
+	tx = begin(t, sqlate.Wrap(pool, sqltest.Dialect{}))
+	_, err = failing.Directories.Move(ctx, tx, "D", "P", "d", 1)
+	check(t, "Move under a failing lock", err, errLock)
+	_, err = failing.Directories.MarkDeleting(ctx, tx, "D")
+	check(t, "MarkDeleting under a failing lock", err, errLock)
+	check(t, "LockTree that fails", failing.Directories.LockTree(ctx, tx), errLock)
+
+	s, db, _ = openStore(t, fallback, within(1))
+	_, err = s.Directories.Move(ctx, begin(t, db), "D", "P", "d", 1)
+	check(t, "Move under a descendant", err, blobfs.ErrCycle)
+
+	errEngine := errors.New("no native statements")
+	_, err = data.New(catalog(t), sqltest.Dialect{}, data.WithEngine(func(*query.Catalog, sqlate.Dialect, data.Variant) (data.Variant, error) {
+		return nil, errEngine
+	}))
+	check(t, "New with a failing engine", err, errEngine)
+
+	// A purge the consumer's key refuses, inside a branch's walk.
+	s, db, _ = openStore(t, fallback, deletingRoot(), files("D", "F"), violation("fk_bookmark_file", sqlate.ErrForeignKeyViolation), noDirectory())
+	_, err = s.Sweep(ctx, db, &objectLog{})
+	check(t, "Sweep over a referenced file", err, blobfs.ErrReferenced)
+	if err != nil && !strings.Contains(err.Error(), "branch D: purge file F: ") {
+		t.Errorf("Sweep over a referenced file = %q, want the branch and the step named", err)
 	}
 }

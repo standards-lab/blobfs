@@ -53,11 +53,9 @@ func (s *suite) findFile(t *testing.T) {
 	}
 }
 
-// moveFile checks a successful file move against the baseline: a move into
-// another directory and a rename each advance the version once, stamp
-// updated_at, and leave the key as it was; the returned row is the row
-// the database holds; a decomposed name is stored composed; a pending row
-// moves; and a directory of the same name in the target is no conflict.
+// moveFile checks a successful file move against the baseline: the
+// version, updated_at, the unchanged key, the stored name, a pending row,
+// and a directory of the same name no conflict.
 func (s *suite) moveFile(t *testing.T) {
 	src := s.mkdir(t, "move-src-"+t.Name())
 	dst := s.mkdir(t, "move-dst-"+t.Name())
@@ -106,13 +104,8 @@ func (s *suite) moveFile(t *testing.T) {
 }
 
 // moveFileRefusals checks the file move's refusals against the baseline,
-// each leaving the row unchanged: a name held in the target by a row of
-// any status, a deleting one included, is ErrNameTaken under the unique
-// constraint; a missing directory is ErrNotFound under the foreign key; a
-// stale version is ErrVersionMismatch; a deleting row is ErrDeleting, at
-// its own version and at the version the mover read before a concurrent
-// Delete advanced it, and never a version mismatch; a missing file is
-// ErrNotFound; and a refused name is a NameError.
+// each leaving the row unchanged; a deleting row is ErrDeleting at its own
+// version and at the one read before a concurrent Delete.
 func (s *suite) moveFileRefusals(t *testing.T) {
 	src := s.mkdir(t, "refuse-src-"+t.Name())
 	dst := s.mkdir(t, "refuse-dst-"+t.Name())
@@ -137,7 +130,7 @@ func (s *suite) moveFileRefusals(t *testing.T) {
 	}{
 		{"NameTaken", mover, dst.ID, "held.txt", 1, blobfs.ErrNameTaken, blobfs.ConstraintUniqueFileDirectoryName, nil},
 		{"NameTakenByADeletingRow", mover, dst.ID, "held-deleting.txt", 1, blobfs.ErrNameTaken, blobfs.ConstraintUniqueFileDirectoryName, nil},
-		{"MissingDirectory", mover, blobfs.NewID(), "mover.txt", 1, blobfs.ErrNotFound, blobfs.ConstraintForeignKeyFileDirectory, nil},
+		{"MissingDirectory", mover, blobfs.NewID(), "mover.txt", 1, blobfs.ErrNotFound, "", nil},
 		{"StaleVersion", mover, dst.ID, "stale.txt", 2, query.ErrVersionMismatch, "", blobfs.ErrDeleting},
 		{"Deleting", deleting, dst.ID, "elsewhere.txt", 1, blobfs.ErrDeleting, "", query.ErrVersionMismatch},
 		{"DeletingAtThePreDeleteVersion", deleted, dst.ID, "elsewhere.txt", 1, blobfs.ErrDeleting, "", query.ErrVersionMismatch},

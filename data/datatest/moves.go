@@ -27,9 +27,6 @@ func (s *suite) moves(t *testing.T) {
 // first holds the lock and returns once the first commits or rolls back;
 // when it does not, the lock is a no-op that never blocks.
 func (s *suite) lockTree(t *testing.T) {
-	if s.store.Directories.Serializes() != s.variant.Serializes() {
-		t.Errorf("the store reports Serializes %v and its variant %v", s.store.Directories.Serializes(), s.variant.Serializes())
-	}
 	if s.baseline.Directories.Serializes() {
 		t.Error("the baseline reports it serializes; standard SQL has no lock to take")
 	}
@@ -190,11 +187,7 @@ func (s *suite) renameDirectory(t *testing.T) {
 }
 
 // moveDirectoryRefusals checks the move's refusals against the baseline,
-// each leaving the row unchanged: a name held under the new parent is
-// ErrNameTaken under the unique constraint, while a file of that name is
-// no conflict; a missing parent is ErrNotFound under the foreign key; a
-// missing directory is ErrNotFound; a stale version is
-// ErrVersionMismatch; and a refused name is a NameError.
+// each leaving the row unchanged.
 func (s *suite) moveDirectoryRefusals(t *testing.T) {
 	p := s.mkdir(t, "taken-"+t.Name())
 	s.mkdirUnder(t, p.ID, "held")
@@ -211,7 +204,7 @@ func (s *suite) moveDirectoryRefusals(t *testing.T) {
 		constraint string
 	}{
 		{"NameTaken", d.ID, p.ID, "held", d.Version, blobfs.ErrNameTaken, blobfs.ConstraintUniqueDirectoryParentName},
-		{"MissingParent", d.ID, blobfs.NewID(), "d", d.Version, blobfs.ErrNotFound, blobfs.ConstraintForeignKeyDirectoryParent},
+		{"MissingParent", d.ID, blobfs.NewID(), "d", d.Version, blobfs.ErrNotFound, ""},
 		{"MissingDirectory", missing, blobfs.RootID, "ghost", 1, blobfs.ErrNotFound, ""},
 		{"StaleVersion", d.ID, blobfs.RootID, name("stale-" + t.Name()), d.Version + 1, query.ErrVersionMismatch, ""},
 		{"RefusedName", d.ID, blobfs.RootID, "a/b", d.Version, blobfs.ErrInvalidName, ""},

@@ -18,16 +18,10 @@ import (
 	"github.com/standards-lab/blobfs/postgres/internal/dbtest"
 )
 
-// TestHoldWritesNoTuple proves the variant's hold takes the row lock
-// without writing a row version, and that the lock is still the one Delete
-// waits on. For each form of the hold, plain and at the row's version, a
-// transaction holds an available row through the store over the engine;
-// while it is open the row's ctid and xmin, read from another session, are
-// the ones the row had before the hold, and a Delete on another
-// transaction blocks; the ctid and xmin are unchanged still after the
-// holder commits, and the Delete then returns the deleting row. The same
-// hold through the baseline's store, the self-assigning update, moves the
-// row to a new ctid and xmin, so the probe sees a write when there is one.
+// TestHoldWritesNoTuple checks the variant's hold, plain and at a version,
+// leaves the row's ctid and xmin unchanged while a Delete on another
+// transaction blocks behind it; the baseline's hold, as a control, moves
+// them.
 func TestHoldWritesNoTuple(t *testing.T) {
 	const (
 		blocked   = 500 * time.Millisecond
@@ -73,8 +67,8 @@ func TestHoldWritesNoTuple(t *testing.T) {
 
 	for _, c := range []struct {
 		name string
-		opts []data.HoldOption
-	}{{"Plain", nil}, {"AtVersion", []data.HoldOption{data.AtVersion(1)}}} {
+		opts []data.VersionOption
+	}{{"Plain", nil}, {"AtVersion", []data.VersionOption{data.AtVersion(1)}}} {
 		t.Run(c.name, func(t *testing.T) {
 			id, err := insertFile(ctx, db, dir.ID, "held-"+c.name+".txt", "available")
 			if err != nil {

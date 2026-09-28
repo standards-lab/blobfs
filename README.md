@@ -1,7 +1,8 @@
 # blobfs
 
 A virtual tree of directories and files in SQL over any object store: the metadata lives in the
-database, the bytes live in the store under opaque keys, and the library never calls the store.
+database, the bytes live in the store under opaque keys, and the library imports no object store
+and reaches the consumer's only through interfaces the consumer implements.
 
 `github.com/standards-lab/blobfs` is the base module: the root package `blobfs`, the persistence
 package `data`, and its conformance suite `data/datatest`, over `sqlate` and `golang.org/x/text`
@@ -12,23 +13,17 @@ imported.
 
 ## The problem
 
-An object store is flat: objects in a container, each under a key. A document service needs a
-tree its users can browse, with directories, names, renames, and moves. Encoding the tree in the
-keys fails at the first move, because an object store has no atomic rename and a key that says
-where a file sits turns a move of a directory into a copy and a delete of everything beneath it.
-
-blobfs keeps the tree in SQL, where a move is one update and a listing is one indexed read, and
-leaves each key opaque: the file's id and its name at upload, never changed and never parsed.
-Because the rows and the objects live in two systems with no shared transaction, blobfs exposes
-each protocol that touches an object as steps: the two-phase write inserts a pending row before
-the put, the two-phase delete marks the row deleting before the object delete, and the consumer
-runs its own store's call between the steps. The library never calls the object store, so it
-depends on none, and a consumer keeps its own store, its own lifecycle, and its own credentials.
+An object store is flat and has no atomic rename, so a tree encoded in its keys turns a move of
+a directory into a copy and a delete of everything beneath it. blobfs keeps the tree in SQL,
+where a move is one update, and leaves each key opaque. The rows and the objects share no
+transaction, so each protocol that touches an object is exposed as steps the consumer runs its
+own store's call between; [concepts](docs/concepts.md) explains the model.
 
 ## Documentation
 
 1. [Concepts](docs/concepts.md): the tree over opaque keys, the write and delete protocols,
-   moves, listings, and how engines and ownership fit around the library.
+   moves, listings, the delete of a branch and its sweep, and how engines and ownership fit
+   around the library.
 2. [Quick start](docs/quick-start.md): a working program from `go get` to a composition against
    PostgreSQL and an object store, tested without a database and against one.
 3. [Features](docs/features.md): every operation, refusal, and schema object, package by
@@ -47,8 +42,8 @@ for. An engine sub-module adds the engine's native forms and ships the schema as
 set.
 
 A consumer builds one pattern catalog, compiles the store against it with the engine installed,
-and runs the steps of the two-phase write around its own put. `keys` is the consumer's adapter over its store's
-key rule and `objects` is its store; error handling is elided.
+and runs the steps of the two-phase write around its own put. `keys` is the consumer's adapter
+over its store's key rule and `objects` is its store; error handling is elided.
 
 ```go
 catalog, err := query.NewCatalog(sqlatepg.Patterns(), data.Patterns())
@@ -74,11 +69,14 @@ Four conventions the library keeps are stricter than a reader might expect:
 - The base module depends on `sqlate` and `golang.org/x/text` and nothing else: no driver, no
   dialect module, no object store. An engine's driver and dialect enter only through its
   sub-module, and an object store only through the consumer's own adapter.
-- The schema is public API under semantic versioning: the tables, columns, constraint names,
-  referential actions, and migration set change only in a major release, and a released
-  migration never changes.
-- The library never calls the object store. It asks the store one question, whether it accepts a
-  key, through a one-method interface the consumer implements.
+- The schema is public API under semantic versioning: from v1.0, the tables, columns,
+  constraint names, referential actions, and migration set change only in a major release.
+  Before v1.0, a minor release may change them, and its changelog marks the change breaking. A
+  released migration never changes.
+- The library imports no object store. It reaches the consumer's through two one-method
+  interfaces the consumer implements: every write asks whether the store accepts a key, and
+  only a sweep, which the consumer runs, deletes an object. The protocols' own steps never
+  touch the store.
 - Every statement in the base module is standard tier, and the persistence package is complete
   on any engine. A native form lives only in an engine sub-module, and each native file names
   the feature it uses and what a port to another engine must provide.
@@ -90,8 +88,9 @@ Four conventions the library keeps are stricter than a reader might expect:
   `ValidateName`, `KeyValidator`, the sentinel errors, `ViolationError`, and the constraint
   names.
 - `data` is the persistence package: `New` compiles the `Store`, whose `Directories` and `Files`
-  handles run the operations and listings. The package also holds the `Variant` interface, the
-  `Engine` type, and the published patterns.
+  handles run the operations and listings, and whose `Sweep` finishes the deletes of marked
+  branches and stopped protocols through the consumer's object delete. The package also holds
+  the `Variant` interface, the `Engine` type, and the published patterns.
 - `data/datatest` is the conformance suite, `Run`, which an engine or a consumer's own variant
   runs against a live database.
 - `postgres` (sub-module) is the PostgreSQL engine: `Engine`, whose variant takes an advisory

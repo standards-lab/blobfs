@@ -19,18 +19,10 @@ import (
 	"github.com/standards-lab/blobfs/postgres/internal/dbtest"
 )
 
-// TestOpposingRepeatableReadMoves proves what Directories.Move documents
-// for repeatable read on PostgreSQL, over the engine's variant and over the
-// baseline: transaction A moves X under Y and transaction B moves Y under
-// X, each at repeatable read. B's snapshot predates A's commit, so B's
-// cycle check passes on either variant: over the engine B's first
-// statement is the tree lock, which takes the snapshot before it blocks
-// behind A, and over the baseline the lock is a no-op and A has not
-// committed. The tree lock therefore does not keep the cycle out at this
-// level; the engine does, at B's update, whose foreign-key check locks X,
-// the row A's move updated in a key column, parent_id, after B's snapshot:
-// B is refused with a serialization failure, and no cycle forms. A caller
-// at repeatable read retries a refused move in a new transaction.
+// TestOpposingRepeatableReadMoves checks two opposing moves at repeatable
+// read, over the engine's variant and the baseline: B's check passes on
+// its old snapshot, and B is refused at its update with a serialization
+// failure, leaving no cycle. See Moves in docs/concepts.md.
 func TestOpposingRepeatableReadMoves(t *testing.T) {
 	const unblocked = 5 * time.Second
 	ctx := context.Background()

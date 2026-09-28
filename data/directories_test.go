@@ -15,9 +15,7 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// TestFind proves Find is one read by id: the root is Find of RootID and
-// no search, and a database without the row (the schema not applied) is
-// ErrNotFound.
+// TestFind checks Find is one read by id, and no row is ErrNotFound.
 func TestFind(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, directoryResponse(blobfs.RootID, "", "/", 1), noDirectory())
@@ -34,9 +32,7 @@ func TestFind(t *testing.T) {
 	}
 }
 
-// TestFindByName proves the child lookup: the name is normalized before it
-// is bound beside the parent, a name no directory holds is ErrNotFound,
-// and a name ValidateName refuses is ErrInvalidName before any SQL.
+// TestFindByName checks the normalized lookup and its refusals.
 func TestFindByName(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, childResponse("D", nfcName), noDirectory())
@@ -59,12 +55,8 @@ func TestFindByName(t *testing.T) {
 	}
 }
 
-// TestCreateForms proves Create returns its row in either form: under the
-// fallback on the pool, the insert and the read by id in a transaction of
-// its own; under the fallback inside the caller's transaction, the same
-// two statements in it; and under the returning dialect, one statement,
-// the insert with RETURNING, on either session. The name is normalized
-// and the id is taken from WithID, bound to the insert and the read.
+// TestCreateForms checks Create's statements in the fallback, on the pool
+// and in a transaction, and in the single-statement form.
 func TestCreateForms(t *testing.T) {
 	ctx := context.Background()
 	id := blobfs.NewID()
@@ -101,8 +93,8 @@ func TestCreateForms(t *testing.T) {
 				insert = call
 			}
 		}
-		if !slices.Equal(insert.Args, []any{id, blobfs.RootID, nfcName}) {
-			t.Errorf("%s: the insert bound %v, want the id, the parent, and the normalized name", c.form.name, insert.Args)
+		if !slices.Equal(insert.Args, []any{id, nfcName, blobfs.RootID}) || !strings.Contains(insert.SQL, "p.status = 'active'") {
+			t.Errorf("%s: the insert bound %v, want the id, the normalized name, and the parent it selects from:\n%s", c.form.name, insert.Args, insert.SQL)
 		}
 		if strings.Contains(insert.SQL, "RETURNING") != c.form.single {
 			t.Errorf("%s: the insert is not the form's:\n%s", c.form.name, insert.SQL)
@@ -110,11 +102,8 @@ func TestCreateForms(t *testing.T) {
 	}
 }
 
-// TestCreateRefusals proves the checks before any SQL, an invalid name and
-// a supplied id that is the nil UUID or no UUID, and the classification of
-// blobfs's constraints on the insert in both forms, each a ViolationError
-// naming the constraint with the driver's text hidden. Under the fallback
-// the transaction Create opened rolls back.
+// TestCreateRefusals checks the refusals before any SQL and the
+// classification of blobfs's constraints in both forms.
 func TestCreateRefusals(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
@@ -162,6 +151,41 @@ func TestCreateRefusals(t *testing.T) {
 	}
 }
 
+// TestCreateUnderAClosedParent checks an insert that selected no row reads
+// the parent to classify the refusal, in both forms.
+func TestCreateUnderAClosedParent(t *testing.T) {
+	ctx := context.Background()
+	for _, f := range forms {
+		unchanged := []sqltest.Response{noDirectory(), noDirectory()}
+		if !f.single {
+			unchanged = []sqltest.Response{{Affected: 0}, noDirectory()}
+		}
+		for _, c := range []struct {
+			parent sqltest.Response
+			want   error
+		}{
+			{noDirectory(), blobfs.ErrNotFound},
+			{directoryIn("P", blobfs.RootID, "p", blobfs.DirectoryStatusDeleting, 2), blobfs.ErrDeleting},
+		} {
+			s, db, rec := openStore(t, f, append(unchanged, c.parent)...)
+			_, err := s.Directories.Create(ctx, db, "P", "docs")
+			var ve *blobfs.ViolationError
+			if !errors.Is(err, c.want) || errors.As(err, &ve) {
+				t.Errorf("%s: Create under a parent the insert did not select = %v, want %v", f.name, err, c.want)
+			}
+			calls := rec.Calls()
+			if last := calls[len(calls)-1]; !strings.HasPrefix(last.SQL, "SELECT d.id") || !slices.Equal(last.Args, []any{"P"}) {
+				t.Errorf("%s: the last call is %q with %v, want the read of the parent", f.name, last.SQL, last.Args)
+			}
+		}
+	}
+	s, db, _ := openStore(t, fallback, sqltest.Response{Affected: 0}, childResponse("X", "other"),
+		directoryIn("P", blobfs.RootID, "p", blobfs.DirectoryStatusDeleting, 2))
+	if _, err := s.Directories.Create(ctx, db, "P", "docs", data.WithID(blobfs.NewID())); !errors.Is(err, blobfs.ErrDeleting) {
+		t.Errorf("Create whose read found another row = %v, want ErrDeleting", err)
+	}
+}
+
 // TestWithID proves the supplied id reaches the insert in canonical form,
 // whatever form the caller wrote.
 func TestWithID(t *testing.T) {
@@ -176,15 +200,8 @@ func TestWithID(t *testing.T) {
 	}
 }
 
-// TestEnsure proves the insert-or-find in both forms: a name a directory
-// holds is one lookup and the row found, not created; a name nothing holds
-// is the lookup and then Create's statements, created; and a creator that
-// wins between the lookup and the insert on the pool is recovered by one
-// more lookup, whose row is returned as found. Inside a transaction the
-// same race returns ErrNameTaken and no further statement runs, since the
-// failed insert has aborted the transaction. A violation that is not the
-// name's, an id another row carries, is returned as it came from the write
-// mapping.
+// TestEnsure checks the insert-or-find in both forms: found, created, the
+// race recovered on the pool, and returned inside a transaction.
 func TestEnsure(t *testing.T) {
 	ctx := context.Background()
 	for _, f := range forms {
@@ -254,6 +271,19 @@ func TestEnsure(t *testing.T) {
 	}
 }
 
+// TestEnsureFindsADeletingDirectory checks a found deleting directory is
+// ErrDeleting, with no insert.
+func TestEnsureFindsADeletingDirectory(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, fallback, directoryIn("D", blobfs.RootID, "docs", blobfs.DirectoryStatusDeleting, 2))
+	if _, _, err := s.Directories.Ensure(ctx, db, blobfs.RootID, "docs"); !errors.Is(err, blobfs.ErrDeleting) {
+		t.Errorf("Ensure of a deleting directory = %v, want ErrDeleting", err)
+	}
+	if got := ops(rec); got != "query" {
+		t.Errorf("ops = %q, want the one lookup", got)
+	}
+}
+
 // TestEnsureRefusals proves the checks that run before any SQL: an invalid
 // name, and a supplied id that is the nil UUID or no UUID.
 func TestEnsureRefusals(t *testing.T) {
@@ -272,11 +302,7 @@ func TestEnsureRefusals(t *testing.T) {
 	}
 }
 
-// TestDelete proves the directory removal against the script: the root is
-// refused before any SQL; one exec of delete_directory bound to the id
-// removes a directory; no row affected is ErrNotFound; blobfs's two
-// foreign keys classify as ErrNotEmpty and a consumer's as ErrReferenced,
-// each with the sqlate.ConstraintError reachable.
+// TestDelete checks the directory removal and its refusals.
 func TestDelete(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
@@ -294,8 +320,8 @@ func TestDelete(t *testing.T) {
 	if got := rec.SQL(sqltest.OpExec); len(got) != 1 || !strings.HasPrefix(got[0], "DELETE FROM blobfs_directory") || !strings.Contains(got[0], "parent_id IS NOT NULL") {
 		t.Errorf("execs = %q, want the removal that keeps the root", got)
 	}
-	if calls := rec.Calls(); !slices.Equal(calls[0].Args, []any{"D"}) {
-		t.Errorf("the removal bound %v, want the id", calls[0].Args)
+	if calls := rec.Calls(); !slices.Equal(calls[0].Args, []any{"D", nil}) {
+		t.Errorf("the removal bound %v, want the id and no version", calls[0].Args)
 	}
 	if err := s.Directories.Delete(ctx, db, "D"); !errors.Is(err, blobfs.ErrNotFound) {
 		t.Errorf("Delete of a missing directory = %v, want ErrNotFound", err)
@@ -321,10 +347,8 @@ func TestDelete(t *testing.T) {
 	}
 }
 
-// TestCreateOnASessionThatCannotBegin proves the fallback's one limit: a
-// session that is neither a transaction nor able to begin one is
-// ErrTransactionRequired before any SQL, where the single-statement form
-// runs.
+// TestCreateOnASessionThatCannotBegin checks the fallback needs a session
+// that can begin a transaction, where the single-statement form does not.
 func TestCreateOnASessionThatCannotBegin(t *testing.T) {
 	ctx := context.Background()
 	for _, f := range forms {

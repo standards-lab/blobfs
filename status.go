@@ -107,3 +107,43 @@ func (e *TransitionError) Is(target error) bool {
 	}
 	return false
 }
+
+// DirectoryStatus is a directory row's place in the delete of a branch:
+// every directory is active until the branch it sits in is marked
+// deleting, and a mark is never undone. Its underlying type is string, so
+// database/sql binds and scans it as the status column's text without a
+// Valuer or Scanner, as Status does.
+type DirectoryStatus string
+
+const (
+	// DirectoryStatusActive marks a directory that accepts children, files,
+	// and moves: every directory, the root included, until a mark.
+	DirectoryStatusActive DirectoryStatus = "active"
+
+	// DirectoryStatusDeleting marks a directory whose branch is being
+	// removed. It accepts no new child and no new file, and neither it nor
+	// anything in it moves; the rows keep their names until they are
+	// removed.
+	DirectoryStatusDeleting DirectoryStatus = "deleting"
+)
+
+func (s DirectoryStatus) String() string {
+	return string(s)
+}
+
+// Valid reports whether s is one of the two directory statuses.
+func (s DirectoryStatus) Valid() bool {
+	switch s {
+	case DirectoryStatusActive, DirectoryStatusDeleting:
+		return true
+	}
+	return false
+}
+
+// Mutable reports whether a directory in status s accepts a create or a
+// move beneath it, and a move of itself or of anything in it. A deleting
+// directory refuses them all, so nothing enters or leaves a branch whose
+// objects are being removed.
+func (s DirectoryStatus) Mutable() bool {
+	return s != DirectoryStatusDeleting
+}
