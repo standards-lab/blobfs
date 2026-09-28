@@ -126,7 +126,9 @@ const (
 // Ensure is the retry-safe first step of a file write: it returns the row
 // that holds name in directoryID and the WriteOutcome that says how. It
 // looks the name up first and runs Create only when no row holds it; a
-// found row keeps its own id and key whatever WithID supplied.
+// found row keeps its own id and key whatever WithID supplied, and is
+// returned without a read of its directory, a straggler in a deleting
+// directory included. See Files in docs/features.md.
 //
 // Refusals: Create's; and, inside a transaction only, blobfs.ErrNameTaken
 // when a writer commits the name between the lookup and the insert, as in

@@ -208,9 +208,9 @@ func TestMarkDeleting(t *testing.T) {
 	if len(execs) != 2 || !strings.HasPrefix(execs[0].SQL, "UPDATE blobfs_directory") || !strings.HasPrefix(execs[1].SQL, "UPDATE blobfs_file") {
 		t.Fatalf("MarkDeleting ran %v, want the directories' update and then the files'", execs)
 	}
-	for _, c := range execs {
-		if !slices.Equal(c.Args, []any{"D"}) || !strings.Contains(c.SQL, "WITH RECURSIVE branch") || !strings.Contains(c.SQL, "status <> 'deleting'") {
-			t.Errorf("the mark ran %q with %v, want the walk of the branch bound to the id", c.SQL, c.Args)
+	for i, c := range execs {
+		if want := [][]any{{"D", nil}, {"D"}}[i]; !slices.Equal(c.Args, want) || !strings.Contains(c.SQL, "WITH RECURSIVE branch") || !strings.Contains(c.SQL, "status <> 'deleting'") {
+			t.Errorf("the mark ran %q with %v, want the walk of the branch bound to %v", c.SQL, c.Args, want)
 		}
 	}
 
@@ -226,6 +226,26 @@ func TestMarkDeleting(t *testing.T) {
 	marked, err = s.Directories.MarkDeleting(ctx, begin(t, db), "D")
 	if err != nil || marked != (data.Marked{Files: 1}) {
 		t.Errorf("MarkDeleting of a marked branch = %+v, %v, want no directory and the one straggling file", marked, err)
+	}
+
+	// The version guards the directories' update in its anchor; a
+	// directory at another version is told apart by the read, and the
+	// files' update does not run.
+	s, db, rec = openStore(t, fallback, sqltest.Response{Affected: 0}, directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusActive, 3))
+	if _, err := s.Directories.MarkDeleting(ctx, begin(t, db), "D", data.AtVersion(2)); !errors.Is(err, query.ErrVersionMismatch) {
+		t.Errorf("MarkDeleting at a stale version = %v, want ErrVersionMismatch", err)
+	}
+	if got := ops(rec); got != "begin exec query" {
+		t.Errorf("ops = %q, want the guarded update and the read, and no files' update", got)
+	}
+	if c := rec.Calls()[1]; !slices.Equal(c.Args, []any{"D", int64(2)}) || !strings.Contains(c.SQL, "d.version = CAST($2 AS bigint) OR d.status = 'deleting'") {
+		t.Errorf("the guarded mark ran %q with %v, want the version in the walk's anchor", c.SQL, c.Args)
+	}
+
+	// A branch deleting already is the mark's retry, whatever the version.
+	s, db, _ = openStore(t, fallback, sqltest.Response{Affected: 0}, directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusDeleting, 3), sqltest.Response{Affected: 0})
+	if marked, err := s.Directories.MarkDeleting(ctx, begin(t, db), "D", data.AtVersion(1)); err != nil || marked != (data.Marked{}) {
+		t.Errorf("MarkDeleting's retry at an old version = %+v, %v, want nothing marked", marked, err)
 	}
 }
 

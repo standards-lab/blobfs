@@ -548,9 +548,7 @@ func TestErrorsNamedOnce(t *testing.T) {
 	check(t, "New with a failing engine", err, errEngine)
 
 	// A purge the consumer's key refuses, inside a branch's walk.
-	responses := append([]sqltest.Response{deletingRoot()}, remark()...)
-	responses = append(responses, files("D", "F"), violation("fk_bookmark_file", sqlate.ErrForeignKeyViolation))
-	s, db, _ = openStore(t, fallback, responses...)
+	s, db, _ = openStore(t, fallback, deletingRoot(), files("D", "F"), violation("fk_bookmark_file", sqlate.ErrForeignKeyViolation), noDirectory())
 	_, err = s.Sweep(ctx, db, &objectLog{})
 	check(t, "Sweep over a referenced file", err, blobfs.ErrReferenced)
 	if err != nil && !strings.Contains(err.Error(), "branch D: purge file F: ") {

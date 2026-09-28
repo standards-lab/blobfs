@@ -2,8 +2,9 @@
 --| transaction: required
 -- Marks every file in the directory with id and the directories beneath
 -- it deleting, advancing each changed row's version, over
--- mark_directory_deleting's walk. The update takes each row's lock, so it
--- waits on a hold.
+-- mark_directory_deleting's walk without its guard: it runs only after
+-- that statement marked the directory or found it deleting, in the same
+-- transaction. The update takes each row's lock, so it waits on a hold.
 UPDATE blobfs_file
 SET status = 'deleting', version = version + 1, updated_at = CURRENT_TIMESTAMP
 WHERE status <> 'deleting' AND directory_id IN (

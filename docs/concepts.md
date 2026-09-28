@@ -177,17 +177,20 @@ own through `Directories.LockTree`.
 
 Standard SQL has no statement that holds a lock until commit, so the baseline's tree lock is a
 no-op, and `Directories.Serializes` reports `false`. On the baseline, two concurrent opposing
-moves can both commit and leave two directories each other's ancestor, detached from the root. A
-consumer on the baseline takes one of three courses:
+moves can both commit and leave two directories each other's ancestor, detached from the root.
+A [mark](#deleting-a-branch) races a move the same way: its walk reads the branch as committed
+when its statement starts, so a directory moved out of the branch by a move that commits while
+the mark waits on the directory's row is still marked, deleting under an active parent, and
+swept. A consumer on the baseline takes one of three courses, for its moves and its marks alike:
 
-- runs every transaction that moves a directory at serializable isolation,
+- runs every transaction that moves a directory or marks a branch at serializable isolation,
   `sqlate.Isolation(sql.LevelSerializable)`, and retries on `sqlate.ErrSerializationFailure`,
-  which the engine returns for the second of two opposing moves;
-- serializes directory moves outside the database;
+  which the engine returns for the second of two conflicting transactions;
+- serializes directory moves and marks outside the database;
 - installs an engine whose variant takes a real lock, such as the PostgreSQL engine's advisory
   lock.
 
-A caller that needs the guarantee checks `Serializes` before its first move.
+A caller that needs the guarantee checks `Serializes` before its first move or mark.
 
 The lock's guarantee assumes read committed isolation, the default, where each statement reads
 the tree as committed when it starts: the second mover's check runs after its lock returns, and
@@ -268,12 +271,22 @@ A directory already deleting is the mark's retry and reports what it reached ane
 
 ### Stragglers and convergence
 
-The mark runs under the tree lock, so no move reshapes the branch between its two statements.
-The lock does not stop a create that read its parent as active before the mark committed: that
-row, a straggler, lands in the branch active. A repeated mark reaches it, since the mark walks
-through rows already deleting, and each pass of the sweep marks each branch again before it
-walks it. A straggler that lands after the pass's own mark stops that branch's walk, and the
-pass reports `More`; the next pass marks it and goes on.
+The mark runs under the tree lock. Where the lock serializes, no move reshapes the branch while
+the mark walks it; on the baseline, a consumer takes one of the courses [moves](#moves) gives.
+No lock stops a create that read its parent as active before the mark committed: that row, a
+straggler, lands in the branch active. A repeated mark reaches it, since the mark walks through
+rows already deleting. The sweep walks each branch without marking it, and marks it again only
+when the walk meets a straggler, an active row or a directory refused as not empty, since a
+mark walks the whole branch and on the PostgreSQL engine holds the tree lock while it does. It
+marks a branch again at most once a pass; a straggler that lands after that mark stops the
+branch's walk, and the pass reports `More`; the next pass marks it and goes on.
+
+`Files.Ensure` and `Directories.Ensure` return an active row they find by name, even one that
+landed in a deleting directory as a straggler, without reading the directory: the read would
+narrow the race and not close it, since a mark can commit just after it. The straggler's fate is
+the one any create that raced the mark meets: the sweep marks it and removes it, and a write's
+`Complete` of it is refused once it is marked (see
+[orphaned objects](#stale-rows-and-orphaned-objects)).
 
 The sweep keeps no state. On every pass it finds its work in the database:
 `Directories.Deleting` returns the roots of the branches being deleted, each a deleting
@@ -281,10 +294,13 @@ directory under an active parent, and the listings with `data.IncludeDeleting` r
 each branch. Every step it takes is idempotent, so a pass stopped at any point, by an error or a
 crash, is finished by the next, and a row another pass removed first counts as done. A pass is
 bounded by `data.Batch`, a count of records and not of bytes, since a pass never reads an
-object's size, and reports `More` when work remains; a consumer runs passes while `More` is
-true, and again on a schedule of its own. A refusal stops the branch or row it meets, not the
-pass: the pass goes on to the next, so a row refused on every pass holds back nothing behind it.
-The pass returns every refusal joined, with a result that counts what it did.
+object's size, and reports `More` when work remains that it did not reach; a consumer runs
+passes while `More` is true, and again on a schedule of its own. A refusal leaves the row it
+meets, and the directories above it, which cannot be removed while it remains, for a later pass,
+and the pass goes on past it: to the row's siblings, to the next branch, and to the next stale
+row, each read past the ones the pass left, so a row refused on every pass holds back nothing
+behind it. A refusal spends none of the budget and is not `More`: the pass returns every refusal
+joined, with a result that counts what it did, and a later pass tries the row again.
 
 ### The consumer's own rows
 

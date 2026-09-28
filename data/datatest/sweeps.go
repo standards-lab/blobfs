@@ -28,7 +28,9 @@ func (s *suite) sweeps(t *testing.T) {
 	t.Run("Batch", s.sweepBatch)
 	t.Run("HookAborts", s.sweepHookAborts)
 	t.Run("RefusalDoesNotBlock", s.sweepRefusalDoesNotBlock)
+	t.Run("RefusedRootAtBatchOne", s.sweepRefusedRootAtBatchOne)
 	t.Run("Stale", s.sweepStale)
+	t.Run("RefusedStaleRowAtBatchOne", s.sweepRefusedStaleAtBatchOne)
 	t.Run("ConcurrentPasses", s.sweepConcurrent)
 }
 
@@ -241,7 +243,8 @@ func (s *suite) sweepBranch(t *testing.T) {
 }
 
 // sweepCrash checks a pass stopped between an object's delete and its
-// row's purge, and the next pass finishing the branch.
+// row's purge, which walks on past the refused file and keeps only the
+// directories above it, and the next pass finishing the branch.
 func (s *suite) sweepCrash(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("crash-%d-%s", i, t.Name()))
@@ -253,8 +256,8 @@ func (s *suite) sweepCrash(t *testing.T) {
 		objects := newObjectStore()
 		objects.failAt, objects.deleteFirst = 3, true
 		r, err := s.sweep(store, objects)
-		if !errors.Is(err, errObjectStore) || r != (data.SweepResult{Files: 2}) {
-			t.Errorf("the crashed Sweep = %+v, %v, want two files and the store's error", r, err)
+		if !errors.Is(err, errObjectStore) || r != (data.SweepResult{Files: 4, Directories: 1}) {
+			t.Errorf("the crashed Sweep = %+v, %v, want every file but the refused one, the leaf, and the store's error", r, err)
 		}
 		var stopped []string
 		for _, id := range ids {
@@ -272,7 +275,7 @@ func (s *suite) sweepCrash(t *testing.T) {
 		}
 		objects.failAt = 0
 		r, err = s.sweep(store, objects)
-		if want := (data.SweepResult{Files: 3, Directories: 3}); err != nil || r != want {
+		if want := (data.SweepResult{Files: 1, Directories: 2}); err != nil || r != want {
 			t.Errorf("the finishing Sweep = %+v, %v, want %+v", r, err, want)
 		}
 		for _, key := range keys {
@@ -292,7 +295,7 @@ func (s *suite) sweepCrash(t *testing.T) {
 // sweepStragglers checks, against the baseline, that the rows a create
 // that raced the mark left active in the branch, a directory under the
 // leaf with a pending file and an available file in the middle, are
-// marked by the pass and swept with the branch.
+// marked by the pass once its walk meets them, and swept with the branch.
 func (s *suite) sweepStragglers(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("stragglers-%d-%s", i, t.Name()))
@@ -409,6 +412,98 @@ func (s *suite) sweepRefusalDoesNotBlock(t *testing.T) {
 			t.Errorf("the finishing Sweep = %+v, %v, want the refused top removed", r, err)
 		}
 		s.wantDirectoriesGone(t, stuck.top.ID)
+	}
+}
+
+// sweepRefusedRootAtBatchOne checks, against the baseline, that a branch
+// refused on every pass and first in id order holds back nothing at
+// Batch(1): every pass reads past it and spends its one record, the branch
+// behind it is swept over the passes, and More stays true while that
+// branch remains.
+func (s *suite) sweepRefusedRootAtBatchOne(t *testing.T) {
+	for i, store := range []*data.Store{s.store, s.baseline} {
+		stuck := s.newBranch(t, fmt.Sprintf("stuck-one-%d-%s", i, t.Name()))
+		free := s.newBranch(t, fmt.Sprintf("free-one-%d-%s", i, t.Name()))
+		s.own(t, stuck.top.ID)
+		for _, b := range []branch{stuck, free} {
+			if _, err := s.mark(store, b.top.ID); err != nil {
+				t.Fatalf("MarkDeleting: %v", err)
+			}
+		}
+		roots, err := store.Directories.Deleting(s.ctx, s.db, 10)
+		if err != nil || len(roots) != 2 || roots[0].ID != stuck.top.ID {
+			t.Fatalf("Deleting = %+v, %v, want the stuck branch first", roots, err)
+		}
+		var total data.SweepResult
+		var last error
+		for pass := 1; ; pass++ {
+			if pass == 50 {
+				t.Fatalf("the sweep still reports More after %d passes: %+v", pass, total)
+			}
+			r, err := s.sweep(store, newObjectStore(), data.Batch(1))
+			if err != nil && !errors.Is(err, blobfs.ErrReferenced) {
+				t.Fatalf("pass %d: %v, want no error or ErrReferenced", pass, err)
+			}
+			last = err
+			if r.Files+r.Directories != 1 {
+				t.Errorf("pass %d = %+v, want one record: the refused top spends none of the budget", pass, r)
+			}
+			total.Files, total.Directories = total.Files+r.Files, total.Directories+r.Directories
+			_, err = s.store.Directories.Find(s.ctx, s.db, free.top.ID)
+			if left := err == nil; left != r.More {
+				t.Fatalf("pass %d = %+v with the free branch left %v, want More while it remains", pass, r, left)
+			}
+			if !r.More {
+				break
+			}
+		}
+		if want := (data.SweepResult{Files: 10, Directories: 5}); total != want {
+			t.Errorf("the passes did %+v, want %+v", total, want)
+		}
+		if !errors.Is(last, blobfs.ErrReferenced) {
+			t.Errorf("the last pass = %v, want the refused top's ErrReferenced", last)
+		}
+		s.wantDirectoriesGone(t, free.top.ID, free.mid.ID, free.leaf.ID, stuck.mid.ID, stuck.leaf.ID)
+		s.wantFilesGone(t, append(branchFiles(stuck), branchFiles(free)...)...)
+		h := &hooks{s: s}
+		if r, err := s.sweep(store, newObjectStore(), data.OnRemoveDirectory(h.remove)); err != nil || r != (data.SweepResult{Directories: 1}) {
+			t.Errorf("the finishing Sweep = %+v, %v, want the refused top removed", r, err)
+		}
+		s.wantDirectoriesGone(t, stuck.top.ID)
+	}
+}
+
+// sweepRefusedStaleAtBatchOne checks, against the baseline, that the
+// oldest stale row, refused on every pass by a consumer's reference, holds
+// back nothing at Batch(1): each pass reads past it and reclaims the next
+// row, with More while a row remains behind it.
+func (s *suite) sweepRefusedStaleAtBatchOne(t *testing.T) {
+	s.createFileReferences(t)
+	p := s.db.Dialect().Placeholder
+	for i, store := range []*data.Store{s.store, s.baseline} {
+		dir := s.mkdir(t, fmt.Sprintf("stale-one-%d-%s", i, t.Name()))
+		stuck := s.insertFile(t, dir.ID, "stuck.txt", blobfs.StatusDeleting)
+		s.reference(t, s.db, stuck)
+		later := []string{
+			s.insertFile(t, dir.ID, "abandoned.txt", blobfs.StatusPending),
+			s.insertFile(t, dir.ID, "stopped.txt", blobfs.StatusDeleting),
+		}
+		for age, id := range append([]string{stuck}, later...) {
+			s.exec(t, "UPDATE blobfs_file SET updated_at = "+p(1)+" WHERE id = "+p(2), time.Now().Add(-time.Duration(4-age)*time.Hour), id)
+		}
+		for n, id := range later {
+			r, err := s.sweep(store, newObjectStore(), data.Batch(1), data.StaleOlderThan(time.Hour))
+			want := data.SweepResult{Stale: 1, More: n < len(later)-1}
+			if !errors.Is(err, blobfs.ErrReferenced) || r != want {
+				t.Errorf("pass %d = %+v, %v, want %+v and the oldest row's ErrReferenced", n+1, r, err, want)
+			}
+			s.wantFilesGone(t, id)
+		}
+		if f := s.file(t, stuck); f.Status != blobfs.StatusDeleting {
+			t.Errorf("the refused row is %s, want deleting", f.Status)
+		}
+		s.unreference(t, stuck)
+		s.purge(t, stuck)
 	}
 }
 

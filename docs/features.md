@@ -264,7 +264,11 @@ make directory moves safe.
 The lookup-first behavior inside and outside a transaction is `Directories.Ensure`'s. A found
 row keeps its own id and key whatever `WithID` supplied. In a deleting directory, `Ensure`
 reports a file the mark reached as `WritePresent`, its row deleting, and refuses a name no row
-holds with `Create`'s `ErrDeleting`.
+holds with `Create`'s `ErrDeleting`. A found row that is not deleting is returned without a read
+of its directory, so a straggler, a row a create left active in a branch being deleted, is
+`WriteResumed` or `WritePresent` like any other; `Directories.Ensure` likewise returns an active
+directory it finds under a deleting parent. The sweep removes such a row with its branch (see
+[stragglers](concepts.md#stragglers-and-convergence)).
 
 A pending row may be moved: its key is fixed at the insert, and a retry of its write finds it
 by its new name. `Complete` tells its refusals apart from the row its returning read returns,
@@ -349,7 +353,10 @@ explains the two stages; this section states their rules.
 
 `MarkDeleting(ctx, tx, id, opts...)` runs in `tx` under the tree lock, `LockTree`. One recursive
 update marks the directory and every directory beneath it `DirectoryStatusDeleting`, and a
-second, over the same walk, marks every file in them `StatusDeleting`. Each row it changes
+second, over the same walk, marks every file in them `StatusDeleting`. Where `Serializes`
+reports true the two walk one branch; on the baseline a concurrent move can reshape it between
+them, or while the first waits on a row, and [moves](concepts.md#moves) gives the courses that
+prevent it. Each row it changes
 advances its version once and has its `updated_at` stamped; a row already deleting is left as it
 is. It returns `Marked`, whose `Directories` and `Files` count the rows this call moved to
 deleting, so a repeated mark reports only what it reached anew. The walk descends through
@@ -357,9 +364,12 @@ directories already deleting, so a repeated mark reaches a straggler: an active 
 branch by a create that read its parent before the first mark committed. The file update takes
 each row's lock, so it waits on a `Hold` another transaction took. The root is
 `ErrRootDirectory` before any SQL, and a directory that does not exist is `ErrNotFound`. With
-`AtVersion`, the directory is read under the lock, which every change to a directory's version
-takes, and marked only at that version. The walk costs the size of the branch, never of the
-tree, and terminates on a loop in the tree.
+`AtVersion`, the version guards the first update in the same statement, in its walk's anchor:
+an active directory at another version starts no walk and marks nothing, and a directory already
+deleting is the mark's retry at any version. When the update changes no row, one read tells a
+missing directory, `ErrNotFound`, from one at another version, `query.ErrVersionMismatch`, and
+from a retry, after which the files' update runs. The walk costs the size of the branch, never
+of the tree, and terminates on a loop in the tree.
 
 After the mark, a deleting directory refuses every operation that would add to the branch or
 take from it, with `ErrDeleting`:
@@ -394,13 +404,22 @@ key) error`. It must be idempotent, treating a missing object as success, since 
 delete an object a stopped pass deleted already, and a pending row's object may never have been
 stored. An error leaves that file's row deleting for the next pass.
 
-For each branch root `Deleting` returns, in id order, the pass marks the branch again in a
-transaction of its own, then walks it depth first through the listings with `IncludeDeleting`.
-In each directory it deletes every file's object and purges the file's row, empties and removes
-each child directory the same way, and then removes the directory itself. Each removal runs in a
-transaction of its own, guarded by the version the pass read the directory at. A row still
-active in the branch, a straggler that landed after this pass's mark, stops the branch's walk
-with `More` set, and so does a directory refused as `ErrNotEmpty` for the same reason.
+For each branch root `Deleting` returns, in id order, the pass walks the branch depth first
+through the listings with `IncludeDeleting`, each directory's files and then its child
+directories a page at a time in name order. In each directory it deletes every file's object and
+purges the file's row, empties and removes each child directory the same way, and then removes
+the directory itself. Each removal runs in a transaction of its own, guarded by the version the
+pass read the directory at. A straggler, an active row the walk meets or a directory refused as
+`ErrNotEmpty`, has the pass mark the branch again, in a transaction of its own, and walk the
+directory again; a straggler met after that mark stops the branch's walk with `More` set, for
+the next pass.
+
+A pass's cost is bounded by `Batch`: it reads the roots, the pages of each directory, and the
+stale rows no further than the records its budget allows, plus the rows it leaves in place. A
+mark walks its whole branch, and on the PostgreSQL engine holds the tree lock while it does,
+blocking every `Move` and `MarkDeleting`; a pass marks a branch only when stragglers appear, at
+most once a branch, so a branch with none is swept in passes of `Batch` records with no mark at
+all.
 
 | Option | Effect |
 |---|---|
@@ -410,15 +429,21 @@ with `More` set, and so does a directory refused as `ErrNotEmpty` for the same r
 
 `SweepResult` counts what the pass did, each row once, by the step that purged it: `Files`
 counts the files of branches, `Directories` the directories removed, and `Stale` the stale rows
-reclaimed. `More` reports that the pass stopped at its bound, or at a straggler, with work
-remaining; a caller runs passes while it is true. A stale row in a branch the walk has not
-reached yet is finished by the reclaim and counted in `Stale`. Nothing to do is a zero result
-and no error.
+reclaimed. `More` reports work the pass did not reach: it stopped at its bound with a page, a
+branch, or a read of roots or stale rows not finished, or at a straggler. When the budget runs
+out exactly as a read ends, one row read past the rows the pass left tells whether more remain.
+A caller runs passes while `More` is true. A stale row in a branch the walk has not reached yet
+is finished by the reclaim and counted in `Stale`. Nothing to do is a zero result and no error.
 
-A refusal stops the branch or the stale row it meets, not the pass. The refusals are an object
+A refusal leaves the row it meets, not the branch or the pass. The refusals are an object
 delete's error, the hook's error, and a purge or removal a consumer's foreign key refuses as
-`ErrReferenced`. The pass goes on to the next branch or row and returns every refusal joined and
-wrapped as `data: sweep: ...`, with the result counting what it did.
+`ErrReferenced`. A refused file stays deleting, and the walk goes on with its directory's other
+files and child directories; the directories above it cannot be removed while it remains, and
+stay for a later pass. A refused directory stays the same way, and a refused root or stale row
+is read past, so every later read of the pass starts beyond the rows it left. A refusal spends
+no budget and does not set `More`. A file refused in a branch's walk is not tried again in the
+pass, by the walk or the stale reclaim. The pass returns every refusal joined and wrapped as
+`data: sweep: ...`, with the result counting what it did.
 
 `StaleOlderThan`'s `age` must exceed the longest write the consumer lets run, counted from the
 write's first step. The age is measured against the consumer's clock and `updated_at` against
@@ -693,12 +718,14 @@ tables, to stand in for a consumer's references, and an index on
 The suite is engine-agnostic: it imports no engine and no driver, and every statement it runs
 outside the store is standard SQL with the dialect's placeholders. The groups, in order, are
 Verify, Directories, Paths, Files, Writes, Deletes, Holds, Moves, Listing, Keyset, Branches, and
-Sweeps. Branches checks the mark's counts, its convergence and stragglers, every refusal a
-deleting directory makes, the listings' hiding, and `Deleting`'s roots; it runs after the other
-groups because the branches it marks stay in the tree. Sweeps runs last because its first pass
-removes them; it then checks a full sweep with its hook, a pass stopped between an object's
-delete and its row's purge, stragglers, the batch bound, a hook that aborts a removal, a refused
-branch that holds back nothing behind it, and the stale reclaim's age.
+Sweeps. Branches checks the mark's counts, its convergence and stragglers, its version guard and
+its retry at any version, its wait on a hold, every refusal a deleting directory makes, the
+listings' hiding, and `Deleting`'s roots; it runs after the other groups because the branches it
+marks stay in the tree. Sweeps runs last because its first pass removes them; it then checks a
+full sweep with its hook, a pass stopped between an object's delete and its row's purge,
+stragglers, the batch bound, a hook that aborts a removal, a refused branch and a refused stale
+row that hold back nothing behind them, at the default batch and at `Batch(1)`, the stale
+reclaim's age, and concurrent passes converging.
 
 ## Errors
 

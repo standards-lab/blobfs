@@ -113,7 +113,9 @@ func (d *Directories) Create(ctx context.Context, sess sqlate.Session, parentID,
 // Ensure returns the directory named name under parentID, creating it when
 // none exists, and reports whether this call created it: the insert-or-find
 // a seeder runs. It looks the name up first and inserts only when no row
-// holds it; a found row keeps its own id whatever WithID supplied.
+// holds it; a found row keeps its own id whatever WithID supplied, and an
+// active one is returned without a read of its parent, a straggler under
+// a deleting parent included.
 //
 // Refusals: Create's; blobfs.ErrDeleting for a found directory that is
 // deleting; and, inside a transaction only, blobfs.ErrNameTaken when a
@@ -204,10 +206,12 @@ type Marked struct {
 // MarkDeleting is the first step of a branch's delete: it marks the
 // directory with id, every directory beneath it, and every file in them
 // deleting, advancing each changed row's version once, and reports what it
-// changed. It runs two statements in tx under the tree lock, so the branch
-// they walk is one branch, and waits on a Files.Hold as Files.Delete does.
-// A repeated mark converges and reaches a straggler. See Deleting a branch
-// in docs/concepts.md.
+// changed. It runs two statements in tx under the tree lock and waits on a
+// Files.Hold as Files.Delete does. The branch the two statements walk is
+// one branch only where the lock serializes; on a variant whose Serializes
+// is false, a mover's course from Moves in docs/concepts.md covers the
+// mark too. A repeated mark converges and reaches a straggler. See
+// Deleting a branch in docs/concepts.md.
 //
 // Refusals: blobfs.ErrRootDirectory before any SQL; blobfs.ErrNotFound;
 // query.ErrVersionMismatch under AtVersion for an active directory.
@@ -217,7 +221,9 @@ func (d *Directories) MarkDeleting(ctx context.Context, tx *sqlate.Tx, id string
 }
 
 // markDeleting is MarkDeleting's body, at version when it is not nil, with
-// its errors bare for the sweep.
+// its errors bare for the sweep. The version guards the directories'
+// update in the same statement, and the files' update runs only once that
+// statement marked the directory or found it deleting.
 func (d *Directories) markDeleting(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (Marked, error) {
 	if id == blobfs.RootID {
 		return Marked{}, blobfs.ErrRootDirectory
@@ -226,24 +232,22 @@ func (d *Directories) markDeleting(ctx context.Context, tx *sqlate.Tx, id string
 		return Marked{}, fmt.Errorf("lock tree: %w", err)
 	}
 	args := query.Args{"id": id}
-	if version != nil {
-		dir, err := d.dirs.byID.One(ctx, tx, args)
-		switch {
-		case err != nil:
-			return Marked{}, notFound(err)
-		case dir.Status.Mutable() && dir.Version != *version:
-			return Marked{}, versionMismatch(*version, dir.Version)
-		}
-	}
-	dirs, err := d.markDirs.Exec(ctx, tx, args)
+	dirs, err := d.markDirs.Exec(ctx, tx, withVersion(args, version))
 	if err != nil {
 		return Marked{}, err
 	}
 	if dirs == 0 {
-		// Nothing was marked: the directory is missing, or its branch was
-		// marked already, which the read tells apart.
-		if _, err := d.dirs.byID.One(ctx, tx, args); err != nil {
+		// Nothing was marked: the directory is missing, active at another
+		// version, or deleting already, the mark's retry, which the read
+		// tells apart.
+		dir, err := d.dirs.byID.One(ctx, tx, args)
+		switch {
+		case err != nil:
 			return Marked{}, notFound(err)
+		case dir.Status.Mutable() && version != nil:
+			return Marked{}, versionMismatch(*version, dir.Version)
+		case dir.Status.Mutable():
+			return Marked{}, fmt.Errorf("the mark changed no row, yet the directory %s is %s", id, dir.Status)
 		}
 	}
 	files, err := d.markFiles.Exec(ctx, tx, args)

@@ -43,10 +43,11 @@ func deletingRoot() sqltest.Response {
 	return directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusDeleting, 2)
 }
 
-// remark scripts the mark a pass repeats on a branch marked already: no
-// directory changed, the read of the root, and no file changed.
+// remark scripts the mark a pass repeats on a branch marked already, after
+// a straggler: no directory changed, the read of the root, and the
+// straggling file changed.
 func remark() []sqltest.Response {
-	return []sqltest.Response{{Affected: 0}, deletingRoot(), {Affected: 0}}
+	return []sqltest.Response{{Affected: 0}, deletingRoot(), {Affected: 1}}
 }
 
 // TestSweepRefusesBeforeSQL proves a Batch below 1 and a StaleOlderThan
@@ -102,17 +103,17 @@ func TestSweepNothingToDo(t *testing.T) {
 }
 
 // TestSweepABranch checks a pass over a branch of one directory and one
-// file, step by step.
+// file, step by step: the walk marks nothing again when it meets no
+// straggler.
 func TestSweepABranch(t *testing.T) {
 	ctx := context.Background()
-	responses := append([]sqltest.Response{deletingRoot()}, remark()...)
-	responses = append(responses,
+	s, db, rec := openStore(t, fallback,
+		deletingRoot(),
 		files("D", "F"),
 		sqltest.Response{Affected: 1},
 		noDirectory(),
 		sqltest.Response{Affected: 1},
 	)
-	s, db, rec := openStore(t, fallback, responses...)
 	objects := &objectLog{}
 	var hooked []string
 	hook := func(_ context.Context, tx *sqlate.Tx, dir blobfs.Directory) error {
@@ -126,7 +127,7 @@ func TestSweepABranch(t *testing.T) {
 	if err != nil || got != (data.SweepResult{Files: 1, Directories: 1}) {
 		t.Fatalf("Sweep = %+v, %v, want one file and one directory", got, err)
 	}
-	if want := "query begin exec query exec commit query exec query begin exec commit"; ops(rec) != want {
+	if want := "query query exec query begin exec commit"; ops(rec) != want {
 		t.Errorf("ops = %q, want %q", ops(rec), want)
 	}
 	if !slices.Equal(objects.keys, []string{"F/f.txt"}) || !slices.Equal(hooked, []string{"D"}) {
@@ -142,12 +143,11 @@ func TestSweepABranch(t *testing.T) {
 	}
 }
 
-// TestSweepBatch checks a pass stops at its bound and reports More.
+// TestSweepBatch checks a pass stops at its bound and reports More without
+// another read, and that a page past a refused file is read past it.
 func TestSweepBatch(t *testing.T) {
 	ctx := context.Background()
-	responses := append([]sqltest.Response{deletingRoot()}, remark()...)
-	responses = append(responses, files("D", "F", "G"), sqltest.Response{Affected: 1}, deletingRoot())
-	s, db, rec := openStore(t, fallback, responses...)
+	s, db, rec := openStore(t, fallback, deletingRoot(), files("D", "F", "G"), sqltest.Response{Affected: 1})
 	objects := &objectLog{}
 	got, err := s.Sweep(ctx, db, objects, data.Batch(1))
 	if err != nil || got != (data.SweepResult{Files: 1, More: true}) {
@@ -156,46 +156,100 @@ func TestSweepBatch(t *testing.T) {
 	if !slices.Equal(objects.keys, []string{"F/f.txt"}) {
 		t.Errorf("the pass deleted %v, want F's key alone", objects.keys)
 	}
-	calls := queries(rec)
-	if last := calls[len(calls)-1]; !slices.Equal(last.Args, []any{0, 1}) || !strings.Contains(last.SQL, "d.status = 'deleting' AND p.status = 'active'") {
-		t.Errorf("the pass ended with %v, want the read of one root", last)
+	if want := "query query exec"; ops(rec) != want {
+		t.Errorf("ops = %q, want the roots' read, one page, and one purge", ops(rec))
+	}
+
+	// F's object delete is refused, so the budget of one is left for G,
+	// on the page read past F.
+	errStore := errors.New("the store is down")
+	s, db, rec = openStore(t, fallback, deletingRoot(), files("D", "F", "G"), files("D", "G"), sqltest.Response{Affected: 1})
+	got, err = s.Sweep(ctx, db, &failingKey{key: "F/f.txt", err: errStore}, data.Batch(1))
+	if !errors.Is(err, errStore) || got != (data.SweepResult{Files: 1, More: true}) {
+		t.Fatalf("Sweep past a refused file = %+v, %v, want G finished, More, and the store's error", got, err)
+	}
+	pages := queries(rec)[1:]
+	if len(pages) != 2 || !strings.Contains(pages[1].SQL, "name") || len(pages[1].Args) <= len(pages[0].Args) {
+		t.Errorf("the pass read %v, want the first page and the page past F", pages)
+	}
+	if purge := callsTo(rec, "DELETE FROM blobfs_file"); len(purge) != 1 || !slices.Equal(purge[0].Args, []any{"G"}) {
+		t.Errorf("the pass purged %v, want G alone", purge)
 	}
 }
 
-// TestSweepStops checks a pass stops a branch at an object delete's error,
-// a hook's error, and a straggler.
-func TestSweepStops(t *testing.T) {
-	ctx := context.Background()
-	errStore := errors.New("the store is down")
-	responses := append([]sqltest.Response{deletingRoot()}, remark()...)
-	s, db, rec := openStore(t, fallback, append(responses, files("D", "F"))...)
-	got, err := s.Sweep(ctx, db, &objectLog{err: errStore})
-	if !errors.Is(err, errStore) || got != (data.SweepResult{}) {
-		t.Errorf("Sweep over a failing store = %+v, %v, want the store's error", got, err)
-	}
-	if n := len(callsTo(rec, "DELETE")); n != 0 {
-		t.Errorf("the failed object delete was followed by %d deletes", n)
-	}
+// failingKey is an ObjectDeleter that refuses key with err and deletes
+// every other key.
+type failingKey struct {
+	key string
+	err error
+}
 
-	errHook := errors.New("the owner row is locked")
-	s, db, rec = openStore(t, fallback, append(responses, files("D"), noDirectory())...)
-	got, err = s.Sweep(ctx, db, &objectLog{}, data.OnRemoveDirectory(func(context.Context, *sqlate.Tx, blobfs.Directory) error { return errHook }))
-	if !errors.Is(err, errHook) || got != (data.SweepResult{}) {
-		t.Errorf("Sweep under a failing hook = %+v, %v, want the hook's error", got, err)
+func (f *failingKey) DeleteObject(_ context.Context, key string) error {
+	if key == f.key {
+		return f.err
 	}
-	if want := "query begin exec query exec commit query query begin rollback"; ops(rec) != want {
+	return nil
+}
+
+// TestSweepStraggler checks a straggler has the branch marked again, once,
+// and the directory walked again: the marked straggler is swept in the
+// same pass, and a straggler met after the mark stops the branch with
+// More.
+func TestSweepStraggler(t *testing.T) {
+	ctx := context.Background()
+	straggler := fileIn("S", "D", "s.txt", blobfs.StatusAvailable, 1)
+	responses := append([]sqltest.Response{deletingRoot(), straggler}, remark()...)
+	s, db, rec := openStore(t, fallback, append(responses,
+		files("D", "S"), sqltest.Response{Affected: 1}, noDirectory(), sqltest.Response{Affected: 1})...)
+	got, err := s.Sweep(ctx, db, &objectLog{})
+	if err != nil || got != (data.SweepResult{Files: 1, Directories: 1}) {
+		t.Errorf("Sweep over a straggler = %+v, %v, want it marked and swept with the branch", got, err)
+	}
+	if want := "query query begin exec query exec commit query exec query begin exec commit"; ops(rec) != want {
 		t.Errorf("ops = %q, want %q", ops(rec), want)
 	}
+	marks := callsTo(rec, "UPDATE blobfs_directory")
+	if len(marks) != 1 || !slices.Equal(marks[0].Args, []any{"D", nil}) {
+		t.Errorf("the pass marked %v, want D's branch once, at no version", marks)
+	}
 
-	straggler := fileIn("S", "D", "s.txt", blobfs.StatusAvailable, 1)
 	s, db, rec = openStore(t, fallback, append(responses, straggler)...)
 	objects := &objectLog{}
 	got, err = s.Sweep(ctx, db, objects)
 	if err != nil || got != (data.SweepResult{More: true}) || len(objects.keys) != 0 {
-		t.Errorf("Sweep over a straggler = %+v, %v, deleted %v, want More and nothing done", got, err, objects.keys)
+		t.Errorf("Sweep over a straggler after the mark = %+v, %v, deleted %v, want More and nothing done", got, err, objects.keys)
+	}
+	if n := len(callsTo(rec, "UPDATE blobfs_directory")); n != 1 {
+		t.Errorf("the pass marked the branch %d times, want once", n)
 	}
 	if n := len(callsTo(rec, "DELETE")); n != 0 {
 		t.Errorf("the straggler was followed by %d deletes", n)
+	}
+}
+
+// TestSweepRefusals checks a refusal keeps its row and the directories
+// above it, and the walk goes on: an object delete's error and a hook's
+// error.
+func TestSweepRefusals(t *testing.T) {
+	ctx := context.Background()
+	errStore := errors.New("the store is down")
+	s, db, rec := openStore(t, fallback, deletingRoot(), files("D", "F"), noDirectory())
+	got, err := s.Sweep(ctx, db, &objectLog{err: errStore})
+	if !errors.Is(err, errStore) || got != (data.SweepResult{}) {
+		t.Errorf("Sweep over a failing store = %+v, %v, want the store's error", got, err)
+	}
+	if want := "query query query"; ops(rec) != want {
+		t.Errorf("ops = %q, want the pages of files and directories and no removal", ops(rec))
+	}
+
+	errHook := errors.New("the owner row is locked")
+	s, db, rec = openStore(t, fallback, deletingRoot(), files("D"), noDirectory())
+	got, err = s.Sweep(ctx, db, &objectLog{}, data.OnRemoveDirectory(func(context.Context, *sqlate.Tx, blobfs.Directory) error { return errHook }))
+	if !errors.Is(err, errHook) || got != (data.SweepResult{}) {
+		t.Errorf("Sweep under a failing hook = %+v, %v, want the hook's error", got, err)
+	}
+	if want := "query query query begin rollback"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q", ops(rec), want)
 	}
 }
 
@@ -244,9 +298,7 @@ func TestSweepStale(t *testing.T) {
 func TestSweepRefusedOnce(t *testing.T) {
 	ctx := context.Background()
 	errStore := errors.New("the store is down")
-	responses := append([]sqltest.Response{deletingRoot()}, remark()...)
-	responses = append(responses, files("D", "F"), files("D", "F"))
-	s, db, _ := openStore(t, fallback, responses...)
+	s, db, _ := openStore(t, fallback, deletingRoot(), files("D", "F"), noDirectory(), files("D", "F"))
 	objects := &objectLog{err: errStore}
 	got, err := s.Sweep(ctx, db, objects, data.StaleOlderThan(time.Hour))
 	if !errors.Is(err, errStore) || got != (data.SweepResult{}) {

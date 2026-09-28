@@ -18,7 +18,15 @@ The schema for the delete of a branch.
   `blobfs_cc_directory_status`, `status IN ('active', 'deleting')`. It also adds two partial
   indexes for the sweep's reads: `blobfs_ix_directory_deleting` on `blobfs_directory (id)` of
   the deleting directories, and `blobfs_ix_file_stale` on `blobfs_file (updated_at, id)` of the
-  pending and deleting files. The migration ships its down, and the golden test pins both files.
+  pending and deleting files. The migration ships its down, which drops each of the four by name
+  and re-activates every deleting directory, a branch marked or half swept included, while its
+  files stay deleting. The golden test pins both files.
+- Migration 0003 runs in one transaction, and neither its index builds nor its check's
+  validation is concurrent. The `ALTER TABLE` locks `blobfs_directory` against reads and writes
+  while the check reads every row, and each index build locks its table, `blobfs_directory` or
+  `blobfs_file`, against writes while it reads every row; each lock lasts until the migration
+  commits, a time that grows with the tables. A consumer with large tables applies it in a
+  maintenance window.
 - The integration tier: the conformance suite's new groups, the directory status check's
   violation, and plan assertions for the reads through the two new indexes.
 

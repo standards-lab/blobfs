@@ -17,7 +17,7 @@ var released = map[string]string{
 	"0002_file.up.sql":               "bafff9b9d797e61791ecbcdfd5df7db414fb2ddb2259e547b87eaa0eed454712",
 	"0002_file.down.sql":             "adbf56e6f4f0ab977bcb8b3e7874bae41fe3eebf7e7a610e9cda98c162f3b14c",
 	"0003_directory_status.up.sql":   "e536c7e118ca68f31933cc2add6320991c6e110dbc749dd3e461f2969521ec5e",
-	"0003_directory_status.down.sql": "c423fcd8771b8cb635a996412210b7b1c285f6b684515964995efcd046f79949",
+	"0003_directory_status.down.sql": "727c7d8a7ed6ee2257b4f24691a48184841fa84b2e6e0ce892790a0e5c1a8753",
 }
 
 // TestGoldenHashes checks every embedded migration file against the

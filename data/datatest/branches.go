@@ -20,6 +20,7 @@ func (s *suite) branches(t *testing.T) {
 	t.Run("MarkMissingIsNotFound", s.markMissing)
 	t.Run("MarkAgainConverges", s.markAgain)
 	t.Run("MarkAtVersion", s.markAtVersion)
+	t.Run("MarkWaitsOnAHold", s.markWaitsOnHold)
 	t.Run("DeletingRefuses", s.deletingRefuses)
 	t.Run("ListingsHideTheBranch", s.listingsHideTheBranch)
 	t.Run("ListingADeletingDirectory", s.listingADeletingDirectory)
@@ -200,8 +201,16 @@ func (s *suite) markAtVersion(t *testing.T) {
 		if !errors.Is(err, query.ErrVersionMismatch) {
 			t.Errorf("MarkDeleting at a stale version = %v, want ErrVersionMismatch", err)
 		}
+		if d := s.directory(t, b.top.ID); !equalDirectory(d, b.top) {
+			t.Errorf("the refused mark changed the top to\n%+v\nfrom\n%+v", d, b.top)
+		}
 		if d := s.directory(t, b.leaf.ID); !equalDirectory(d, b.leaf) {
 			t.Errorf("the refused mark changed the leaf to\n%+v\nfrom\n%+v", d, b.leaf)
+		}
+		for _, id := range b.files {
+			if f := s.file(t, id); f.Status == blobfs.StatusDeleting || f.Version != 1 {
+				t.Errorf("the refused mark changed the file %s to %+v", f.Name, f)
+			}
 		}
 		got, err := s.mark(store, b.top.ID, data.AtVersion(b.top.Version))
 		if err != nil || got != (data.Marked{Directories: 3, Files: 4}) {
@@ -211,8 +220,53 @@ func (s *suite) markAtVersion(t *testing.T) {
 		if err != nil || got != (data.Marked{}) {
 			t.Errorf("MarkDeleting's retry at the version read before the mark = %+v, %v, want nothing marked", got, err)
 		}
+		straggler := s.insertDirectory(t, b.leaf.ID, "straggler")
+		got, err = s.mark(store, b.top.ID, data.AtVersion(b.top.Version+7))
+		if err != nil || got != (data.Marked{Directories: 1}) {
+			t.Errorf("MarkDeleting's retry at a version the directory never had = %+v, %v, want the straggler marked", got, err)
+		}
+		if d := s.directory(t, straggler); d.Status != blobfs.DirectoryStatusDeleting {
+			t.Errorf("the retry left the straggler %s, want deleting", d.Status)
+		}
 		if _, err := s.mark(store, blobfs.NewID(), data.AtVersion(1)); !errors.Is(err, blobfs.ErrNotFound) {
 			t.Errorf("MarkDeleting(missing) at a version = %v, want ErrNotFound", err)
+		}
+	}
+}
+
+// markWaitsOnHold checks, against the baseline, that a mark waits on a
+// Files.Hold another transaction took of a file in the branch, and marks
+// the file once the holder commits: the reference-then-delete rule holds
+// across a branch.
+func (s *suite) markWaitsOnHold(t *testing.T) {
+	for i, store := range []*data.Store{s.store, s.baseline} {
+		b := s.newBranch(t, fmt.Sprintf("held-%d-%s", i, t.Name()))
+		held := b.files[3]
+		holder := s.beginTx(t)
+		ended := false
+		defer func() {
+			if !ended {
+				_ = holder.Rollback()
+			}
+		}()
+		if err := store.Files.Hold(s.ctx, holder, held); err != nil {
+			t.Fatalf("Hold: %v", err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := s.mark(store, b.top.ID)
+			done <- err
+		}()
+		wantBlocked(t, done, "the mark returned while the hold's transaction was open")
+		ended = true
+		if err := holder.Commit(); err != nil {
+			t.Fatalf("Commit: %v", err)
+		}
+		if err := awaitOrFail(t, done, "the mark still blocks after the hold's transaction ended"); err != nil {
+			t.Fatalf("MarkDeleting after the hold committed: %v", err)
+		}
+		if f := s.file(t, held); f.Status != blobfs.StatusDeleting {
+			t.Errorf("the held file is %s after the mark, want deleting", f.Status)
 		}
 	}
 }
