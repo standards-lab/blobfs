@@ -113,3 +113,13 @@ func (s *suite) cursorIsAPosition(t *testing.T, f listingFixture) {
 		t.Errorf("the d1 cursor on d2 = %v, want %v", got, want)
 	}
 }
+
+// wantDeletingKind fails the test unless err is a blobfs.DeletingError of
+// the kind directory; a non-empty id is the row it must name.
+func wantDeletingKind(t *testing.T, err error, directory bool, id string) {
+	t.Helper()
+	var de *blobfs.DeletingError
+	if !errors.As(err, &de) || de.Directory != directory || (id != "" && de.ID != id) {
+		t.Errorf("%v: want a DeletingError with Directory %v naming %q", err, directory, id)
+	}
+}

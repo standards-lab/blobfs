@@ -2,8 +2,8 @@
 
 blobfs maps flat blob objects, which a consumer stores under opaque keys, onto a tree of
 directories and file-metadata rows in SQL, one directory at a time. It imports no object store:
-it exposes the steps of the two-phase write and the two-phase delete, and the consumer runs its
-store's calls between them or runs a sweep, which calls the consumer's object delete.
+it exposes the steps of the two-phase write and the two-phase delete, and runs them end to end
+through the consumer's put and delete, as it runs the sweep through the consumer's delete.
 
 The user guide is the repository's own: `README.md` is the index, and `docs/` holds the
 documents it lists in reading order. The library is adjacent to the organization's Go Elemental
@@ -14,10 +14,11 @@ express.
 
 ## Capability map
 
-The repository holds the v0.2.0 release, which `docs/` describes: the root package, the
-persistence package `data` with its conformance suite `data/datatest`, the `postgres` engine
-sub-module (its variant, native statements, migration set, and integration tier), and the
-`example` module, which composes the library with `go-storage`.
+The repository holds the v0.2.0 release and the unreleased changes the changelog lists, which
+`docs/` describes: the root package, the persistence package `data` with its conformance suite
+`data/datatest`, the `postgres` engine sub-module (its variant, native statements, migration
+set, and integration tier), and the `example` module, which composes the library with
+`go-storage`.
 
 ## Notes
 

@@ -18,7 +18,8 @@ import (
 // pool the lock would end with the statement. The lock is the variant's
 // (see Variant.HoldFile). See Reference-then-delete in docs/concepts.md.
 //
-// Refusals: blobfs.ErrNotFound; blobfs.ErrDeleting for a deleting row;
+// Refusals: blobfs.ErrNotFound; a blobfs.DeletingError for a deleting
+// row, the file's or its directory's as a read of the directory tells;
 // query.ErrVersionMismatch under AtVersion.
 func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) (err error) {
 	defer wrap(&err, "hold file %s", id)
@@ -36,7 +37,7 @@ func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...Vers
 	case err != nil:
 		return notFound(err)
 	case !file.Status.Mutable():
-		return fmt.Errorf("the row is %s: %w", file.Status, blobfs.ErrDeleting)
+		return f.dirs.deletingFile(ctx, tx, file, nil)
 	case version != nil && file.Version != *version:
 		return versionMismatch(*version, file.Version)
 	}

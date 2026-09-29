@@ -272,9 +272,11 @@ func (s *suite) markWaitsOnHold(t *testing.T) {
 }
 
 // deletingRefuses checks every create, ensure, and move a deleting
-// directory refuses, against the baseline in the same text, at the marked
-// rows' old and new versions and for stragglers; every refused row is left
-// as it was. An ensure that finds a deleting file reports it present.
+// directory refuses, and the hold and completion of a marked file, against
+// the baseline in the same text, at the marked rows' old and new versions
+// and for stragglers, each the directory's DeletingError; every refused
+// row is left as it was. An ensure that finds a deleting file reports it
+// present.
 func (s *suite) deletingRefuses(t *testing.T) {
 	b := s.newBranch(t, "refuses-"+t.Name())
 	if _, err := s.mark(s.store, b.top.ID); err != nil {
@@ -345,12 +347,25 @@ func (s *suite) deletingRefuses(t *testing.T) {
 		{"MoveStragglingDirectoryOut", moveDir(strayDir, blobfs.RootID, "stray-"+name(t.Name()), 1)},
 		{"MoveStragglingFileOut", moveFile(strayFile, outside.ID, "stray.txt", 1)},
 		{"RenameStragglingFile", moveFile(strayFile, b.mid.ID, "renamed.txt", 1)},
+		{"HoldAMarkedFile", func(store *data.Store) error {
+			_, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (struct{}, error) {
+				return struct{}{}, store.Files.Hold(s.ctx, tx, b.files[2])
+			})
+			return err
+		}},
+		{"CompleteAMarkedFile", func(store *data.Store) error {
+			_, err := store.Files.Complete(s.ctx, s.db, b.files[2], midFile.Version, object)
+			return err
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			err := c.run(s.store)
 			if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || errors.Is(err, blobfs.ErrNotFound) {
 				t.Errorf("%s = %v, want ErrDeleting", c.name, err)
 			}
+			// Every refusal here is a deleting directory's, a marked
+			// file's included.
+			wantDeletingKind(t, err, true, "")
 			wantSameError(t, err, c.run(s.baseline))
 		})
 	}

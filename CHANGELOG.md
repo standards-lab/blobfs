@@ -7,6 +7,36 @@ the `postgres` sub-module keeps its own.
 
 ## [Unreleased]
 
+### Added
+
+- `Store.Write`, the two-phase write end to end: the consumer's callback creates the pending row
+  in one transaction, the object is put outside any transaction, and the row is completed; a
+  failed put or completion abandons the write, and a completion a sweep refused deletes the
+  object just put.
+- `Store.Ensure`, the retry-safe `Write` of a file under a fixed id, which resumes a pending row,
+  returns an available one, reports a row under another id as `ErrNameTaken`, and shares a row
+  with a concurrent writer.
+- `Store.Remove`, the two-phase delete end to end around the consumer's callback, and
+  `Store.Purge`, its tail for a delete the consumer began itself.
+- `ObjectPutter`, the consumer's put, and `ObjectStore`, the putter and `ObjectDeleter`
+  together, which the write takes.
+- `Store.SweepUntilDone`, the loop over `Sweep`'s passes while one reports `More`, with a stop
+  channel and a report of each pass, and the `SweepOption` `AroundPass`, which runs each pass
+  inside the consumer's function.
+- `Listing[T]`, the interface `*Directories` and `*Files` satisfy.
+- `blobfs.DeletingError`, which every `ErrDeleting` now is: it tells a file whose own delete
+  began from a deleting directory, names the row, and unwraps its cause.
+- `data/datatest`: `FileRows` and `DirectoryRows`, which script blobfs's rows for `sqltest`, and
+  checks of the `DeletingError`'s kind in the groups that assert `ErrDeleting`.
+
+### Changed
+
+- **Breaking:** every `ErrDeleting` is a `*blobfs.DeletingError`, whose message names the file or
+  the directory. `errors.Is(err, ErrDeleting)` still holds, and `Complete`'s refusal of a
+  deleting row wraps its `TransitionError`, which `errors.As` still reaches. A refusal of a
+  deleting file by `Complete`, `Move`, or `Hold` runs one more read, of the file's directory.
+- The base module requires `sqlate` v0.4.1.
+
 ## [v0.2.0] - 2026-09-28
 
 The delete of a branch, a directory with everything beneath it: the branch is marked deleting in

@@ -38,6 +38,9 @@ full.
   the one thing a write asks of an object store.
 - **Object deleter**: the consumer's adapter over its store's delete, `data.ObjectDeleter`: the
   one call a sweep makes to an object store, idempotent over a missing object.
+- **Object putter**: the consumer's adapter over its store's put, `data.ObjectPutter`: the call
+  `Store.Write` makes between the first step and the last. `data.ObjectStore` is the putter and
+  the deleter together.
 
 ## The protocols
 
@@ -54,9 +57,12 @@ full.
 - **Transition**: a change of status the table in the root package allows. No transition leaves
   `deleting` except the row's removal.
 - **Two-phase write**: `Create` (or `Ensure`) inserts the pending row, the consumer puts the
-  object under its key, and `Complete` makes the row available.
+  object under its key, and `Complete` makes the row available. `Store.Write` runs the three.
 - **Two-phase delete**: `Delete` marks the row deleting and returns its key, the consumer
   deletes the object, and `Purge` removes the row. Every step is safe to repeat.
+  `Store.Remove` runs the three.
+- **Deleting error**: `blobfs.DeletingError`, the form every `ErrDeleting` takes, which says
+  whether the file's own delete or a directory's refused the mutation.
 - **Mark**: `Directories.MarkDeleting`, the first step of a branch's delete, which moves every
   directory and file in the branch to deleting and closes the branch.
 - **Straggler**: an active row in a deleting branch, left by a create that read its parent before
@@ -65,6 +71,7 @@ full.
 - **Sweep**: `Store.Sweep`, one bounded, stateless pass that finishes the deletes callers began:
   it deletes the objects of each marked branch through the consumer's `data.ObjectDeleter`,
   purges the rows, removes the directories deepest first, and, when asked, reclaims stale rows.
+  `Store.SweepUntilDone` runs passes until one reports no more work.
 - **Stale row**: a file row a protocol left partway, older than the age the sweep is given: a
   pending row whose write never completed, or a deleting row whose purge never ran.
 - **Orphaned object**: an object with no row, left by a put that landed after a sweep had

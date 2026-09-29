@@ -77,6 +77,13 @@ carries its original key, so a retried put overwrites the same object. A write t
 is removed through the delete steps, which a pending row accepts, or by a sweep that reclaims
 [stale rows](#stale-rows-and-orphaned-objects).
 
+`data.Store.Write` runs the three steps end to end, with the put through the consumer's
+`data.ObjectPutter`: the first step in a transaction around the consumer's callback, the put
+outside any transaction, the completion on the pool, and the abandon when the put or the
+completion fails. `data.Store.Ensure` is its retry-safe form for a file under a fixed id. A
+consumer calls the steps itself only when its write does not fit that shape; see [the
+protocols](features.md#the-protocols).
+
 ## The two-phase delete
 
 A file is deleted in two steps around the object delete:
@@ -98,9 +105,17 @@ from the first. A deleting row is hidden from the listings, so a delete that sto
 resumed leaves a row only a read by id or name, a listing with `data.IncludeDeleting`, or a
 sweep finds.
 
+`data.Store.Remove` runs the three steps end to end, the first in a transaction around the
+consumer's callback, where it removes its own references, and `data.Store.Purge` runs the last
+two for a consumer that began the delete in a transaction of its own; see [the
+protocols](features.md#the-protocols).
+
 A deleting row keeps its name until it is purged, so a write of the same name in the window is
 refused as taken. Every mutation other than the delete steps refuses a deleting row with
-`blobfs.ErrDeleting`, so no operation acts on a row whose object is gone or about to be.
+`blobfs.ErrDeleting`, so no operation acts on a row whose object is gone or about to be. The
+refusal is a `blobfs.DeletingError`, which tells the file's own delete from a directory's, so a
+consumer can report "the file is being deleted" apart from "the folder is being deleted" (see
+[errors and constraints](features.md#errors-and-constraints)).
 
 ### Deleting outranks the version
 
@@ -134,14 +149,14 @@ branch](#deleting-a-branch) sets and nothing undoes.
 
 | Step | Caller | Session |
 |---|---|---|
-| `Files.Create` or `Files.Ensure` | the consumer, often beside its own rows | the pool or a transaction |
-| the put | the consumer, through its object store | none |
-| `Files.Complete` | the consumer | the pool or a transaction |
-| `Files.Delete` | the consumer, after its own reference check | a transaction |
-| the object delete | the consumer, through its object store | none |
-| `Files.Purge` | the consumer | the pool or a transaction |
+| `Files.Create` or `Files.Ensure` | the consumer, often beside its own rows, or in `Store.Write`'s callback | the pool or a transaction |
+| the put | the consumer through its object store, or `Store.Write` through the consumer's `ObjectPutter` | none |
+| `Files.Complete` | the consumer, or `Store.Write` | the pool or a transaction |
+| `Files.Delete` | the consumer, after its own reference check, or `Store.Remove` after its callback | a transaction |
+| the object delete | the consumer through its object store, or `Store.Remove` and `Store.Purge` through its `ObjectDeleter` | none |
+| `Files.Purge` | the consumer, or `Store.Remove` and `Store.Purge` | the pool or a transaction |
 | `Directories.MarkDeleting` | the consumer, to delete a branch | a transaction |
-| `Store.Sweep` | the consumer, now and then, with its object delete | the pool |
+| `Store.Sweep` or `Store.SweepUntilDone` | the consumer, now and then, with its object delete | the pool |
 
 ## Reference-then-delete
 
@@ -331,11 +346,12 @@ object behind. It cannot close one case: a write whose put lands after its pendi
 reclaimed, or after its branch was swept, leaves an object with no row. The write's `Complete`
 then fails, with `blobfs.ErrDeleting` while the row is still deleting and `blobfs.ErrNotFound`
 once it is purged. The case is inherent, since the put and the row share no transaction and the
-library never puts an object. A consumer bounds it by choosing an age longer than its longest
+put is the consumer's store's, even when `data.Store.Write` calls it. A consumer bounds it by choosing an age longer than its longest
 write, counted from the write's first step, since a write resumed through `Files.Ensure` keeps
 its row's `updated_at`; the reclaim then never overtakes a write still running. A branch's sweep
 has no age, so a write into a branch being deleted can still lose that race. Either way, a
-writer whose `Complete` is refused deletes the object it put, under the key it holds. An object
+writer whose `Complete` is refused deletes the object it put, under the key it holds, as
+`data.Store.Write` does. An object
 whose writer stopped after the put is found only by listing the store's keys, the reconciler the
 library defers.
 

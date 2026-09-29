@@ -105,7 +105,8 @@ func (s *suite) moveFile(t *testing.T) {
 
 // moveFileRefusals checks the file move's refusals against the baseline,
 // each leaving the row unchanged; a deleting row is ErrDeleting at its own
-// version and at the one read before a concurrent Delete.
+// version and at the one read before a concurrent Delete, the file's own
+// DeletingError.
 func (s *suite) moveFileRefusals(t *testing.T) {
 	src := s.mkdir(t, "refuse-src-"+t.Name())
 	dst := s.mkdir(t, "refuse-dst-"+t.Name())
@@ -147,6 +148,9 @@ func (s *suite) moveFileRefusals(t *testing.T) {
 				wantViolation(t, err, c.want, c.constraint)
 			} else if !errors.Is(err, c.want) || (c.not != nil && errors.Is(err, c.not)) {
 				t.Errorf("Move = %v, want %v and not %v", err, c.want, c.not)
+			}
+			if c.want == blobfs.ErrDeleting {
+				wantDeletingKind(t, err, false, c.id)
 			}
 			_, base := s.baseline.Files.Move(s.ctx, s.db, c.id, c.dir, c.file, c.version)
 			wantSameError(t, err, base)

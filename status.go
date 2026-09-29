@@ -86,7 +86,9 @@ func Transition(from, to Status) error {
 // TransitionError reports a refused status change. It matches
 // ErrInvalidTransition under errors.Is, and also ErrDeleting when the row
 // was deleting, so a caller can tell a delete in progress from any other
-// refusal without inspecting the fields.
+// refusal without inspecting the fields. Package data reports a
+// completion refused from deleting as a DeletingError whose cause is the
+// TransitionError, so errors.As reaches either.
 type TransitionError struct {
 	From Status
 	To   Status

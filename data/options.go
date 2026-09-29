@@ -111,8 +111,8 @@ func IncludeDeleting() ListOption {
 	return func(o *listOptions) { o.includeDeleting = true }
 }
 
-// SweepOption configures one call of Store.Sweep beyond its required
-// arguments.
+// SweepOption configures one call of Store.Sweep, or each pass of
+// Store.SweepUntilDone, beyond its required arguments.
 type SweepOption func(*sweepOptions)
 
 // sweepOptions collects what the sweep options set.
@@ -121,6 +121,7 @@ type sweepOptions struct {
 	onRemove func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error
 	staleAge time.Duration
 	hasStale bool
+	around   func(ctx context.Context, pass func(context.Context) (SweepResult, error)) (SweepResult, error)
 }
 
 // defaultBatch is the number of records a pass handles when Batch is not
@@ -156,4 +157,14 @@ func StaleOlderThan(age time.Duration) SweepOption {
 		o.staleAge = age
 		o.hasStale = true
 	}
+}
+
+// AroundPass runs each pass of Store.Sweep inside fn: fn calls pass once,
+// with the context the pass runs under, and returns what it returns, so a
+// consumer holds a lock or a gate of its own for the whole pass, such as
+// one a schema change takes exclusively. An fn that returns without
+// calling pass runs no pass, and its error is the pass's. Under
+// Store.SweepUntilDone, fn wraps every pass the loop runs.
+func AroundPass(fn func(ctx context.Context, pass func(context.Context) (SweepResult, error)) (SweepResult, error)) SweepOption {
+	return func(o *sweepOptions) { o.around = fn }
 }

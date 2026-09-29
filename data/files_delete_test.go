@@ -68,13 +68,29 @@ func TestHoldFile(t *testing.T) {
 		t.Errorf("the read is %s with %v, want file_by_id bound to the id", read.SQL, read.Args)
 	}
 
-	_, err = hold(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusDeleting, 3)})
-	if !errors.Is(err, blobfs.ErrDeleting) || !strings.Contains(err.Error(), "the row is deleting") {
-		t.Errorf("Hold of a deleting row = %v, want ErrDeleting", err)
+	// A deleting row is its own delete's refusal while its directory is
+	// active, and the directory's once the directory is deleting.
+	root := directoryResponse(blobfs.RootID, "", "/", 1)
+	rec, err = hold(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusDeleting, 3), root})
+	wantDeleting(t, "Hold of a deleting row", err, false, "F")
+	if got := ops(rec); got != "begin exec query query rollback" {
+		t.Errorf("ops = %q, want the exec, the row's read, its directory's, and the rollback", got)
 	}
-	_, err = hold(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusDeleting, 3)}, data.AtVersion(2))
-	if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) {
-		t.Errorf("Hold of a deleting row at another version = %v, want ErrDeleting and no version mismatch", err)
+	_, err = hold(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusDeleting, 3), root}, data.AtVersion(2))
+	wantDeleting(t, "Hold of a deleting row at another version", err, false, "F")
+	if errors.Is(err, query.ErrVersionMismatch) {
+		t.Errorf("Hold of a deleting row at another version = %v, want no version mismatch", err)
+	}
+	marked := directoryIn("S", blobfs.RootID, "s", blobfs.DirectoryStatusDeleting, 2)
+	_, err = hold(t, []sqltest.Response{{Affected: 0}, fileIn("F", "S", "a.txt", blobfs.StatusDeleting, 3), marked})
+	wantDeleting(t, "Hold of a file its branch's mark reached", err, true, "S")
+	// A directory that cannot be read leaves the refusal untyped, the
+	// read's error beside it.
+	errRead := errors.New("the connection dropped")
+	_, err = hold(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusDeleting, 3), {Err: errRead}})
+	var de *blobfs.DeletingError
+	if !errors.Is(err, blobfs.ErrDeleting) || !errors.Is(err, errRead) || errors.As(err, &de) {
+		t.Errorf("Hold of a deleting row whose directory is unread = %v, want ErrDeleting and the read's error, untyped", err)
 	}
 	_, err = hold(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusAvailable, 3)}, data.AtVersion(2))
 	if !errors.Is(err, query.ErrVersionMismatch) || errors.Is(err, blobfs.ErrDeleting) || !strings.Contains(err.Error(), "expected 2, current 3") {

@@ -2,7 +2,6 @@ package data_test
 
 import (
 	"context"
-	"database/sql/driver"
 	"errors"
 	"slices"
 	"strings"
@@ -16,20 +15,22 @@ import (
 
 	"github.com/standards-lab/blobfs"
 	"github.com/standards-lab/blobfs/data"
+	"github.com/standards-lab/blobfs/data/datatest"
 )
 
-// fileColumns is the column list of a file row, as the scripted driver must
-// return it.
-var fileColumns = []string{
-	"id", "directory_id", "name", "status", "key", "size", "content_type", "etag", "version", "created_at", "updated_at",
+// fileRow is a file row in a directory, with a status and a version; its
+// key is the id and the name, as NewKey builds it.
+func fileRow(id, directoryID, name string, status blobfs.Status, version int64) blobfs.File {
+	now := time.Now()
+	return blobfs.File{
+		ID: id, DirectoryID: directoryID, Name: name, Status: status, Key: id + "/" + name,
+		ContentType: "text/plain", Version: version, CreatedAt: now, UpdatedAt: now,
+	}
 }
 
-// fileIn scripts one file row in a directory, with a status and a version;
-// its key is the id and the name, as NewKey builds it.
+// fileIn scripts one file row in a directory, with a status and a version.
 func fileIn(id, directoryID, name string, status blobfs.Status, version int64) sqltest.Response {
-	now := time.Now()
-	row := []driver.Value{id, directoryID, name, string(status), id + "/" + name, nil, "text/plain", nil, version, now, now}
-	return sqltest.Response{Columns: fileColumns, Rows: [][]driver.Value{row}}
+	return datatest.FileRows(fileRow(id, directoryID, name, status, version))
 }
 
 // fileResponse scripts one file row in the root.
@@ -39,7 +40,7 @@ func fileResponse(id, name string, status blobfs.Status, version int64) sqltest.
 
 // noFile scripts a file read, or a returning command's single-statement
 // form, that yields no row.
-func noFile() sqltest.Response { return sqltest.Response{Columns: fileColumns} }
+func noFile() sqltest.Response { return datatest.FileRows() }
 
 // unchangedFile scripts a returning file command that changed no row, in
 // the form's own shape, followed by the read of the row as it is.
@@ -79,6 +80,16 @@ func (l runeLimit) ValidateKey(key string) error {
 		return errors.New("over the limit")
 	}
 	return nil
+}
+
+// wantDeleting fails the test unless err is a blobfs.DeletingError of the
+// kind directory, naming id, and matches blobfs.ErrDeleting.
+func wantDeleting(t *testing.T, what string, err error, directory bool, id string) {
+	t.Helper()
+	var de *blobfs.DeletingError
+	if !errors.Is(err, blobfs.ErrDeleting) || !errors.As(err, &de) || de.Directory != directory || de.ID != id {
+		t.Errorf("%s = %v, want the DeletingError with Directory %v naming %s", what, err, directory, id)
+	}
 }
 
 // callsTo returns the calls whose text starts with prefix.
@@ -412,8 +423,8 @@ func TestCompleteFile(t *testing.T) {
 
 			// complete runs Complete of F at version 1 over a command that
 			// changed no row, its read returning read.
-			complete := func(read sqltest.Response) (string, error) {
-				s, db, rec := openStore(t, f, unchangedFile(f, read)...)
+			complete := func(read ...sqltest.Response) (string, error) {
+				s, db, rec := openStore(t, f, append(unchangedFile(f, read[0]), read[1:]...)...)
 				_, err := s.Files.Complete(ctx, db, "F", 1, obj)
 				return ops(rec), err
 			}
@@ -433,8 +444,13 @@ func TestCompleteFile(t *testing.T) {
 			if got != refusedOps {
 				t.Errorf("ops = %q, want %q: the refusal classifies from the returning read alone", got, refusedOps)
 			}
+			root := directoryResponse(blobfs.RootID, "", "/", 1)
 			for _, status := range []blobfs.Status{blobfs.StatusDeleting, blobfs.StatusAvailable} {
-				_, err := complete(fileResponse("F", "a.txt", status, 1))
+				read := []sqltest.Response{fileResponse("F", "a.txt", status, 1)}
+				if status == blobfs.StatusDeleting {
+					read = append(read, root)
+				}
+				_, err := complete(read...)
 				var te *blobfs.TransitionError
 				if !errors.Is(err, blobfs.ErrInvalidTransition) || errors.Is(err, query.ErrVersionMismatch) || !errors.As(err, &te) || te.From != status || te.To != blobfs.StatusAvailable {
 					t.Errorf("Complete of a %s row = %v, want the TransitionError to available and no version mismatch", status, err)
@@ -443,14 +459,21 @@ func TestCompleteFile(t *testing.T) {
 					t.Errorf("Complete of a %s row = %v; ErrDeleting should match for deleting only", status, err)
 				}
 			}
-			// Deleting outranks the stale version.
-			got, err = complete(fileResponse("F", "a.txt", blobfs.StatusDeleting, 2))
+			// Deleting outranks the stale version, and the directory's
+			// read tells whose delete refused the completion.
+			got, err = complete(fileResponse("F", "a.txt", blobfs.StatusDeleting, 2), root)
 			var te *blobfs.TransitionError
 			if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !errors.As(err, &te) || te.From != blobfs.StatusDeleting {
 				t.Errorf("Complete of a deleting row at a later version = %v, want the TransitionError from deleting and no version mismatch", err)
 			}
-			if got != refusedOps {
-				t.Errorf("ops = %q, want %q: the refusal classifies from the returning read alone", got, refusedOps)
+			wantDeleting(t, "Complete of a deleting row", err, false, "F")
+			if got != refusedOps+" query" {
+				t.Errorf("ops = %q, want %q: the refusal classifies from the returning read and the directory's", got, refusedOps+" query")
+			}
+			_, err = complete(fileIn("F", "S", "a.txt", blobfs.StatusDeleting, 2), directoryIn("S", blobfs.RootID, "s", blobfs.DirectoryStatusDeleting, 2))
+			wantDeleting(t, "Complete of a file its branch's mark reached", err, true, "S")
+			if !errors.As(err, &te) {
+				t.Errorf("Complete of a file its branch's mark reached = %v, want the TransitionError reachable", err)
 			}
 			_, err = complete(fileResponse("F", "a.txt", blobfs.StatusAvailable, 2))
 			if !errors.Is(err, query.ErrVersionMismatch) || errors.Is(err, blobfs.ErrInvalidTransition) || !strings.Contains(err.Error(), "expected 1, current 2") {
@@ -515,10 +538,12 @@ func TestMoveFile(t *testing.T) {
 				if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "the directory S is deleting") {
 					t.Errorf("Move out of a deleting directory at version %d = %v, want ErrDeleting", version, err)
 				}
+				wantDeleting(t, "Move out of a deleting directory", err, true, "S")
 				err = move(append(unchangedFile(f, from), directoryResponse("S", blobfs.RootID, "s", 1), directoryIn("P", blobfs.RootID, "p", blobfs.DirectoryStatusDeleting, 2))...)
 				if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "the directory P is deleting") {
 					t.Errorf("Move into a deleting directory at version %d = %v, want ErrDeleting", version, err)
 				}
+				wantDeleting(t, "Move into a deleting directory", err, true, "P")
 			}
 			// A missing new directory is refused by the predicate first.
 			missing := []sqltest.Response{directoryResponse(blobfs.RootID, "", "/", 1), noDirectory()}
@@ -533,11 +558,14 @@ func TestMoveFile(t *testing.T) {
 			}
 			for _, version := range []int64{1, 2} {
 				// Deleting outranks the stale version.
-				err = move(unchangedFile(f, fileResponse("F", "a", blobfs.StatusDeleting, version))...)
-				if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "the row is deleting") {
+				err = move(append(unchangedFile(f, fileResponse("F", "a", blobfs.StatusDeleting, version)), active[0])...)
+				if errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "the file F is deleting") {
 					t.Errorf("Move of a deleting row at version %d = %v, want ErrDeleting and not a version mismatch", version, err)
 				}
+				wantDeleting(t, "Move of a deleting row", err, false, "F")
 			}
+			err = move(append(unchangedFile(f, fileIn("F", "S", "a", blobfs.StatusDeleting, 2)), directoryIn("S", blobfs.RootID, "s", blobfs.DirectoryStatusDeleting, 2))...)
+			wantDeleting(t, "Move of a file its branch's mark reached", err, true, "S")
 			// An available row the update left unchanged is reported, not
 			// taken for success.
 			err = move(append(unchangedFile(f, fileResponse("F", "a", blobfs.StatusAvailable, 1)), active...)...)

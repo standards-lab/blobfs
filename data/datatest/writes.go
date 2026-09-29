@@ -243,7 +243,8 @@ func (s *suite) completeFile(t *testing.T) {
 
 // completeFileRefusals checks Complete's refusals against the baseline,
 // each leaving the row unchanged; a deleting row is ErrDeleting at its own
-// version and at the one read before a concurrent Delete.
+// version and at the one read before a concurrent Delete, the file's own
+// DeletingError.
 func (s *suite) completeFileRefusals(t *testing.T) {
 	dir := s.mkdir(t, "complete-refusals-"+t.Name())
 	available, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "refused.txt", "text/plain")
@@ -280,6 +281,9 @@ func (s *suite) completeFileRefusals(t *testing.T) {
 			_, err := s.store.Files.Complete(s.ctx, s.db, c.id, c.version, object)
 			if !errors.Is(err, c.want) || errors.Is(err, c.not) {
 				t.Errorf("Complete = %v, want %v and not %v", err, c.want, c.not)
+			}
+			if c.want == blobfs.ErrDeleting {
+				wantDeletingKind(t, err, false, c.id)
 			}
 			_, base := s.baseline.Files.Complete(s.ctx, s.db, c.id, c.version, object)
 			wantSameError(t, err, base)

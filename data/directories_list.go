@@ -37,6 +37,20 @@ func (d *Directories) Continue(ctx context.Context, sess sqlate.Session, parentI
 	return d.list.cont(ctx, sess, parentID, req, after, size, opts)
 }
 
+// Listing is the shape of the two listings, Directories and Files, each
+// anchored on one directory's id: List reads a page by number and
+// Continue the page past a cursor an earlier page returned. A consumer
+// that reads either listing the same way takes a Listing of the row type.
+type Listing[T any] interface {
+	List(ctx context.Context, sess sqlate.Session, id string, req query.Directives, page query.Page, opts ...ListOption) (query.Collection[T], error)
+	Continue(ctx context.Context, sess sqlate.Session, id string, req query.Directives, after query.Cursor, size int, opts ...ListOption) (query.Collection[T], error)
+}
+
+var (
+	_ Listing[blobfs.Directory] = (*Directories)(nil)
+	_ Listing[blobfs.File]      = (*Files)(nil)
+)
+
 // listing is one of the two listings: a projection anchored on one
 // directory by the parameter anchor, whose rows spell the deleting status
 // as deleting. Its errors are bare, for the exported method to name.

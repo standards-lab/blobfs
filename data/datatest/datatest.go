@@ -13,6 +13,10 @@
 // consumer's foreign keys into blobfs_file and blobfs_directory, and an
 // index on blobfs_file (directory_id, created_at), which it drops again.
 // See "datatest: the conformance suite" in docs/features.md.
+//
+// Beside the suite, FileRows and DirectoryRows script blobfs's rows for
+// the query library's scripted driver, sqltest, so a consumer's unit tests
+// of code over the store read the rows its statements scan.
 package datatest
 
 import (

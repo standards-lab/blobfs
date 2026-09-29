@@ -46,25 +46,82 @@ type SweepResult struct {
 // hook's error, or blobfs.ErrReferenced from a consumer's foreign key. The
 // pass returns every refusal joined, with the result counting what it
 // did. A Batch below 1 and a StaleOlderThan age that is not positive are
-// refused before any SQL.
+// refused before any SQL. With AroundPass, the pass runs inside the
+// option's function.
 func (s *Store) Sweep(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, opts ...SweepOption) (_ SweepResult, err error) {
 	defer wrap(&err, "sweep")
+	o, err := resolveSweep(opts)
+	if err != nil {
+		return SweepResult{}, err
+	}
+	pass := func(ctx context.Context) (SweepResult, error) {
+		w := &sweep{store: s, db: db, objects: objects, opts: o, budget: o.batch, refused: map[string]bool{}}
+		if o.hasStale {
+			w.before = time.Now().Add(-o.staleAge)
+		}
+		err := w.run(ctx)
+		return w.result, err
+	}
+	if o.around != nil {
+		return o.around(ctx, pass)
+	}
+	return pass(ctx)
+}
+
+// resolveSweep resolves a sweep's options over the defaults and refuses a
+// batch below 1 and a stale age that is not positive.
+func resolveSweep(opts []SweepOption) (sweepOptions, error) {
 	o := sweepOptions{batch: defaultBatch}
 	for _, opt := range opts {
 		opt(&o)
 	}
 	switch {
 	case o.batch < 1:
-		return SweepResult{}, fmt.Errorf("the batch %d is below 1", o.batch)
+		return o, fmt.Errorf("the batch %d is below 1", o.batch)
 	case o.hasStale && o.staleAge <= 0:
-		return SweepResult{}, fmt.Errorf("the stale age %s is not positive", o.staleAge)
+		return o, fmt.Errorf("the stale age %s is not positive", o.staleAge)
 	}
-	w := &sweep{store: s, db: db, objects: objects, opts: o, budget: o.batch, refused: map[string]bool{}}
-	if o.hasStale {
-		w.before = time.Now().Add(-o.staleAge)
+	return o, nil
+}
+
+// SweepUntilDone runs passes of Sweep with opts while a pass reports More,
+// checking ctx and stop before each, and hands every pass's result and
+// error to report; a nil report discards them. A pass's own error is
+// report's to judge and never ends the loop, since every step of the sweep
+// is idempotent and a later pass finds the work again in the database.
+// It returns nil once a pass reports no More, or once stop is closed,
+// which ends the loop between passes and never interrupts one; a nil stop
+// never closes. It returns ctx's error once ctx ends, before a pass or
+// during one, and a pass that ctx ended is not reported. A consumer that
+// holds a lock or a gate around each pass gives it with AroundPass. See
+// The sweep in docs/features.md.
+//
+// Refusals: Sweep's refusals of opts, before any pass; ctx's error.
+func (s *Store) SweepUntilDone(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, stop <-chan struct{}, report func(SweepResult, error), opts ...SweepOption) (err error) {
+	defer wrap(&err, "sweep until done")
+	if _, err := resolveSweep(opts); err != nil {
+		return err
 	}
-	err = w.run(ctx)
-	return w.result, err
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		select {
+		case <-stop:
+			return nil
+		default:
+		}
+		res, err := s.Sweep(ctx, db, objects, opts...)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if report != nil {
+			report(res, err)
+		}
+		if !res.More {
+			return nil
+		}
+	}
 }
 
 // sweep is one pass's state.

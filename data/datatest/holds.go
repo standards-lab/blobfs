@@ -50,7 +50,7 @@ func (s *suite) heldRowUnchanged(t *testing.T, dir string) {
 }
 
 // holdRefusals checks the hold's refusals against the baseline, none of
-// which changes the row.
+// which changes the row; a deleting row is the file's own DeletingError.
 func (s *suite) holdRefusals(t *testing.T, dir string) {
 	stale := s.insertFile(t, dir, "stale.txt", blobfs.StatusAvailable)
 	deletingID := s.insertFile(t, dir, "deleting.txt", blobfs.StatusAvailable)
@@ -73,6 +73,9 @@ func (s *suite) holdRefusals(t *testing.T, dir string) {
 			err := s.holdIn(c.id, c.opts...)
 			if !errors.Is(err, c.want) || errors.Is(err, c.not) {
 				t.Errorf("Hold = %v, want %v and not %v", err, c.want, c.not)
+			}
+			if c.want == blobfs.ErrDeleting {
+				wantDeletingKind(t, err, false, c.id)
 			}
 			_, base := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (struct{}, error) {
 				return struct{}{}, s.baseline.Files.Hold(s.ctx, tx, c.id, c.opts...)

@@ -2,31 +2,31 @@ package data_test
 
 import (
 	"context"
-	"database/sql/driver"
 	"errors"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/standards-lab/sqlate/query"
 	"github.com/standards-lab/sqlate/sqltest"
 
 	"github.com/standards-lab/blobfs"
 	"github.com/standards-lab/blobfs/data"
+	"github.com/standards-lab/blobfs/data/datatest"
 )
 
 // filesIn scripts one page of available file rows in directory, one per
 // name, with ids derived from the names. A test under query.TotalExact
 // wraps it with sqltest.WithTotal; a TotalNone page scripts it unwrapped.
 func filesIn(directory string, names ...string) sqltest.Response {
-	now := time.Now()
-	r := sqltest.Response{Columns: fileColumns}
+	size, etag := int64(4), "etag"
+	var rows []blobfs.File
 	for _, n := range names {
-		id := "id-" + n
-		r.Rows = append(r.Rows, []driver.Value{id, directory, n, string(blobfs.StatusAvailable), id + "/" + n, int64(4), "text/plain", "etag", int64(2), now, now})
+		f := fileRow("id-"+n, directory, n, blobfs.StatusAvailable, 2)
+		f.Size, f.ETag = &size, &etag
+		rows = append(rows, f)
 	}
-	return r
+	return datatest.FileRows(rows...)
 }
 
 // fileNames returns the names of a page's files, in order.

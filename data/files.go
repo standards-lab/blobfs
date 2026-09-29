@@ -195,12 +195,18 @@ func (f *Files) insert(ctx context.Context, sess sqlate.Session, id, directoryID
 // id, at version, to blobfs.StatusAvailable with what the store reported
 // in obj, and returns the row as the database holds it.
 //
-// Refusals: blobfs.ErrNotFound; a blobfs.TransitionError matching
-// blobfs.ErrDeleting for a deleting row; query.ErrVersionMismatch; a
-// blobfs.TransitionError matching blobfs.ErrInvalidTransition for a row
-// completed already.
+// Refusals: blobfs.ErrNotFound; for a deleting row, a
+// blobfs.DeletingError, the file's or its directory's as a read of the
+// directory tells, wrapping the blobfs.TransitionError;
+// query.ErrVersionMismatch; a blobfs.TransitionError matching
+// blobfs.ErrInvalidTransition for a row completed already.
 func (f *Files) Complete(ctx context.Context, sess sqlate.Session, id string, version int64, obj blobfs.Object) (_ blobfs.File, err error) {
 	defer wrap(&err, "complete file %s", id)
+	return f.completeFile(ctx, sess, id, version, obj)
+}
+
+// completeFile is Complete's body, with its errors bare for Store.Write.
+func (f *Files) completeFile(ctx context.Context, sess sqlate.Session, id string, version int64, obj blobfs.Object) (blobfs.File, error) {
 	file, changed, err := f.complete.One(ctx, sess, query.Args{
 		"id": id, "size": obj.Size, "content_type": obj.ContentType, "etag": obj.ETag, "version": version,
 	})
@@ -214,7 +220,10 @@ func (f *Files) Complete(ctx context.Context, sess sqlate.Session, id string, ve
 	case !file.Status.Mutable() || file.Version == version:
 		// Deleting outranks the stale version; a row at the expected
 		// version is no longer pending.
-		if err := blobfs.Transition(file.Status, blobfs.StatusAvailable); err != nil {
+		switch err := blobfs.Transition(file.Status, blobfs.StatusAvailable); {
+		case err != nil && !file.Status.Mutable():
+			return blobfs.File{}, f.dirs.deletingFile(ctx, sess, file, err)
+		case err != nil:
 			return blobfs.File{}, err
 		}
 		return blobfs.File{}, fmt.Errorf("the update matched no row, yet the row is %s at version %d", file.Status, file.Version)
@@ -229,8 +238,8 @@ func (f *Files) Complete(ctx context.Context, sess sqlate.Session, id string, ve
 //
 // Refusals: blobfs.NameError; blobfs.ErrNotFound for a missing file or
 // directory; blobfs.ErrNameTaken for a name a file of any status holds in
-// the directory; blobfs.ErrDeleting when the file, its directory, or the
-// new directory is deleting; query.ErrVersionMismatch.
+// the directory; a blobfs.DeletingError when the file, its directory, or
+// the new directory is deleting; query.ErrVersionMismatch.
 func (f *Files) Move(ctx context.Context, sess sqlate.Session, id, directoryID, name string, version int64) (_ blobfs.File, err error) {
 	defer wrap(&err, "move file %s into %s as %q", id, directoryID, name)
 	if name, err = validName(name); err != nil {
@@ -246,7 +255,7 @@ func (f *Files) Move(ctx context.Context, sess sqlate.Session, id, directoryID, 
 		return file, nil
 	case !file.Status.Mutable():
 		// Deleting outranks the stale version.
-		return blobfs.File{}, fmt.Errorf("the row is %s: %w", file.Status, blobfs.ErrDeleting)
+		return blobfs.File{}, f.dirs.deletingFile(ctx, sess, file, nil)
 	}
 	// The directories tell a closed or missing one from a stale version.
 	if err := f.dirs.refusedMove(ctx, sess, &file.DirectoryID, directoryID, version, file.Version); err != nil {
