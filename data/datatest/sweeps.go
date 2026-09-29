@@ -42,13 +42,13 @@ var errObjectStore = errors.New("datatest: the object store failed")
 var errHook = errors.New("datatest: the hook failed")
 
 // objectStore is the object store the groups pass: an ObjectStore over
-// a map. The sweeps pass it as an ObjectDeleter: it records how often
-// each key was deleted, and fails the delete numbered failAt, counting
-// from 1, having deleted the object first when deleteFirst is set, as a
-// crash between the object's delete and the row's purge leaves it. The
-// protocols pass it whole: it holds each put's body under its key until a
-// delete of the key succeeds, counts the puts, and fails every put while
-// failPut is set.
+// a map. The Sweeps group passes it as an ObjectDeleter: it records how
+// often each key was deleted, and fails the delete numbered failAt,
+// counting from 1, having deleted the object first when deleteFirst is
+// set, as a crash between the object's delete and the row's purge leaves
+// it. The Protocols group passes it as an ObjectStore: it holds each put's
+// body under its key until a delete of the key succeeds, counts the puts,
+// and fails every put while failPut is set.
 type objectStore struct {
 	deleted     map[string]int
 	calls       int

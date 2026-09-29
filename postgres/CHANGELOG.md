@@ -9,14 +9,14 @@ changelog covers this sub-module only; the base module keeps its own.
 
 ### Added
 
-- The integration tier: the conformance suite's Protocols group, which runs the write, ensure,
-  remove, purge, and sweep-loop protocols against PostgreSQL in both returning-command forms and
-  over both variants.
+- The integration tier runs the conformance suite's Protocols group, which checks the write,
+  ensure, remove, purge, and sweep-loop protocols against PostgreSQL in both returning-command
+  forms and over both variants.
 
 ### Changed
 
-- The scripted test of the hold reads the file's directory too, as blobfs's refusal of a
-  deleting file now does to tell its own delete from its branch's.
+- The scripted test of the hold also scripts the read of the file's directory, which blobfs now
+  runs when it refuses a deleting file, to tell the file's own delete from its branch's.
 
 ## [v0.2.0] - 2026-09-28
 

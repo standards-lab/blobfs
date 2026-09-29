@@ -28,7 +28,7 @@ type ObjectStore interface {
 	ObjectDeleter
 }
 
-// Write is the two-phase write of the file begin creates, with size bytes
+// Write runs the two-phase write of the file begin creates, with size bytes
 // of body as its object. It runs begin in one transaction on db, where the
 // caller checks its own scope and runs Files.Create or Files.Ensure, so the
 // pending row commits before any byte is stored. It then puts body under
@@ -72,15 +72,15 @@ func (s *Store) Write(ctx context.Context, db *sqlate.DB, objects ObjectStore, b
 // transaction aborted by the violation, so begin runs once more, in a
 // fresh transaction, on blobfs.ErrNameTaken or blobfs.ErrIDTaken, and
 // finds the winner's row. Once the pending row commits, the other writer
-// resumes it, so the two may share one row: the abandon begins the delete
+// resumes it, so the two may share one row. The abandon begins the delete
 // only at the pending version it holds, so it never removes a row the
-// other writer completed, and a completion the other writer won, a stale
-// version or a row already available, reads the row back and returns it
-// as found, stored false. The two puts store the same bytes under the same
-// key, all or nothing, so the object is whole whichever lands last. The
-// key is the row's id and name, so a write under its fixed id after a
-// reset of the tables, but not of the store, puts over the object the
-// earlier write left and completes.
+// other writer completed. When the other writer completed the row first,
+// the completion finds a stale version or a row already available, and
+// Ensure reads the row back and returns it as found, stored false. The two
+// puts store the same bytes under the same key, all or nothing, so the
+// object is whole whichever lands last. The key is the row's id and name,
+// so a write under its fixed id after a reset of the tables, but not of
+// the store, puts over the object the earlier write left and completes.
 //
 // Refusals: blobfs.IDError before any SQL; begin's; blobfs.ErrNameTaken
 // for a row under another id; a blobfs.DeletingError for a deleting row
@@ -166,7 +166,7 @@ func (s *Store) store(ctx context.Context, db *sqlate.DB, objects ObjectStore, b
 	return done, nil
 }
 
-// Remove is the two-phase delete of the file pick names. It runs pick in
+// Remove runs the two-phase delete of the file pick names. It runs pick in
 // one transaction on db, where the caller checks its own scope and removes
 // its own references to the file, and begins the delete there with
 // Files.Delete under opts; then it deletes the object through objects and
@@ -210,7 +210,7 @@ func (s *Store) remove(ctx context.Context, db *sqlate.DB, objects ObjectDeleter
 	return s.purge(ctx, db, objects, file)
 }
 
-// Purge is the delete after its first step, for a file whose Files.Delete
+// Purge runs the delete's last two steps, for a file whose Files.Delete
 // the caller ran in a transaction of its own: it deletes the object under
 // the deleting file's Key through objects, then purges the row on db. It
 // converges on a retry as Remove does; a purge that never runs leaves a

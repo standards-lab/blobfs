@@ -103,9 +103,9 @@ func closed(dir blobfs.Directory) error {
 	return &blobfs.DeletingError{Directory: true, ID: dir.ID}
 }
 
-// deletingFile is the refusal of a mutation of file, a deleting row, told
-// by a read of its directory: the file's own blobfs.DeletingError while
-// the directory is active, and the directory's once it is deleting, each
+// deletingFile builds the refusal of a mutation of file, a deleting row,
+// by reading its directory: the file's own blobfs.DeletingError while the
+// directory is active, and the directory's once it is deleting, each
 // wrapping cause when it is not nil. A read that fails leaves the refusal
 // untyped, blobfs.ErrDeleting beside the read's error.
 func (r directoryReads) deletingFile(ctx context.Context, sess sqlate.Session, file blobfs.File, cause error) error {

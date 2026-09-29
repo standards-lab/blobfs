@@ -84,8 +84,8 @@ func run(ctx context.Context) error {
 	}
 	fmt.Printf("created directory %s\n", path)
 
-	// The write: the pending row, then the object, then the row available,
-	// run end to end by the store through the adapter.
+	// The write, which the store runs end to end through the adapter: the
+	// pending row, then the object, then the row available.
 	body := "quarterly numbers\n"
 	file, err := store.Write(ctx, db, objs, strings.NewReader(body), int64(len(body)), func(tx *sqlate.Tx) (blobfs.File, error) {
 		return store.Files.Create(ctx, tx, objs, dir.ID, "Q3 summary.txt", "text/plain")
@@ -134,8 +134,9 @@ func run(ctx context.Context) error {
 	}
 
 	// A branch: a subdirectory holding three files, marked for removal in
-	// one step and drained by the sweep in passes of two records, each pass
-	// the consumer's own closure, where it would hold a gate of its own.
+	// one step and drained by the sweep in passes of two records. Each pass
+	// is the consumer's own closure, where a consumer would hold a gate of
+	// its own.
 	if err := sweepBranch(ctx, db, store, objs, dir.ID); err != nil {
 		return err
 	}
@@ -188,9 +189,9 @@ func sweepBranch(ctx context.Context, db *sqlate.DB, store *data.Store, objs obj
 	return nil
 }
 
-// objectStore is the adapter: blobfs's object-store interfaces over the
-// started store, its key rule, its put, and its delete. It is the only
-// place the two libraries meet.
+// objectStore is the adapter: it implements blobfs's object-store
+// interfaces over the started store's key rule, put, and delete. It is the
+// only place the two libraries meet.
 type objectStore struct{ store *storage.Store }
 
 var (

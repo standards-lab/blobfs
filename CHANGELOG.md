@@ -9,35 +9,39 @@ the `postgres` sub-module keeps its own.
 
 ### Added
 
-- `Store.Write`, the two-phase write end to end: the consumer's callback creates the pending row
-  in one transaction, the object is put outside any transaction, and the row is completed; a
-  failed put or completion abandons the write, and a completion a sweep refused deletes the
-  object just put.
+- `Store.Write`, which runs the two-phase write end to end: the consumer's callback creates the
+  pending row in one transaction, the store puts the object outside any transaction, and then
+  completes the row. A failed put or completion abandons the write, and a completion refused
+  because a sweep reached the row deletes the object just put.
 - `Store.Ensure`, the retry-safe `Write` of a file under a fixed id, which resumes a pending row,
   returns an available one, reports a row under another id as `ErrNameTaken`, and shares a row
   with a concurrent writer.
-- `Store.Remove`, the two-phase delete end to end around the consumer's callback, and
-  `Store.Purge`, its tail for a delete the consumer began itself.
-- `ObjectPutter`, the consumer's put, and `ObjectStore`, the putter and `ObjectDeleter`
-  together, which the write takes.
-- `SweepUntilDone`, the loop over a consumer's pass while it reports `More`, with a stop channel
-  and a report of each pass. The pass is the consumer's closure over `Store.Sweep`, so whatever
-  it holds for a whole pass, a gate or a lock, stays its own.
+- `Store.Remove`, which runs the two-phase delete end to end around the consumer's callback, and
+  `Store.Purge`, which runs the object delete and the purge for a delete the consumer began
+  itself.
+- `ObjectPutter`, the interface over the consumer's put, and `ObjectStore`, which combines it
+  with `ObjectDeleter` and is what `Store.Write` and `Store.Ensure` take.
+- `SweepUntilDone`, which runs a consumer's sweep pass while the pass reports `More`, stops when
+  a stop channel closes, and reports each pass. The pass is the consumer's closure over
+  `Store.Sweep`, so whatever the consumer holds for a whole pass, such as a gate or a lock,
+  stays under its control.
 - `Listing[T]`, the interface `*Directories` and `*Files` satisfy.
-- `blobfs.DeletingError`, which every `ErrDeleting` now is: it tells a file whose own delete
-  began from a deleting directory, names the row, and unwraps its cause.
-- `data/datatest`: `FileRows` and `DirectoryRows`, which script blobfs's rows for `sqltest`, and
-  checks of the `DeletingError`'s kind in the groups that assert `ErrDeleting`.
+- `blobfs.DeletingError`, the type in which `data` reports `ErrDeleting`: it tells a file whose own
+  delete began from a deleting directory, names the row, and unwraps its cause.
+- `data/datatest`: `FileRows` and `DirectoryRows`, which script reads of blobfs's rows for
+  `sqltest`'s driver, and checks of the `DeletingError`'s kind in the groups that assert
+  `ErrDeleting`.
 - `data/datatest`: the Protocols group, which checks `Store.Write`, `Store.Ensure`,
   `Store.Remove`, `Store.Purge`, and `SweepUntilDone` over `Store.Sweep` against the live
   database, over an in-memory object store that fails on demand.
 
 ### Changed
 
-- **Breaking:** every `ErrDeleting` is a `*blobfs.DeletingError`, whose message names the file or
-  the directory. `errors.Is(err, ErrDeleting)` still holds, and `Complete`'s refusal of a
-  deleting row wraps its `TransitionError`, which `errors.As` still reaches. A refusal of a
-  deleting file by `Complete`, `Move`, or `Hold` runs one more read, of the file's directory.
+- **Breaking:** `data` reports `ErrDeleting` as a `*blobfs.DeletingError`, whose message names the
+  file or the directory, unless the read that decides its kind fails. `errors.Is(err, ErrDeleting)`
+  still holds, and `Complete`'s refusal of a deleting row wraps its `TransitionError`, which
+  `errors.As` still reaches. `Complete`, `Move`, and `Hold` run one more read when they refuse a
+  deleting file: a read of the file's directory.
 - The base module requires `sqlate` v0.4.1.
 
 ## [v0.2.0] - 2026-09-28

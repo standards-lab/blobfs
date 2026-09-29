@@ -16,8 +16,8 @@ import (
 // protocols checks the protocols end to end over the database: Store.Write,
 // Store.Ensure, Store.Remove, Store.Purge, and SweepUntilDone over the
 // store's passes. Each case runs over the store under test and then the
-// baseline. It runs before any group marks a branch, and every branch it
-// marks it sweeps again, so SweepUntilDone drains only its own backlog.
+// baseline. It runs before any group marks a branch, and it sweeps every
+// branch it marks, so SweepUntilDone drains only its own backlog.
 func (s *suite) protocols(t *testing.T) {
 	t.Run("Write", s.protocolWrite)
 	t.Run("WriteFailedPut", s.protocolWriteFailedPut)
@@ -72,8 +72,8 @@ func (s *suite) removeFile(store *data.Store, objects data.ObjectDeleter, id str
 	return store.Remove(s.ctx, s.db, objects, func(*sqlate.Tx) (string, error) { return id, nil })
 }
 
-// wantWritten checks got is the available row the database holds, with
-// the put's size and entity tag, and body stored under its key in the
+// wantWritten checks that got is the available row the database holds,
+// with the put's size and entity tag, and body stored under its key in the
 // row's content type.
 func (s *suite) wantWritten(t *testing.T, objects *objectStore, got blobfs.File, body string) {
 	t.Helper()
@@ -112,9 +112,9 @@ func (s *suite) protocolWrite(t *testing.T) {
 	}
 }
 
-// protocolWriteFailedPut checks a put that fails abandons the write: the
-// store's error returned, the object's delete run under the row's key, no
-// row left, and the name free for a second write that succeeds.
+// protocolWriteFailedPut checks that a put that fails abandons the write:
+// the store's error returned, the object's delete run under the row's key,
+// no row left, and the name free for a second write that succeeds.
 func (s *suite) protocolWriteFailedPut(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -436,10 +436,10 @@ func (p *passes) pass(s *suite, store *data.Store, objects *objectStore, opts ..
 	}
 }
 
-// protocolSweepUntilDone checks SweepUntilDone drains a backlog larger
-// than one batch: a branch of eight records at Batch(3) takes the three
-// passes sweepBatch counts, the loop runs each once, report sees each
-// with no error, and the branch is gone with each object deleted once.
+// protocolSweepUntilDone checks that SweepUntilDone drains a backlog
+// larger than one batch: a branch of eight records at Batch(3) takes the
+// three passes sweepBatch counts, the loop runs each once, report sees
+// each with no error, and the branch is gone with each object deleted once.
 func (s *suite) protocolSweepUntilDone(t *testing.T) {
 	want := []data.SweepResult{{Files: 3, More: true}, {Files: 2, Directories: 1, More: true}, {Directories: 2}}
 	for _, tier := range s.storesUnder() {
@@ -464,9 +464,9 @@ func (s *suite) protocolSweepUntilDone(t *testing.T) {
 	}
 }
 
-// protocolSweepUntilDoneStopped checks a stop closed before the loop runs
-// no pass: nothing run, reported, or deleted, and the branch still
-// marked, which an unstopped loop then drains.
+// protocolSweepUntilDoneStopped checks that with stop closed before the
+// loop starts, the loop runs no pass: nothing run, reported, or deleted,
+// and the branch still marked, which an unstopped loop then drains.
 func (s *suite) protocolSweepUntilDoneStopped(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {

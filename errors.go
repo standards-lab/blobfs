@@ -65,8 +65,9 @@ var (
 	// create or an ensure under a deleting directory, a move into one, and a
 	// move of a directory or file whose parent is deleting. A listing of a
 	// deleting directory reports it too, unless the listing asked to include
-	// deleting rows. Package data reports each of these as a DeletingError,
-	// which says whose delete refused the mutation.
+	// deleting rows. Package data reports these as a DeletingError, which
+	// says whose delete refused the mutation, whenever it can read the rows
+	// that decide it.
 	ErrDeleting = errors.New("blobfs: row is deleting")
 
 	// ErrNotDeleting reports a purge, the last step of the two-phase
@@ -120,8 +121,8 @@ func (e *ViolationError) Unwrap() []error {
 // delete refused it. Directory is false only for a file whose own delete
 // began, its row deleting while its directory is active, and ID then names
 // the file. Otherwise Directory is true and ID names the deleting
-// directory: the file's own, for a file deleting because its branch was
-// marked, or the directory the mutation reached. Err is the refusal's
+// directory: the file's own directory, for a file deleting because its
+// branch was marked, or the directory the mutation reached. Err is the refusal's
 // cause when it has one, such as the TransitionError of a completion
 // refused from deleting, and is nil otherwise. It matches ErrDeleting
 // under errors.Is, and Unwrap yields Err, so errors.Is and errors.As reach

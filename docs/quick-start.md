@@ -213,10 +213,10 @@ func openDatabase(ctx context.Context, dsn string) (*sqlate.DB, error) {
 
 ## 5. Write the object-store adapter
 
-blobfs asks three things of the object store: whether it accepts a key, `blobfs.KeyValidator`,
-and a put and a delete, `data.ObjectStore`, which the store's protocols call (see [the
+blobfs asks three things of the object store: a key check, through `blobfs.KeyValidator`, and
+a put and a delete, through `data.ObjectStore`, which the store's protocols call (see [the
 protocols](features.md#the-protocols)). The adapter wires the three to `go-storage`'s own
-methods, and it is the only place the two libraries meet. `openObjects` builds the Azure Blob
+methods and is the only place the two libraries meet. `openObjects` builds the Azure Blob
 store from the environment and starts it, which ensures the container exists.
 
 `objects.go`:
@@ -236,9 +236,9 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// objectStore is the adapter: blobfs's object-store interfaces over the
-// started store, its key rule, its put, and its delete. It is the only
-// place the two libraries meet.
+// objectStore is the adapter: it implements blobfs's object-store
+// interfaces over the started store's key rule, put, and delete. It is the
+// only place the two libraries meet.
 type objectStore struct{ store *storage.Store }
 
 var (
@@ -315,17 +315,16 @@ of the cursor predicate, `sqlatepg.Patterns()`, and blobfs's published patterns,
 PostgreSQL engine with `data.WithEngine`; the program's own statements compile against the same
 catalog. `Verify` prepares both against the migrated schema.
 
-`Upload` and `Delete` run the store's protocols, `Store.Write` and `Store.Remove`, each around
-a callback of the program's in the protocol's first transaction; [the
-protocols](features.md#the-protocols) states what each runs and refuses. Both callbacks first
-check the program's scope: the file's directory must lie within the area the caller may reach,
-which `Directories.IsWithin` answers.
+`Upload` runs `Store.Write` and `Delete` runs `Store.Remove`, each with a callback of the
+program's inside the protocol's first transaction; [the protocols](features.md#the-protocols)
+states what each runs and refuses. Both callbacks first check the program's scope: the file's
+directory must lie within the area the caller may reach, which `Directories.IsWithin` answers.
 
 - `Upload`'s `begin` inserts the pending row with `Files.Create` and nothing that references it,
   since a write that fails and cannot clean up leaves a stale row the sweep must be free to
-  purge. The note is attached once the file is available, in a transaction that holds the file's
-  row first, the [reference-then-delete](concepts.md#reference-then-delete) rule, so a delete
-  that begins meanwhile waits for the note to commit.
+  purge. `Upload` attaches the note once the file is available, in a transaction that first
+  holds the file's row, as the [reference-then-delete](concepts.md#reference-then-delete) rule
+  requires, so a delete that begins meanwhile waits for the note to commit.
 - `Delete`'s `pick` reads the file, checks its scope, removes the note, and returns the file's
   id, so the purge finds no note to refuse it; the program's foreign key stays the backstop.
 
@@ -469,7 +468,7 @@ func (s *Stores) within(ctx context.Context, tx *sqlate.Tx, dirID, areaID string
 file's whole life.
 
 - `Directories.Ensure` returns the `reports` directory under the root, creating it on the first
-  run only. It is the caller's area, and the file's directory.
+  run only. The program passes it as both the caller's area and the file's directory.
 - The write is `Upload`: the pending row, the put under the row's `Key`, the row completed
   available, then the note.
 - The listing resolves the directory by path from the root and reads one page of its files,
@@ -586,14 +585,14 @@ writes the file under a new key, since each write mints a new id.
 
 ## 8. Test without a database
 
-A unit test compiles the stores for `sqltest`'s stub dialect with `RETURNING`,
-`sqltest.ReturningDialect`, so each of blobfs's returning commands is one scripted read, and
-runs them over its scripted driver, so it needs no database. `datatest.FileRows` scripts a read
-of file rows in the columns blobfs scans, and a map stands in for the object store. The stores
-run the PostgreSQL engine, so the script follows its statements: its hold is a locking read. The
-first test scripts the scope check, the pending row, its completion, the hold, and the note, and
-proves the pending row committed before the put. The second proves a directory outside the area
-rolls the write back before any byte is stored.
+A unit test compiles the stores for `sqltest.ReturningDialect`, `sqltest`'s stub dialect with
+`RETURNING`, and runs them over `sqltest`'s scripted driver, so it needs no database and each of
+blobfs's returning commands is one scripted read. `datatest.FileRows` scripts a read of file
+rows in the columns blobfs scans, and a map stands in for the object store. The stores run the
+PostgreSQL engine, so the script follows its statements: its hold is a locking read. The first
+test scripts the scope check, the pending row, its completion, the hold, and the note, and
+proves the pending row committed before the put. The second proves that a directory outside the
+area rolls the write back before any byte is stored.
 
 `stores_test.go`:
 
