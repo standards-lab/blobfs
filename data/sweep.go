@@ -67,6 +67,46 @@ func (s *Store) Sweep(ctx context.Context, db *sqlate.DB, objects ObjectDeleter,
 	return w.result, err
 }
 
+// SweepUntilDone runs pass while it reports More, checking ctx and stop
+// before each pass, and hands every pass's result and error to report; a
+// nil report discards them. pass is one pass of Store.Sweep as the
+// consumer runs it: a closure over the store, the session, the object
+// store, and the options, inside whatever the consumer holds for a whole
+// pass, such as a lock or a gate a schema change takes exclusively.
+//
+// A pass's own error never ends the loop, since every step of the sweep is
+// idempotent and a later pass finds the work again in the database; report
+// judges what the error means. A pass that refuses its options reports no
+// More, so the loop ends after reporting it.
+//
+// SweepUntilDone returns nil once a pass reports no More, or once stop is
+// closed; a closed stop ends the loop between passes and never interrupts
+// one, and a nil stop never closes. It returns ctx's error once ctx ends,
+// before a pass or during one, and does not report a pass that ctx ended.
+// See The sweep in docs/features.md.
+func SweepUntilDone(ctx context.Context, stop <-chan struct{}, pass func(context.Context) (SweepResult, error), report func(SweepResult, error)) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		select {
+		case <-stop:
+			return nil
+		default:
+		}
+		res, err := pass(ctx)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if report != nil {
+			report(res, err)
+		}
+		if !res.More {
+			return nil
+		}
+	}
+}
+
 // sweep is one pass's state.
 type sweep struct {
 	store   *Store

@@ -65,7 +65,9 @@ var (
 	// create or an ensure under a deleting directory, a move into one, and a
 	// move of a directory or file whose parent is deleting. A listing of a
 	// deleting directory reports it too, unless the listing asked to include
-	// deleting rows.
+	// deleting rows. Package data reports these as a DeletingError, which
+	// says whose delete refused the mutation, whenever it can read the rows
+	// that decide it.
 	ErrDeleting = errors.New("blobfs: row is deleting")
 
 	// ErrNotDeleting reports a purge, the last step of the two-phase
@@ -113,4 +115,41 @@ func (e *ViolationError) Unwrap() []error {
 		return []error{e.Sentinel}
 	}
 	return []error{e.Sentinel, e.Err}
+}
+
+// DeletingError reports a mutation refused with ErrDeleting and says whose
+// delete refused it. Directory is false only for a file whose own delete
+// began, its row deleting while its directory is active, and ID then names
+// the file. Otherwise Directory is true and ID names the deleting
+// directory: the file's own directory, for a file deleting because its
+// branch was marked or whose directory is gone, or the directory the
+// mutation reached. Err is the refusal's cause when it has one, such as the
+// TransitionError of a completion refused from deleting, and is nil
+// otherwise. It matches ErrDeleting under errors.Is, and Unwrap yields Err,
+// so errors.Is and errors.As reach the cause and its sentinels.
+type DeletingError struct {
+	Directory bool
+	ID        string
+	Err       error
+}
+
+func (e *DeletingError) Error() string {
+	kind := "file"
+	if e.Directory {
+		kind = "directory"
+	}
+	if e.Err == nil {
+		return fmt.Sprintf("blobfs: the %s %s is deleting", kind, e.ID)
+	}
+	return fmt.Sprintf("blobfs: the %s %s is deleting: %v", kind, e.ID, e.Err)
+}
+
+// Is reports whether target is ErrDeleting.
+func (e *DeletingError) Is(target error) bool {
+	return target == ErrDeleting
+}
+
+// Unwrap returns the cause, or nil when there is none.
+func (e *DeletingError) Unwrap() error {
+	return e.Err
 }

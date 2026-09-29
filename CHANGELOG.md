@@ -7,6 +7,48 @@ the `postgres` sub-module keeps its own.
 
 ## [Unreleased]
 
+## [v0.3.0] - 2026-09-29
+
+### Added
+
+- `Store.Write`, which runs the two-phase write end to end: the consumer's callback creates the
+  pending row with `Files.Create` in one transaction, the store puts the object outside any
+  transaction, and then completes the row. A row that is not pending is refused before any put.
+  A failed put or completion abandons the write at the row's pending version, and a completion
+  refused because a sweep reached the row deletes the object just put.
+- `Store.Ensure`, the retry-safe `Write` of a file under a fixed id, which resumes a pending row,
+  returns an available one, and shares a row with a concurrent writer. It checks the id of every
+  row its callback returns: a row found under another id is `ErrNameTaken`, and a row created
+  under another id is abandoned and refused naming both ids.
+- `Store.Remove`, which runs the two-phase delete end to end around the consumer's callback, and
+  `Store.Purge`, which runs the object delete and the purge for a delete the consumer began
+  itself.
+- `ObjectPutter`, the interface over the consumer's put, and `ObjectStore`, which combines it
+  with `ObjectDeleter` and is what `Store.Write` and `Store.Ensure` take.
+- `SweepUntilDone`, which runs a consumer's sweep pass while the pass reports `More`, stops when
+  a stop channel closes, and reports each pass. The pass is the consumer's closure over
+  `Store.Sweep`, so whatever the consumer holds for a whole pass, such as a gate or a lock,
+  stays under its control.
+- `Listing[T]`, the interface `*Directories` and `*Files` satisfy.
+- `blobfs.DeletingError`, the type in which `data` reports `ErrDeleting`: it tells a file whose own
+  delete began from a deleting directory, names the row, and unwraps its cause.
+- `data/datatest`: `FileRows` and `DirectoryRows`, which script reads of blobfs's rows for
+  `sqltest`'s driver, and checks of the `DeletingError`'s kind in the groups that assert
+  `ErrDeleting`.
+- `data/datatest`: the Protocols group, which checks `Store.Write`, `Store.Ensure`,
+  `Store.Remove`, `Store.Purge`, and `SweepUntilDone` over `Store.Sweep` against the live
+  database, over an in-memory object store that fails on demand.
+
+### Changed
+
+- **Breaking:** `data` reports `ErrDeleting` as a `*blobfs.DeletingError`, whose message names the
+  file or the directory, unless the read that decides its kind fails. `errors.Is(err, ErrDeleting)`
+  still holds, and `Complete`'s refusal of a deleting row wraps its `TransitionError`, which
+  `errors.As` still reaches. `Complete`, `Move`, and `Hold` run one more read when they refuse a
+  deleting file: a read of the file's directory. A directory gone by then is reported as the
+  directory's `DeletingError`.
+- The base module requires `sqlate` v0.4.1.
+
 ## [v0.2.0] - 2026-09-28
 
 The delete of a branch, a directory with everything beneath it: the branch is marked deleting in
@@ -95,6 +137,7 @@ library never calls.
 - `data/datatest`, the conformance suite: `Run` checks a store over any engine against the
   baseline on a live database, the hold's refusals and interleavings with a delete included.
 
-[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.3.0...HEAD
+[v0.3.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.3.0
 [v0.2.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.2.0
 [v0.1.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.1.0

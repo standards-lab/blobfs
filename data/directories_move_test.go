@@ -14,6 +14,7 @@ import (
 
 	"github.com/standards-lab/blobfs"
 	"github.com/standards-lab/blobfs/data"
+	"github.com/standards-lab/blobfs/data/datatest"
 )
 
 // within scripts the cycle check's count.
@@ -130,10 +131,12 @@ func TestMoveClassifies(t *testing.T) {
 				if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) {
 					t.Errorf("Move of a deleting directory at version %d = %v, want ErrDeleting", version, err)
 				}
+				wantDeleting(t, "Move of a deleting directory", err, true, "D")
 				err = move(append(unchanged(directoryResponse("D", "S", "d", version)), directoryIn("S", blobfs.RootID, "s", blobfs.DirectoryStatusDeleting, 2))...)
 				if !errors.Is(err, blobfs.ErrDeleting) || !strings.Contains(err.Error(), "the directory S is deleting") {
 					t.Errorf("Move out of a deleting parent at version %d = %v, want ErrDeleting", version, err)
 				}
+				wantDeleting(t, "Move out of a deleting parent", err, true, "S")
 				err = move(append(unchanged(directoryResponse("D", "S", "d", version)),
 					parents(directoryResponse("S", blobfs.RootID, "s", 1), directoryIn("P", blobfs.RootID, "p", blobfs.DirectoryStatusDeleting, 2))...)...)
 				if !errors.Is(err, blobfs.ErrDeleting) || !strings.Contains(err.Error(), "the directory P is deleting") {
@@ -253,9 +256,9 @@ func TestMarkDeleting(t *testing.T) {
 func TestDeleting(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,
-		sqltest.Response{Columns: directoryColumns, Rows: append(
-			directoryIn("A", blobfs.RootID, "a", blobfs.DirectoryStatusDeleting, 2).Rows,
-			directoryIn("B", "P", "b", blobfs.DirectoryStatusDeleting, 3).Rows...)},
+		datatest.DirectoryRows(
+			directoryRow("A", blobfs.RootID, "a", blobfs.DirectoryStatusDeleting, 2),
+			directoryRow("B", "P", "b", blobfs.DirectoryStatusDeleting, 3)),
 		noDirectory(),
 	)
 	roots, err := s.Directories.Deleting(ctx, db, 10)

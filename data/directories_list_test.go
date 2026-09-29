@@ -3,20 +3,19 @@ package data_test
 import (
 	"bytes"
 	"context"
-	"database/sql/driver"
 	"encoding/base64"
 	"errors"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/standards-lab/sqlate/query"
 	"github.com/standards-lab/sqlate/sqltest"
 
 	"github.com/standards-lab/blobfs"
 	"github.com/standards-lab/blobfs/data"
+	"github.com/standards-lab/blobfs/data/datatest"
 )
 
 // A parent that is not the root, for the listings under one.
@@ -27,12 +26,11 @@ const parentID = "0199a0b0-0000-7000-8000-000000000001"
 // under query.TotalExact wraps it with sqltest.WithTotal; a TotalNone page
 // scripts it unwrapped.
 func children(parent string, names ...string) sqltest.Response {
-	now := time.Now()
-	r := sqltest.Response{Columns: directoryColumns}
+	var dirs []blobfs.Directory
 	for _, n := range names {
-		r.Rows = append(r.Rows, []driver.Value{"id-" + n, parent, n, "active", int64(1), now, now})
+		dirs = append(dirs, directoryRow("id-"+n, parent, n, blobfs.DirectoryStatusActive, 1))
 	}
-	return r
+	return datatest.DirectoryRows(dirs...)
 }
 
 // directoryNames returns the names of a page's directories, in order.

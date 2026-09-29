@@ -2,6 +2,7 @@ package blobfs_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -54,5 +55,40 @@ func TestViolationError(t *testing.T) {
 	bare := &blobfs.ViolationError{Sentinel: blobfs.ErrNotEmpty, Constraint: blobfs.ConstraintForeignKeyDirectoryParent}
 	if !errors.Is(bare, blobfs.ErrNotEmpty) || len(bare.Unwrap()) != 1 {
 		t.Errorf("without a cause Unwrap = %v, want the sentinel alone", bare.Unwrap())
+	}
+}
+
+// TestDeletingError proves the typed refusal's contract: it matches
+// ErrDeleting whatever its kind, names the kind and the row in its message,
+// and reaches its cause, a TransitionError's sentinels included.
+func TestDeletingError(t *testing.T) {
+	for _, tc := range []struct {
+		err  *blobfs.DeletingError
+		want string
+	}{
+		{&blobfs.DeletingError{ID: "F"}, "blobfs: the file F is deleting"},
+		{&blobfs.DeletingError{Directory: true, ID: "D"}, "blobfs: the directory D is deleting"},
+	} {
+		var err error = tc.err
+		if got := err.Error(); got != tc.want {
+			t.Errorf("message = %q, want %q", got, tc.want)
+		}
+		if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, blobfs.ErrInvalidTransition) || errors.Unwrap(err) != nil {
+			t.Errorf("%v: want ErrDeleting alone and no cause", err)
+		}
+		var de *blobfs.DeletingError
+		if wrapped := fmt.Errorf("data: step: %w", err); !errors.As(wrapped, &de) || de.Directory != tc.err.Directory || de.ID != tc.err.ID {
+			t.Errorf("errors.As through a wrap gives %+v", de)
+		}
+	}
+
+	cause := blobfs.Transition(blobfs.StatusDeleting, blobfs.StatusAvailable)
+	var err error = &blobfs.DeletingError{ID: "F", Err: cause}
+	if want := "blobfs: the file F is deleting: " + cause.Error(); err.Error() != want {
+		t.Errorf("message = %q, want %q", err, want)
+	}
+	var te *blobfs.TransitionError
+	if !errors.Is(err, blobfs.ErrDeleting) || !errors.Is(err, blobfs.ErrInvalidTransition) || !errors.As(err, &te) || te.From != blobfs.StatusDeleting {
+		t.Errorf("%v: want ErrDeleting, and the TransitionError reachable", err)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"sync"
 	"testing"
@@ -40,18 +41,56 @@ var errObjectStore = errors.New("datatest: the object store failed")
 // errHook is what a failing hook reports.
 var errHook = errors.New("datatest: the hook failed")
 
-// objectStore is the ObjectDeleter the group passes: it records how often
-// each key was deleted, and fails the call numbered failAt, counting from
-// 1, having deleted the object first when deleteFirst is set, as a crash
-// between the object's delete and the row's purge leaves it.
+// objectStore is the object store the groups pass: an ObjectStore over
+// a map. The Sweeps group passes it as an ObjectDeleter: it records how
+// often each key was deleted, and fails the delete numbered failAt,
+// counting from 1, having deleted the object first when deleteFirst is
+// set, as a crash between the object's delete and the row's purge leaves
+// it. The Protocols group passes it as an ObjectStore: it holds each put's
+// body under its key until a delete of the key succeeds, counts the puts,
+// and fails every put while failPut is set.
 type objectStore struct {
 	deleted     map[string]int
 	calls       int
 	failAt      int
 	deleteFirst bool
+	// objects holds the bodies put and not deleted since, by key.
+	objects map[string]string
+	// puts counts the calls to PutObject, and put is the object the last
+	// one that stored reported.
+	puts    int
+	put     blobfs.Object
+	failPut bool
+	// beforePut, when set, runs inside each put with its key, before the
+	// put stores or fails.
+	beforePut func(key string)
 }
 
-func newObjectStore() *objectStore { return &objectStore{deleted: map[string]int{}} }
+func newObjectStore() *objectStore {
+	return &objectStore{deleted: map[string]int{}, objects: map[string]string{}}
+}
+
+// PutObject stores the body under key, reporting its size, the content
+// type it was given, and an entity tag of the put's number.
+func (o *objectStore) PutObject(_ context.Context, key string, body io.Reader, contentType string, size int64) (blobfs.Object, error) {
+	o.puts++
+	if o.beforePut != nil {
+		o.beforePut(key)
+	}
+	if o.failPut {
+		return blobfs.Object{}, errObjectStore
+	}
+	b, err := io.ReadAll(body)
+	if err != nil {
+		return blobfs.Object{}, err
+	}
+	if int64(len(b)) != size {
+		return blobfs.Object{}, fmt.Errorf("datatest: read %d bytes of the %d declared", len(b), size)
+	}
+	o.objects[key] = string(b)
+	o.put = blobfs.Object{Size: size, ContentType: contentType, ETag: fmt.Sprintf(`"put-%d"`, o.puts)}
+	return o.put, nil
+}
 
 func (o *objectStore) DeleteObject(_ context.Context, key string) error {
 	o.calls++
@@ -60,6 +99,7 @@ func (o *objectStore) DeleteObject(_ context.Context, key string) error {
 		return errObjectStore
 	}
 	o.deleted[key]++
+	delete(o.objects, key)
 	if fail {
 		return errObjectStore
 	}

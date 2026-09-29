@@ -17,6 +17,7 @@ import (
 
 	"github.com/standards-lab/blobfs"
 	"github.com/standards-lab/blobfs/data"
+	"github.com/standards-lab/blobfs/data/datatest"
 	"github.com/standards-lab/blobfs/postgres"
 )
 
@@ -185,11 +186,11 @@ func TestLockTreeSQL(t *testing.T) {
 // store's read as over the baseline.
 func TestHoldFileSQL(t *testing.T) {
 	ctx := context.Background()
-	fileColumns := []string{"id", "directory_id", "name", "status", "key", "size", "content_type", "etag", "version", "created_at", "updated_at"}
 	fileRow := func(status blobfs.Status, version int64) sqltest.Response {
 		now := time.Now()
-		return sqltest.Response{Columns: fileColumns, Rows: [][]driver.Value{{"F", blobfs.RootID, "a", string(status), "F/a", nil, "text/plain", nil, version, now, now}}}
+		return datatest.FileRows(blobfs.File{ID: "F", DirectoryID: blobfs.RootID, Name: "a", Status: status, Key: "F/a", ContentType: "text/plain", Version: version, CreatedAt: now, UpdatedAt: now})
 	}
+	root := datatest.DirectoryRows(blobfs.Directory{ID: blobfs.RootID, Status: blobfs.DirectoryStatusActive, Version: 1, CreatedAt: time.Now(), UpdatedAt: time.Now()})
 	locked := sqltest.Response{Columns: []string{"id"}, Rows: [][]driver.Value{{"F"}}}
 	none := sqltest.Response{Columns: []string{"id"}}
 	hold := func(t *testing.T, responses []sqltest.Response, opts ...data.VersionOption) (*sqltest.Recorder, error) {
@@ -225,24 +226,33 @@ func TestHoldFileSQL(t *testing.T) {
 		t.Errorf("the hold at a version is %q bound to %v, want the version predicate and binding", c.SQL, c.Args)
 	}
 
+	// A deleting file reads its directory too, to tell its own delete from
+	// its branch's.
 	for _, r := range []struct {
-		name string
-		read sqltest.Response
-		opts []data.VersionOption
-		want error
-		not  error
+		name  string
+		reads []sqltest.Response
+		opts  []data.VersionOption
+		want  error
+		not   error
 	}{
-		{"Deleting", fileRow(blobfs.StatusDeleting, 2), []data.VersionOption{data.AtVersion(1)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
-		{"StaleVersion", fileRow(blobfs.StatusAvailable, 3), []data.VersionOption{data.AtVersion(1)}, query.ErrVersionMismatch, blobfs.ErrDeleting},
-		{"Missing", sqltest.Response{Columns: fileColumns}, nil, blobfs.ErrNotFound, blobfs.ErrDeleting},
+		{"Deleting", []sqltest.Response{fileRow(blobfs.StatusDeleting, 2), root}, []data.VersionOption{data.AtVersion(1)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
+		{"StaleVersion", []sqltest.Response{fileRow(blobfs.StatusAvailable, 3)}, []data.VersionOption{data.AtVersion(1)}, query.ErrVersionMismatch, blobfs.ErrDeleting},
+		{"Missing", []sqltest.Response{datatest.FileRows()}, nil, blobfs.ErrNotFound, blobfs.ErrDeleting},
 	} {
 		t.Run(r.name, func(t *testing.T) {
-			rec, err := hold(t, []sqltest.Response{none, r.read}, r.opts...)
+			rec, err := hold(t, append([]sqltest.Response{none}, r.reads...), r.opts...)
 			if !errors.Is(err, r.want) || errors.Is(err, r.not) {
 				t.Errorf("Hold = %v, want %v and not %v", err, r.want, r.not)
 			}
-			if ops := rec.Ops(); !slices.Equal(ops, []sqltest.Op{sqltest.OpBegin, sqltest.OpQuery, sqltest.OpQuery, sqltest.OpRollback}) {
-				t.Errorf("ops = %v, want the locking read, the classifying read, and no write", ops)
+			if de, ok := errors.AsType[*blobfs.DeletingError](err); r.want == blobfs.ErrDeleting && (!ok || de.Directory || de.ID != "F") { //nolint:errorlint // comparing sentinels
+				t.Errorf("Hold = %v, want the file's own DeletingError", err)
+			}
+			want := []sqltest.Op{sqltest.OpBegin, sqltest.OpQuery}
+			for range r.reads {
+				want = append(want, sqltest.OpQuery)
+			}
+			if ops := rec.Ops(); !slices.Equal(ops, append(want, sqltest.OpRollback)) {
+				t.Errorf("ops = %v, want the locking read, the classifying reads, and no write", ops)
 			}
 		})
 	}

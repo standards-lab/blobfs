@@ -7,7 +7,8 @@ emulated locally by Azurite. The program:
 - adopts blobfs's migration set beneath a migration set of its own
 - builds one pattern catalog and the blobfs store over the PostgreSQL engine
 - verifies every statement against the migrated schema
-- writes a file, lists its directory, and deletes it, keeping a row of its own beside the file's
+- writes a file, lists its directory, and deletes it through blobfs's protocols, keeping a row
+  of its own beside the file's
 - tests its store without a database, and runs blobfs's conformance suite against a live one
 
 Every file is written in full at the step that needs it, and every block is taken from a program
@@ -212,10 +213,11 @@ func openDatabase(ctx context.Context, dsn string) (*sqlate.DB, error) {
 
 ## 5. Write the object-store adapter
 
-blobfs asks one thing of the object store: whether it accepts a key. The adapter wires
-`blobfs.KeyValidator` to the store's own rule, `Capabilities().ValidateKey`, and it is the only
-place the two libraries meet. `openObjects` builds the Azure Blob store from the environment and
-starts it, which ensures the container exists.
+blobfs asks three things of the object store: a key check, through `blobfs.KeyValidator`, and
+a put and a delete, through `data.ObjectStore`, which the store's protocols call (see [the
+protocols](features.md#the-protocols)). The adapter wires the three to `go-storage`'s own
+methods and is the only place the two libraries meet. `openObjects` builds the Azure Blob
+store from the environment and starts it, which ensures the container exists.
 
 `objects.go`:
 
@@ -225,21 +227,42 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/standards-lab/go-storage"
 	"github.com/standards-lab/go-storage/azureblob"
 
 	"github.com/standards-lab/blobfs"
+	"github.com/standards-lab/blobfs/data"
 )
 
-// keyValidator is the adapter: blobfs's one-method interface over the
-// object store's own key rule, and the only place the two libraries meet.
-type keyValidator struct{ store *storage.Store }
+// objectStore is the adapter: it implements blobfs's object-store
+// interfaces over the started store's key rule, put, and delete. It is the
+// only place the two libraries meet.
+type objectStore struct{ store *storage.Store }
 
-var _ blobfs.KeyValidator = keyValidator{}
+var (
+	_ blobfs.KeyValidator = objectStore{}
+	_ data.ObjectStore    = objectStore{}
+)
 
-func (k keyValidator) ValidateKey(key string) error {
-	return k.store.Capabilities().ValidateKey(key)
+func (o objectStore) ValidateKey(key string) error {
+	return o.store.Capabilities().ValidateKey(key)
+}
+
+// PutObject stores body under key and reports it in the content type the
+// caller declared, since the store's report may differ.
+func (o objectStore) PutObject(ctx context.Context, key string, body io.Reader, contentType string, size int64) (blobfs.Object, error) {
+	obj, err := o.store.Put(ctx, key, body, storage.PutOptions{ContentType: contentType, Size: size})
+	if err != nil {
+		return blobfs.Object{}, err
+	}
+	return blobfs.Object{Size: obj.Size, ContentType: contentType, ETag: obj.ETag}, nil
+}
+
+// DeleteObject removes the object under key; a missing object is success.
+func (o objectStore) DeleteObject(ctx context.Context, key string) error {
+	return o.store.Delete(ctx, key)
 }
 
 // openObjects builds the Azure Blob store from the APP_STORAGE_* settings
@@ -270,8 +293,8 @@ catalog as blobfs's.
 
 ```sql
 --| tier: standard
--- Records the program's note about a file, in the transaction that inserts
--- the file's pending row.
+-- Records the program's note about an available file, in the transaction
+-- that holds the file's row.
 INSERT INTO app_attachment (file_id, note)
 VALUES ({{file_id:uuid}}, {{note}})
 ```
@@ -281,7 +304,7 @@ VALUES ({{file_id:uuid}}, {{note}})
 ```sql
 --| tier: standard
 -- Removes the program's note about a file, in the transaction that begins
--- the file's delete.
+-- the file's delete, ahead of the purge its foreign key would refuse.
 DELETE FROM app_attachment
 WHERE file_id = {{file_id:uuid}}
 ```
@@ -292,10 +315,18 @@ of the cursor predicate, `sqlatepg.Patterns()`, and blobfs's published patterns,
 PostgreSQL engine with `data.WithEngine`; the program's own statements compile against the same
 catalog. `Verify` prepares both against the migrated schema.
 
-`BeginUpload` and `BeginDelete` are the first steps of the two-phase write and the two-phase
-delete, each in one transaction with the program's own row. The pending row and its note commit together before any byte reaches
-the store. The note is removed in the transaction that marks the file deleting, so the program's
-foreign key never refuses the purge.
+`Upload` runs `Store.Write` and `Delete` runs `Store.Remove`, each with a callback of the
+program's inside the protocol's first transaction; [the protocols](features.md#the-protocols)
+states what each runs and refuses. Both callbacks first check the program's scope: the file's
+directory must lie within the area the caller may reach, which `Directories.IsWithin` answers.
+
+- `Upload`'s `begin` inserts the pending row with `Files.Create` and nothing that references it,
+  since a write that fails and cannot clean up leaves a stale row the sweep must be free to
+  purge. `Upload` attaches the note once the file is available, in a transaction that first
+  holds the file's row, as the [reference-then-delete](concepts.md#reference-then-delete) rule
+  requires, so a delete that begins meanwhile waits for the note to commit.
+- `Delete`'s `pick` reads the file, checks its scope, removes the note, and returns the file's
+  id, so the purge finds no note to refuse it; the program's foreign key stays the backstop.
 
 `stores.go`:
 
@@ -305,6 +336,8 @@ package main
 import (
 	"context"
 	"embed"
+	"errors"
+	"io"
 
 	"github.com/standards-lab/sqlate"
 	sqlatepg "github.com/standards-lab/sqlate/postgres"
@@ -317,6 +350,16 @@ import (
 
 //go:embed statements/*.sql
 var statements embed.FS
+
+// errOutOfScope refuses a directory outside the caller's area.
+var errOutOfScope = errors.New("outside the caller's area")
+
+// Objects is the object store as the program's writes reach it: the key
+// rule Files.Create checks, and the put and delete the protocols run.
+type Objects interface {
+	blobfs.KeyValidator
+	data.ObjectStore
+}
 
 // Stores is the program's persistence: blobfs's store and the program's
 // own statements, compiled against one catalog.
@@ -360,30 +403,62 @@ func (s *Stores) Verify(ctx context.Context, sess sqlate.Session) error {
 	return query.Verify(ctx, sess, s.stmts)
 }
 
-// BeginUpload is the first step of an upload: the file's pending row and
-// the program's note about it, committed together before any byte reaches
-// the store.
-func (s *Stores) BeginUpload(ctx context.Context, db *sqlate.DB, keys blobfs.KeyValidator, dirID, name, contentType, note string) (blobfs.File, error) {
-	return sqlate.Transact(ctx, db, func(tx *sqlate.Tx) (blobfs.File, error) {
-		file, err := s.Blobfs.Files.Create(ctx, tx, keys, dirID, name, contentType)
-		if err != nil {
+// Upload writes size bytes of body as the file name in dirID, which must
+// lie within areaID, and attaches the program's note to it once it is
+// available.
+func (s *Stores) Upload(ctx context.Context, db *sqlate.DB, objects Objects, areaID, dirID, name, contentType, note string, body io.Reader, size int64) (blobfs.File, error) {
+	file, err := s.Blobfs.Write(ctx, db, objects, body, size, func(tx *sqlate.Tx) (blobfs.File, error) {
+		if err := s.within(ctx, tx, dirID, areaID); err != nil {
 			return blobfs.File{}, err
 		}
-		_, err = s.attach.Exec(ctx, tx, query.Args{"file_id": file.ID, "note": note})
-		return file, err
+		// The pending row, and no row that references it.
+		return s.Blobfs.Files.Create(ctx, tx, objects, dirID, name, contentType)
+	})
+	if err != nil {
+		return blobfs.File{}, err
+	}
+	_, err = sqlate.Transact(ctx, db, func(tx *sqlate.Tx) (int64, error) {
+		if err := s.Blobfs.Files.Hold(ctx, tx, file.ID); err != nil {
+			return 0, err
+		}
+		return s.attach.Exec(ctx, tx, query.Args{"file_id": file.ID, "note": note})
+	})
+	if err != nil {
+		// The attach rolled back, so nothing references the file: remove it
+		// rather than leave it stored with no note.
+		return blobfs.File{}, errors.Join(err, s.Blobfs.Remove(context.WithoutCancel(ctx), db, objects,
+			func(*sqlate.Tx) (string, error) { return file.ID, nil }))
+	}
+	return file, nil
+}
+
+// Delete removes the file with id, which must lie within areaID: its note,
+// then the row marked deleting, then its object, then its row.
+func (s *Stores) Delete(ctx context.Context, db *sqlate.DB, objects data.ObjectDeleter, areaID, id string) error {
+	return s.Blobfs.Remove(ctx, db, objects, func(tx *sqlate.Tx) (string, error) {
+		file, err := s.Blobfs.Files.Find(ctx, tx, id)
+		if err != nil {
+			return "", err
+		}
+		if err := s.within(ctx, tx, file.DirectoryID, areaID); err != nil {
+			return "", err
+		}
+		_, err = s.detach.Exec(ctx, tx, query.Args{"file_id": id})
+		return id, err
 	})
 }
 
-// BeginDelete is the first step of a delete: the program's note removed
-// and the file's row marked deleting, in one transaction. It returns the
-// row with the key to delete the object under.
-func (s *Stores) BeginDelete(ctx context.Context, db *sqlate.DB, id string) (blobfs.File, error) {
-	return sqlate.Transact(ctx, db, func(tx *sqlate.Tx) (blobfs.File, error) {
-		if _, err := s.detach.Exec(ctx, tx, query.Args{"file_id": id}); err != nil {
-			return blobfs.File{}, err
-		}
-		return s.Blobfs.Files.Delete(ctx, tx, id)
-	})
+// within is the program's scope check: the directory dirID must lie
+// within areaID.
+func (s *Stores) within(ctx context.Context, tx *sqlate.Tx, dirID, areaID string) error {
+	ok, err := s.Blobfs.Directories.IsWithin(ctx, tx, dirID, areaID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errOutOfScope
+	}
+	return nil
 }
 ```
 
@@ -393,13 +468,13 @@ func (s *Stores) BeginDelete(ctx context.Context, db *sqlate.DB, id string) (blo
 file's whole life.
 
 - `Directories.Ensure` returns the `reports` directory under the root, creating it on the first
-  run only.
-- The write is `BeginUpload`, the put under the row's `Key`, and `Files.Complete` with what the
-  store reported, guarded by the pending row's version. The program passes the content type it
-  declared, since the store's report may differ.
+  run only. The program passes it as both the caller's area and the file's directory.
+- The write is `Upload`: the pending row, the put under the row's `Key`, the row completed
+  available, then the note.
 - The listing resolves the directory by path from the root and reads one page of its files,
   newest first, with the total counted in the page's statement.
-- The delete is `BeginDelete`, the object delete, and `Files.Purge`.
+- The delete is `Delete`: the note removed and the row marked deleting, then the object delete,
+  then the purge.
 
 `main.go`:
 
@@ -414,7 +489,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/standards-lab/go-storage"
 	"github.com/standards-lab/sqlate/query"
 
 	"github.com/standards-lab/blobfs"
@@ -438,7 +512,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = objects.Shutdown(context.Background()) }()
-	keys := keyValidator{objects}
+	objs := objectStore{objects}
 
 	stores, err := newStores(db.Dialect())
 	if err != nil {
@@ -456,24 +530,14 @@ func run(ctx context.Context) error {
 	}
 	fmt.Printf("directory reports: id %s, created %t\n", dir.ID, created)
 
-	// The write: the pending row, then the object, then the row available.
+	// The write: the pending row, the object, the row available, the note.
 	body := "quarterly numbers\n"
-	file, err := stores.BeginUpload(ctx, db, keys, dir.ID, "Q3 summary.txt", "text/plain", "for the board")
+	file, err := stores.Upload(ctx, db, objs, dir.ID, dir.ID, "Q3 summary.txt", "text/plain",
+		"for the board", strings.NewReader(body), int64(len(body)))
 	if err != nil {
 		return err
 	}
-	fmt.Printf("pending: %s under the key %s\n", file.Name, file.Key)
-	obj, err := objects.Put(ctx, file.Key, strings.NewReader(body),
-		storage.PutOptions{ContentType: "text/plain", Size: int64(len(body))})
-	if err != nil {
-		return err
-	}
-	file, err = store.Files.Complete(ctx, db, file.ID, file.Version,
-		blobfs.Object{Size: obj.Size, ContentType: "text/plain", ETag: obj.ETag})
-	if err != nil {
-		return err
-	}
-	fmt.Printf("%s: %s, %d bytes\n", file.Name, file.Status, *file.Size)
+	fmt.Printf("%s under the key %s: %s, %d bytes\n", file.Name, file.Key, file.Status, *file.Size)
 
 	// A listing: one page of the directory's files, newest first.
 	found, err := store.Directories.FindByPath(ctx, db, blobfs.RootID, "reports")
@@ -495,18 +559,11 @@ func run(ctx context.Context) error {
 		fmt.Printf("  %s (%s)\n", f.Name, f.Status)
 	}
 
-	// The delete: the row marked deleting, then the object, then the row.
-	deleting, err := stores.BeginDelete(ctx, db, file.ID)
-	if err != nil {
+	// The delete: the note and the row marked deleting, the object, the row.
+	if err := stores.Delete(ctx, db, objs, dir.ID, file.ID); err != nil {
 		return err
 	}
-	if err := objects.Delete(ctx, deleting.Key); err != nil {
-		return err
-	}
-	if err := store.Files.Purge(ctx, db, deleting.ID); err != nil {
-		return err
-	}
-	fmt.Printf("deleted %s\n", deleting.Name)
+	fmt.Printf("deleted %s\n", file.Name)
 	return nil
 }
 ```
@@ -516,9 +573,8 @@ mise run run
 ```
 
 ```
-directory reports: id 01a0d043-c5e8-7dba-afb7-955416e54350, created true
-pending: Q3 summary.txt under the key 01a0d043-c5ef-7a28-ae5d-570c1d4979b4/Q3 summary.txt
-Q3 summary.txt: available, 18 bytes
+directory reports: id 01a0eda3-d1ae-78cd-8b78-b6b69b343724, created true
+Q3 summary.txt under the key 01a0eda3-d1b1-79c4-b56a-7bcbf2cc34e7/Q3 summary.txt: available, 18 bytes
 /reports: 1 of 1 files
   Q3 summary.txt (available)
 deleted Q3 summary.txt
@@ -529,12 +585,14 @@ writes the file under a new key, since each write mints a new id.
 
 ## 8. Test without a database
 
-A unit test compiles the stores for `sqltest`'s stub dialect and runs them over its scripted
-driver, so it needs no database. Under the stub dialect a returning command runs its fallback,
-the command and then its read; a test that wants the single-statement form uses
-`sqltest.ReturningDialect`. The first test scripts the insert, the read of the pending row, and
-the note, and proves the three ran in one transaction. The second proves a key the store refuses
-stops the write before any SQL.
+A unit test compiles the stores for `sqltest.ReturningDialect`, `sqltest`'s stub dialect with
+`RETURNING`, and runs them over `sqltest`'s scripted driver, so it needs no database and each of
+blobfs's returning commands is one scripted read. `datatest.FileRows` scripts a read of file
+rows in the columns blobfs scans, and a map stands in for the object store. The stores run the
+PostgreSQL engine, so the script follows its statements: its hold is a locking read. The first
+test scripts the scope check, the pending row, its completion, the hold, and the note, and
+proves the pending row committed before the put. The second proves that a directory outside the
+area rolls the write back before any byte is stored.
 
 `stores_test.go`:
 
@@ -545,7 +603,9 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"io"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -553,64 +613,108 @@ import (
 	"github.com/standards-lab/sqlate/sqltest"
 
 	"github.com/standards-lab/blobfs"
+	"github.com/standards-lab/blobfs/data/datatest"
 )
 
-// acceptAll and refuseAll stand in for the object store's key rule.
-type acceptAll struct{}
+// memory stands in for the object store: it accepts every key, keeps its
+// objects in a map, and records the driver's operations at each put.
+type memory struct {
+	rec     *sqltest.Recorder
+	objects map[string]string
+	atPut   []sqltest.Op
+}
 
-func (acceptAll) ValidateKey(string) error { return nil }
+func (*memory) ValidateKey(string) error { return nil }
 
-type refuseAll struct{}
+func (m *memory) PutObject(_ context.Context, key string, body io.Reader, contentType string, size int64) (blobfs.Object, error) {
+	m.atPut = m.rec.Ops()
+	b, err := io.ReadAll(body)
+	if err != nil {
+		return blobfs.Object{}, err
+	}
+	m.objects[key] = string(b)
+	return blobfs.Object{Size: size, ContentType: contentType, ETag: `"etag"`}, nil
+}
 
-func (refuseAll) ValidateKey(string) error { return errors.New("refused") }
+func (m *memory) DeleteObject(_ context.Context, key string) error {
+	delete(m.objects, key)
+	return nil
+}
 
-// open compiles the stores for sqltest's stub dialect and opens a scripted
-// pool over the responses.
-func open(t *testing.T, responses ...sqltest.Response) (*Stores, *sqlate.DB, *sqltest.Recorder) {
+// open compiles the stores for the stub dialect with RETURNING and opens a
+// scripted pool over the responses, with an empty object store.
+func open(t *testing.T, responses ...sqltest.Response) (*Stores, *sqlate.DB, *sqltest.Recorder, *memory) {
 	t.Helper()
+	dialect := sqltest.ReturningDialect{}
 	pool, rec := sqltest.Open(t, responses...)
-	stores, err := newStores(sqltest.Dialect{})
+	stores, err := newStores(dialect)
 	if err != nil {
 		t.Fatalf("newStores: %v", err)
 	}
-	return stores, sqlate.Wrap(pool, sqltest.Dialect{}), rec
+	return stores, sqlate.Wrap(pool, dialect), rec, &memory{rec: rec, objects: map[string]string{}}
 }
 
-// fileColumns is a file row's column list, in the order blobfs.File scans.
-var fileColumns = []string{"id", "directory_id", "name", "status", "key", "size",
-	"content_type", "etag", "version", "created_at", "updated_at"}
+// within scripts the scope check's answer.
+func within(yes bool) sqltest.Response {
+	n := int64(0)
+	if yes {
+		n = 1
+	}
+	return sqltest.Response{Columns: []string{"matches"}, Rows: [][]driver.Value{{n}}}
+}
 
-func TestBeginUpload_WritesTheRowAndTheNoteInOneTransaction(t *testing.T) {
+// fileID is the uploaded file's id.
+const fileID = "0199a5d2-4c7e-7000-8000-000000000001"
+
+// file is the uploaded file's row at a status and version.
+func file(status blobfs.Status, version int64) sqltest.Response {
 	now := time.Now()
-	id := "0199a5d2-4c7e-7000-8000-000000000001"
-	stores, db, rec := open(t,
-		sqltest.Response{Affected: 1}, // create_file
-		sqltest.Response{Columns: fileColumns, Rows: [][]driver.Value{{ // file_by_id
-			id, blobfs.RootID, "a.txt", "pending", id + "/a.txt", nil,
-			"text/plain", nil, int64(1), now, now,
-		}}},
+	f := blobfs.File{ID: fileID, DirectoryID: blobfs.RootID, Name: "a.txt", Status: status,
+		Key: fileID + "/a.txt", ContentType: "text/plain", Version: version, CreatedAt: now, UpdatedAt: now}
+	if status == blobfs.StatusAvailable {
+		size, etag := int64(4), `"etag"`
+		f.Size, f.ETag = &size, &etag
+	}
+	return datatest.FileRows(f)
+}
+
+func TestUpload_CommitsThePendingRowBeforeThePut(t *testing.T) {
+	stores, db, rec, objects := open(t,
+		within(true),                    // directory_is_within
+		file(blobfs.StatusPending, 1),   // create_file
+		file(blobfs.StatusAvailable, 2), // complete_file
+		sqltest.Response{Columns: []string{"id"}, Rows: [][]driver.Value{{fileID}}}, // hold_file
 		sqltest.Response{Affected: 1}, // attach
 	)
-	file, err := stores.BeginUpload(context.Background(), db, acceptAll{}, blobfs.RootID, "a.txt", "text/plain", "note")
-	if err != nil || file.Status != blobfs.StatusPending {
-		t.Fatalf("BeginUpload = %+v, %v", file, err)
+	got, err := stores.Upload(context.Background(), db, objects, blobfs.RootID, blobfs.RootID,
+		"a.txt", "text/plain", "note", strings.NewReader("body"), 4)
+	if err != nil || got.Status != blobfs.StatusAvailable {
+		t.Fatalf("Upload = %+v, %v", got, err)
 	}
-	want := []sqltest.Op{sqltest.OpBegin, sqltest.OpExec, sqltest.OpQuery, sqltest.OpExec, sqltest.OpCommit}
+	begun := []sqltest.Op{sqltest.OpBegin, sqltest.OpQuery, sqltest.OpQuery, sqltest.OpCommit}
+	if !slices.Equal(objects.atPut, begun) {
+		t.Errorf("ops at the put = %v, want %v", objects.atPut, begun)
+	}
+	want := append(begun, sqltest.OpQuery, // the completion, on the pool
+		sqltest.OpBegin, sqltest.OpQuery, sqltest.OpExec, sqltest.OpCommit) // the hold and the note
 	if got := rec.Ops(); !slices.Equal(got, want) {
 		t.Errorf("ops = %v, want %v", got, want)
 	}
 }
 
-func TestBeginUpload_RefusedKeyRunsNoSQL(t *testing.T) {
-	stores, db, rec := open(t)
-	_, err := stores.BeginUpload(context.Background(), db, refuseAll{}, blobfs.RootID, "a.txt", "text/plain", "note")
-	if !errors.Is(err, blobfs.ErrInvalidKey) {
-		t.Fatalf("err = %v, want blobfs.ErrInvalidKey", err)
+func TestUpload_OutOfScopeStoresNothing(t *testing.T) {
+	stores, db, rec, objects := open(t, within(false))
+	_, err := stores.Upload(context.Background(), db, objects, blobfs.RootID, blobfs.RootID,
+		"a.txt", "text/plain", "note", strings.NewReader("body"), 4)
+	if !errors.Is(err, errOutOfScope) {
+		t.Fatalf("err = %v, want errOutOfScope", err)
 	}
-	for _, op := range rec.Ops() {
-		if op == sqltest.OpExec || op == sqltest.OpQuery {
-			t.Errorf("a statement reached the driver: %v", rec.Ops())
-		}
+	if objects.atPut != nil {
+		t.Errorf("a put reached the store")
+	}
+	want := []sqltest.Op{sqltest.OpBegin, sqltest.OpQuery, sqltest.OpRollback}
+	if got := rec.Ops(); !slices.Equal(got, want) {
+		t.Errorf("ops = %v, want %v", got, want)
 	}
 }
 ```

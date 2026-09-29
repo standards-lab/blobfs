@@ -85,7 +85,7 @@ func newDirectoryReads(stmts *query.Statements) directoryReads {
 }
 
 // active reads the directory with id: nil when it is active, else
-// blobfs.ErrNotFound or blobfs.ErrDeleting, naming the directory.
+// blobfs.ErrNotFound naming the directory or its blobfs.DeletingError.
 func (r directoryReads) active(ctx context.Context, sess sqlate.Session, id string) error {
 	dir, err := r.byID.One(ctx, sess, query.Args{"id": id})
 	if err != nil {
@@ -94,17 +94,39 @@ func (r directoryReads) active(ctx context.Context, sess sqlate.Session, id stri
 	return closed(dir)
 }
 
-// closed is nil while dir is active and blobfs.ErrDeleting once it is
-// deleting.
+// closed is nil while dir is active and, once it is deleting, the
+// blobfs.DeletingError naming it.
 func closed(dir blobfs.Directory) error {
 	if dir.Status.Mutable() {
 		return nil
 	}
-	return fmt.Errorf("the directory %s is %s: %w", dir.ID, dir.Status, blobfs.ErrDeleting)
+	return &blobfs.DeletingError{Directory: true, ID: dir.ID}
+}
+
+// deletingFile builds the refusal of a mutation of file, a deleting row,
+// by reading its directory: the file's own blobfs.DeletingError while the
+// directory is active, and the directory's once it is deleting or gone,
+// each wrapping cause when it is not nil. A directory gone since the file
+// was read, which its foreign key allows only once the file's row is gone
+// too, as the sweep of its branch leaves them, is the directory's refusal.
+// A read that fails otherwise leaves the refusal untyped,
+// blobfs.ErrDeleting beside the read's error.
+func (r directoryReads) deletingFile(ctx context.Context, sess sqlate.Session, file blobfs.File, cause error) error {
+	dir, err := r.byID.One(ctx, sess, query.Args{"id": file.DirectoryID})
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return &blobfs.DeletingError{Directory: true, ID: file.DirectoryID, Err: cause}
+	case err != nil:
+		return fmt.Errorf("the file %s is %s, and its directory %s is unread: %w", file.ID, file.Status, file.DirectoryID, errors.Join(blobfs.ErrDeleting, cause, err))
+	case !dir.Status.Mutable():
+		return &blobfs.DeletingError{Directory: true, ID: dir.ID, Err: cause}
+	}
+	return &blobfs.DeletingError{ID: file.ID, Err: cause}
 }
 
 // refusedUnder classifies an insert that selected no row from parentID by
-// reading the parent: blobfs.ErrNotFound or blobfs.ErrDeleting.
+// reading the parent: blobfs.ErrNotFound or the parent's
+// blobfs.DeletingError.
 func (r directoryReads) refusedUnder(ctx context.Context, sess sqlate.Session, parentID string) error {
 	if err := r.active(ctx, sess, parentID); err != nil {
 		return err

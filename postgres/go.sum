@@ -13,10 +13,8 @@ github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo
 github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
-github.com/standards-lab/blobfs v0.2.0 h1:z6s1JIxu3dL2VhJkGjC+li+J8D4tet7PHGs+AbyL1qg=
-github.com/standards-lab/blobfs v0.2.0/go.mod h1:1ZytfeiASYRgsYchN2aFv2HGnKug5gysmmpAsm6PFl8=
-github.com/standards-lab/sqlate v0.4.0 h1:1k0pCj9j8wAWlZTNeD9e/XjFWHrzQHUDuUjbQ+zV1pw=
-github.com/standards-lab/sqlate v0.4.0/go.mod h1:pikNmGf/z3x46SBWFXgt/xKIDZuquSgCoXy5OWBFFR4=
+github.com/standards-lab/sqlate v0.4.1 h1:IvptIl7JXdtDPzNEv3imAIf2evJIfe4nxhEP6CI+wRU=
+github.com/standards-lab/sqlate v0.4.1/go.mod h1:pikNmGf/z3x46SBWFXgt/xKIDZuquSgCoXy5OWBFFR4=
 github.com/standards-lab/sqlate/postgres v0.4.0 h1:AJioiMq+EagjxOA4Mcu/SQLFHcZoW5T3VPbF3WtZgfQ=
 github.com/standards-lab/sqlate/postgres v0.4.0/go.mod h1:cfC+vFkm5YNY/H5HQrNDZcswoefUXE2ZdDeSzxr3gbA=
 github.com/standards-lab/sqlate/sqlint v0.2.1 h1:UnpQ8Grrb0bIvCAl93328D4McDIsgZMuDv3G2Sjz1YQ=

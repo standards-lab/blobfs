@@ -2,7 +2,6 @@ package data_test
 
 import (
 	"context"
-	"database/sql/driver"
 	"errors"
 	"slices"
 	"strings"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/standards-lab/blobfs"
 	"github.com/standards-lab/blobfs/data"
+	"github.com/standards-lab/blobfs/data/datatest"
 )
 
 // catalog builds the catalog a consumer builds: the library's patterns and
@@ -77,25 +77,27 @@ func begin(t *testing.T, db *sqlate.DB) *sqlate.Tx {
 	return tx
 }
 
-// directoryColumns is the column list of a directory row, as the scripted
-// driver must return it.
-var directoryColumns = []string{"id", "parent_id", "name", "status", "version", "created_at", "updated_at"}
-
 // directoryResponse scripts one active directory row; an empty parent is
 // the root's NULL.
 func directoryResponse(id, parent, name string, version int64) sqltest.Response {
 	return directoryIn(id, parent, name, blobfs.DirectoryStatusActive, version)
 }
 
+// directoryRow is a directory row in status; an empty parent is the
+// root's nil.
+func directoryRow(id, parent, name string, status blobfs.DirectoryStatus, version int64) blobfs.Directory {
+	now := time.Now()
+	d := blobfs.Directory{ID: id, Name: name, Status: status, Version: version, CreatedAt: now, UpdatedAt: now}
+	if parent != "" {
+		d.ParentID = &parent
+	}
+	return d
+}
+
 // directoryIn scripts one directory row in status; an empty parent is the
 // root's NULL.
 func directoryIn(id, parent, name string, status blobfs.DirectoryStatus, version int64) sqltest.Response {
-	now := time.Now()
-	var p driver.Value
-	if parent != "" {
-		p = parent
-	}
-	return sqltest.Response{Columns: directoryColumns, Rows: [][]driver.Value{{id, p, name, string(status), version, now, now}}}
+	return datatest.DirectoryRows(directoryRow(id, parent, name, status, version))
 }
 
 // childResponse scripts one directory row under the root at version 1.
@@ -104,7 +106,7 @@ func childResponse(id, name string) sqltest.Response {
 }
 
 // noDirectory scripts a directory read that finds no row.
-func noDirectory() sqltest.Response { return sqltest.Response{Columns: directoryColumns} }
+func noDirectory() sqltest.Response { return datatest.DirectoryRows() }
 
 // violation scripts a statement refused by constraint under class.
 func violation(constraint string, class error) sqltest.Response {
@@ -460,7 +462,8 @@ func (v *holdOverride) HoldFile(_ context.Context, _ *sqlate.Tx, id string, vers
 }
 
 // TestHoldIsAVariationPoint checks Files.Hold forwards to HoldFile and
-// classifies a refusal by one read.
+// classifies a refusal by one read, and a deleting row's by a read of its
+// directory.
 func TestHoldIsAVariationPoint(t *testing.T) {
 	ctx := context.Background()
 	v := &holdOverride{held: true}
@@ -468,7 +471,7 @@ func TestHoldIsAVariationPoint(t *testing.T) {
 		v.Variant = base
 		return v, nil
 	}))
-	pool, rec := sqltest.Open(t, fileResponse("F", "a.txt", blobfs.StatusDeleting, 2))
+	pool, rec := sqltest.Open(t, fileResponse("F", "a.txt", blobfs.StatusDeleting, 2), directoryResponse(blobfs.RootID, "", "/", 1))
 	tx := begin(t, sqlate.Wrap(pool, sqltest.Dialect{}))
 	defer func() { _ = tx.Rollback() }()
 	if err := s.Files.Hold(ctx, tx, "F", data.AtVersion(1)); err != nil {
@@ -487,8 +490,8 @@ func TestHoldIsAVariationPoint(t *testing.T) {
 	if v.version != nil {
 		t.Errorf("HoldFile got the version %v without AtVersion, want nil", *v.version)
 	}
-	if got := ops(rec); got != "begin query" {
-		t.Errorf("the refused hold ran %q, want the one classifying read", got)
+	if got := ops(rec); got != "begin query query" {
+		t.Errorf("the refused hold ran %q, want the classifying read and its directory's", got)
 	}
 }
 

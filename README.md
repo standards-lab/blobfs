@@ -16,8 +16,10 @@ imported.
 An object store is flat and has no atomic rename, so a tree encoded in its keys turns a move of
 a directory into a copy and a delete of everything beneath it. blobfs keeps the tree in SQL,
 where a move is one update, and leaves each key opaque. The rows and the objects share no
-transaction, so each protocol that touches an object is exposed as steps the consumer runs its
-own store's call between; [concepts](docs/concepts.md) explains the model.
+transaction, so blobfs exposes each protocol that touches an object as steps the consumer runs
+its own store's call between. The `data` package's store also runs each protocol end to end,
+calling the put and delete the consumer supplies; [concepts](docs/concepts.md) explains the
+model.
 
 ## Documentation
 
