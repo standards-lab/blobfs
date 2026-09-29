@@ -28,6 +28,9 @@ the `postgres` sub-module keeps its own.
   began from a deleting directory, names the row, and unwraps its cause.
 - `data/datatest`: `FileRows` and `DirectoryRows`, which script blobfs's rows for `sqltest`, and
   checks of the `DeletingError`'s kind in the groups that assert `ErrDeleting`.
+- `data/datatest`: the Protocols group, which checks `Store.Write`, `Store.Ensure`,
+  `Store.Remove`, `Store.Purge`, and `Store.SweepUntilDone` with `AroundPass` against the live
+  database, over an in-memory object store that fails on demand.
 
 ### Changed
 

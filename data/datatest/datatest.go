@@ -39,9 +39,11 @@ import (
 // fallback.
 //
 // The groups run in the order docs/features.md lists: Verify, Directories,
-// Paths, Files, Writes, Deletes, Holds, Moves, Listing, Keyset, Branches,
-// and Sweeps. Branches runs after the others because the branches it marks
-// stay in the tree; Sweeps runs last because its first pass removes them.
+// Paths, Files, Writes, Deletes, Protocols, Holds, Moves, Listing, Keyset,
+// Branches, and Sweeps. Protocols runs before any group marks a branch,
+// and sweeps the branches it marks itself. Branches runs after the others
+// because the branches it marks stay in the tree; Sweeps runs last because
+// its first pass removes them.
 func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, engine data.Engine) {
 	t.Helper()
 	dialect := db.Dialect()
@@ -70,6 +72,7 @@ func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, engine data.Engine
 	t.Run("Files", s.files)
 	t.Run("Writes", s.writes)
 	t.Run("Deletes", s.deletes)
+	t.Run("Protocols", s.protocols)
 	t.Run("Holds", s.holds)
 	t.Run("Moves", s.moves)
 	t.Run("Listing", s.listing)

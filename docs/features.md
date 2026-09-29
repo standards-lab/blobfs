@@ -801,8 +801,16 @@ tables, to stand in for a consumer's references, and an index on
 
 The suite is engine-agnostic: it imports no engine and no driver, and every statement it runs
 outside the store is standard SQL with the dialect's placeholders. The groups, in order, are
-Verify, Directories, Paths, Files, Writes, Deletes, Holds, Moves, Listing, Keyset, Branches, and
-Sweeps. Branches checks the mark's counts, its convergence and stragglers, its version guard and
+Verify, Directories, Paths, Files, Writes, Deletes, Protocols, Holds, Moves, Listing, Keyset,
+Branches, and Sweeps. Protocols runs the protocols end to end over an in-memory object store:
+`Store.Write`'s success, a failed put that frees the name, a completion refused by a mark made
+during the put, which deletes the object it put and leaves the row to the sweep, and a refusing
+begin; `Store.Ensure` creating, returning an available row, resuming a pending one, and refusing a
+name held under another id or a deleting row; `Store.Remove`, its failed object delete and retry,
+and a refusing pick; `Store.Purge` after the caller's own `Files.Delete`; and
+`Store.SweepUntilDone` draining a backlog larger than one batch under `AroundPass`, and running no
+pass once stopped. It runs before any group marks a branch and sweeps the branches it marks
+itself. Branches checks the mark's counts, its convergence and stragglers, its version guard and
 its retry at any version, its wait on a hold, every refusal a deleting directory makes, the
 listings' hiding, and `Deleting`'s roots; it runs after the other groups because the branches it
 marks stay in the tree. Sweeps runs last because its first pass removes them; it then checks a
