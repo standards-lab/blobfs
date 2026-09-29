@@ -7,6 +7,8 @@ the `postgres` sub-module keeps its own.
 
 ## [Unreleased]
 
+## [v0.3.1] - 2026-09-29
+
 ### Changed
 
 - **Behavior change in a patch:** a create or a move onto a name a deleting row holds is refused
@@ -161,7 +163,8 @@ library never calls.
 - `data/datatest`, the conformance suite: `Run` checks a store over any engine against the
   baseline on a live database, the hold's refusals and interleavings with a delete included.
 
-[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.3.1...HEAD
+[v0.3.1]: https://github.com/standards-lab/blobfs/releases/tag/v0.3.1
 [v0.3.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.3.0
 [v0.2.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.2.0
 [v0.1.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.1.0
