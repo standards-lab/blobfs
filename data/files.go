@@ -132,12 +132,14 @@ const (
 // returned without a read of its directory, a straggler in a deleting
 // directory included. See Files in docs/features.md.
 //
-// A found deleting row is WritePresent, not refused; only a row that holds
-// the name by the insert, committed since the lookup, is refused as
-// Create refuses it.
+// A deleting row that holds the name is WritePresent, not refused, whether
+// the lookup found it or the insert, run after a writer committed it
+// between the two, refused by it; the insert failed no statement, so the
+// row is looked up again inside a transaction too.
 //
-// Refusals: Create's; and, inside a transaction only, blobfs.ErrNameTaken
-// when a writer commits the name between the lookup and the insert, as in
+// Refusals: Create's, except a deleting row's for the name; and, inside a
+// transaction only, blobfs.ErrNameTaken when a writer commits the name,
+// pending or available, between the lookup and the insert, as in
 // Directories.Ensure.
 func (f *Files) Ensure(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts ...CreateOption) (_ blobfs.File, _ WriteOutcome, err error) {
 	defer wrap(&err, "ensure file %q in %s", name, directoryID)
@@ -183,20 +185,23 @@ func newFile(keys blobfs.KeyValidator, name string, opts []CreateOption) (string
 
 // insert runs create_file and classifies its refusal bare: a violation
 // through the write mapping, and an insert that selected no row by a read
-// of the directory and then of the deleting file that holds the name.
+// of the directory and then of the deleting file that holds the name. An
+// insert those reads do not explain runs once more, as rerunOnce says.
 func (f *Files) insert(ctx context.Context, sess sqlate.Session, id, directoryID, name, key, contentType string) (blobfs.File, error) {
-	file, changed, err := f.create.One(ctx, sess, query.Args{
-		"id": id, "directory_id": directoryID, "name": name, "key": key, "content_type": contentType,
-	})
-	switch {
-	case err != nil && !errors.Is(err, sql.ErrNoRows):
-		return blobfs.File{}, classifyWrite(err)
-	case err != nil || !changed:
-		return blobfs.File{}, f.dirs.refusedUnder(ctx, sess, directoryID, func() error {
+	args := query.Args{"id": id, "directory_id": directoryID, "name": name, "key": key, "content_type": contentType}
+	return rerunOnce(func() (blobfs.File, bool, error) {
+		file, changed, err := f.create.One(ctx, sess, args)
+		switch {
+		case err != nil && !errors.Is(err, sql.ErrNoRows):
+			return blobfs.File{}, false, classifyWrite(err)
+		case err == nil && changed:
+			return file, false, nil
+		}
+		unexplained, err := f.dirs.refusedUnder(ctx, sess, directoryID, func() error {
 			return f.refusedName(ctx, sess, directoryID, name)
 		})
-	}
-	return file, nil
+		return blobfs.File{}, unexplained, err
+	})
 }
 
 // refusedName classifies a create or a move whose statement selected no
@@ -204,8 +209,9 @@ func (f *Files) insert(ctx context.Context, sess sqlate.Session, id, directoryID
 // holds name, already normalized, in directoryID. The statement refuses a
 // name a deleting file holds without failing the unique constraint, so a
 // deleting holder is refused as deletingFile builds it: the holder's
-// blobfs.DeletingError, or its directory's. nil means no deleting file
-// holds the name; a read that fails is returned unclassified.
+// blobfs.DeletingError, or its directory's, in a holderError naming the
+// holder. nil means no deleting file holds the name; a read that fails is
+// returned unclassified.
 func (f *Files) refusedName(ctx context.Context, sess sqlate.Session, directoryID, name string) error {
 	holder, err := f.findByName(ctx, sess, directoryID, name)
 	switch {
@@ -216,7 +222,7 @@ func (f *Files) refusedName(ctx context.Context, sess sqlate.Session, directoryI
 	case holder.Status.Mutable():
 		return nil
 	}
-	return f.dirs.deletingFile(ctx, sess, holder, nil)
+	return &holderError{kind: "file", id: holder.ID, err: f.dirs.deletingFile(ctx, sess, holder, nil)}
 }
 
 // Complete is the last step of a file write: it moves the pending row with
@@ -274,25 +280,29 @@ func (f *Files) Move(ctx context.Context, sess sqlate.Session, id, directoryID, 
 	if name, err = validName(name); err != nil {
 		return blobfs.File{}, err
 	}
-	file, changed, err := f.move.One(ctx, sess, query.Args{"id": id, "directory_id": directoryID, "name": name, "version": version})
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return blobfs.File{}, blobfs.ErrNotFound
-	case err != nil:
-		return blobfs.File{}, classifyWrite(err)
-	case changed:
-		return file, nil
-	case !file.Status.Mutable():
-		// Deleting outranks the stale version.
-		return blobfs.File{}, f.dirs.deletingFile(ctx, sess, file, nil)
-	}
-	// The directories tell a closed or missing one from a stale version,
-	// and then the name's holder tells a deleting one.
-	if err := f.dirs.refusedMove(ctx, sess, &file.DirectoryID, directoryID, version, file.Version); err != nil {
-		return blobfs.File{}, err
-	}
-	if err := f.refusedName(ctx, sess, directoryID, name); err != nil {
-		return blobfs.File{}, err
-	}
-	return blobfs.File{}, fmt.Errorf("the update matched no row, yet the row is %s at version %d", file.Status, file.Version)
+	args := query.Args{"id": id, "directory_id": directoryID, "name": name, "version": version}
+	return rerunOnce(func() (blobfs.File, bool, error) {
+		file, changed, err := f.move.One(ctx, sess, args)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return blobfs.File{}, false, blobfs.ErrNotFound
+		case err != nil:
+			return blobfs.File{}, false, classifyWrite(err)
+		case changed:
+			return file, false, nil
+		case !file.Status.Mutable():
+			// Deleting outranks the stale version.
+			return blobfs.File{}, false, f.dirs.deletingFile(ctx, sess, file, nil)
+		}
+		// The directories tell a closed or missing one from a stale
+		// version, and then the name's holder tells a deleting one; an
+		// update none explains runs once more, as rerunOnce says.
+		if err := f.dirs.refusedMove(ctx, sess, &file.DirectoryID, directoryID, version, file.Version); err != nil {
+			return blobfs.File{}, false, err
+		}
+		if err := f.refusedName(ctx, sess, directoryID, name); err != nil {
+			return blobfs.File{}, false, err
+		}
+		return blobfs.File{}, true, fmt.Errorf("the update matched no row, yet the row is %s at version %d", file.Status, file.Version)
+	})
 }

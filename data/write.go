@@ -43,7 +43,13 @@ func inTransaction(sess sqlate.Session) bool {
 // insertOrFind runs find, then create only when find returned
 // sql.ErrNoRows, and reports whether it created the row. A
 // blobfs.ErrNameTaken from create is a concurrent creator: outside a
-// transaction the row is found again; inside one the error is returned.
+// transaction the row is found again; inside one the error is returned,
+// since the failed insert may have aborted the transaction. A refusal by a
+// deleting row that holds the name, a holderError, is a row committed
+// since the lookup that the lookup would have found: it is found again
+// inside a transaction too, since the insert selected nothing and failed
+// no statement, so the caller gets what the lookup would have returned,
+// and the refusal stands when the second lookup finds no row.
 func insertOrFind[T any](ctx context.Context, sess sqlate.Session, find, create func(context.Context, sqlate.Session) (T, error)) (T, bool, error) {
 	var zero T
 	row, err := find(ctx, sess)
@@ -54,18 +60,58 @@ func insertOrFind[T any](ctx context.Context, sess sqlate.Session, find, create 
 		return zero, false, err
 	}
 	row, err = create(ctx, sess)
+	var held *holderError
 	switch {
 	case err == nil:
 		return row, true, nil
+	case errors.As(err, &held):
 	case !errors.Is(err, blobfs.ErrNameTaken) || inTransaction(sess):
 		return zero, false, err
 	}
-	// A concurrent creator committed the name since the lookup.
-	row, err = find(ctx, sess)
-	if err != nil {
-		return zero, false, fmt.Errorf("after a concurrent create: %w", notFound(err))
+	// A concurrent creator committed the name since the lookup. A holder
+	// gone again by the second lookup, purged, leaves its refusal standing.
+	found, ferr := find(ctx, sess)
+	switch {
+	case ferr == nil:
+		return found, false, nil
+	case held != nil:
+		return zero, false, err
 	}
-	return row, false, nil
+	return zero, false, fmt.Errorf("after a concurrent create: %w", notFound(ferr))
+}
+
+// holderError is the refusal of a create or a move by the deleting row
+// that holds the name it asked for: the holder's refusal, which matches
+// blobfs.ErrDeleting and which errors.As reaches, marked with the kind and
+// the id of the holder, so a move's refusal by the target name's holder
+// reads apart from the moved row's own.
+type holderError struct {
+	kind string
+	id   string
+	err  error
+}
+
+func (e *holderError) Error() string {
+	return fmt.Sprintf("the %s %s holds the name: %v", e.kind, e.id, e.err)
+}
+
+func (e *holderError) Unwrap() error { return e.err }
+
+// rerunOnce runs attempt, a create or a move that selects no row under a
+// deleting holder, and runs it once more when it reports its refusal
+// unexplained: the statement selected nothing, yet the reads after it
+// found no cause. At read committed each statement reads its own
+// snapshot, so the holder the statement saw may be purged, or its name
+// taken by a live row, before the reads; the rerun then succeeds, fails
+// the unique constraint, or selects nothing again with a holder the reads
+// find. Nothing failed, so the rerun is safe inside a transaction. A rerun
+// that is unexplained too returns its untyped refusal.
+func rerunOnce[T any](attempt func() (T, bool, error)) (T, error) {
+	row, unexplained, err := attempt()
+	if unexplained {
+		row, _, err = attempt()
+	}
+	return row, err
 }
 
 // directoryReads are the directory reads, by id and by parent and name,
@@ -127,15 +173,16 @@ func (r directoryReads) deletingFile(ctx context.Context, sess sqlate.Session, f
 // refusedUnder classifies an insert that selected no row from parentID by
 // reading the parent, blobfs.ErrNotFound or the parent's
 // blobfs.DeletingError, and then by held, the refusal of a deleting row
-// that holds the name, or nil when none does.
-func (r directoryReads) refusedUnder(ctx context.Context, sess sqlate.Session, parentID string, held func() error) error {
+// that holds the name. When neither explains it, unexplained is true and
+// the refusal is untyped, for rerunOnce.
+func (r directoryReads) refusedUnder(ctx context.Context, sess sqlate.Session, parentID string, held func() error) (unexplained bool, _ error) {
 	if err := r.active(ctx, sess, parentID); err != nil {
-		return err
+		return false, err
 	}
 	if err := held(); err != nil {
-		return err
+		return false, err
 	}
-	return fmt.Errorf("the insert selected no row, yet the directory %s is %s and no deleting row holds the name", parentID, blobfs.DirectoryStatusActive)
+	return true, fmt.Errorf("the insert selected no row, yet the directory %s is %s and no deleting row holds the name", parentID, blobfs.DirectoryStatusActive)
 }
 
 // refusedMove classifies a move of a row that is not deleting whose update

@@ -119,10 +119,11 @@ func (d *Directories) Create(ctx context.Context, sess sqlate.Session, parentID,
 // a deleting parent included.
 //
 // Refusals: Create's; blobfs.ErrDeleting for a found directory that is
-// deleting; and, inside a transaction only, blobfs.ErrNameTaken when a
-// creator commits the name between the lookup and the insert, since the
-// failed insert may have aborted the transaction. See Directories in
-// docs/features.md.
+// deleting, the lookup's or the one the insert found holding the name,
+// looked up again; and, inside a transaction only, blobfs.ErrNameTaken
+// when a creator commits the name, active, between the lookup and the
+// insert, since the failed insert may have aborted the transaction. See
+// Directories in docs/features.md.
 func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (_ blobfs.Directory, _ bool, err error) {
 	defer wrap(&err, "ensure directory %q under %s", name, parentID)
 	if name, err = validName(name); err != nil {
@@ -151,27 +152,32 @@ func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID,
 // insert runs create_directory and classifies its refusal bare: a
 // violation through the write mapping, and an insert that selected no row
 // by a read of the parent and then of the deleting directory that holds
-// the name.
+// the name. An insert those reads do not explain runs once more, as
+// rerunOnce says.
 func (d *Directories) insert(ctx context.Context, sess sqlate.Session, id, parentID, name string) (blobfs.Directory, error) {
-	dir, changed, err := d.create.One(ctx, sess, query.Args{"id": id, "parent_id": parentID, "name": name})
-	switch {
-	case err != nil && !errors.Is(err, sql.ErrNoRows):
-		return blobfs.Directory{}, classifyWrite(err)
-	case err != nil || !changed:
-		return blobfs.Directory{}, d.dirs.refusedUnder(ctx, sess, parentID, func() error {
+	args := query.Args{"id": id, "parent_id": parentID, "name": name}
+	return rerunOnce(func() (blobfs.Directory, bool, error) {
+		dir, changed, err := d.create.One(ctx, sess, args)
+		switch {
+		case err != nil && !errors.Is(err, sql.ErrNoRows):
+			return blobfs.Directory{}, false, classifyWrite(err)
+		case err == nil && changed:
+			return dir, false, nil
+		}
+		unexplained, err := d.dirs.refusedUnder(ctx, sess, parentID, func() error {
 			return d.refusedName(ctx, sess, parentID, name)
 		})
-	}
-	return dir, nil
+		return blobfs.Directory{}, unexplained, err
+	})
 }
 
 // refusedName classifies a create or a move whose statement selected no
 // row, once the parents explain nothing, by reading the directory that
 // holds name, already normalized, under parentID. The statement refuses a
 // name a deleting directory holds without failing the unique constraint,
-// so a deleting holder is refused with its blobfs.DeletingError. nil means
-// no deleting directory holds the name; a read that fails is returned
-// unclassified.
+// so a deleting holder is refused with its blobfs.DeletingError, in a
+// holderError naming it. nil means no deleting directory holds the name;
+// a read that fails is returned unclassified.
 func (d *Directories) refusedName(ctx context.Context, sess sqlate.Session, parentID, name string) error {
 	holder, err := d.findByName(ctx, sess, parentID, name)
 	switch {
@@ -179,8 +185,10 @@ func (d *Directories) refusedName(ctx context.Context, sess sqlate.Session, pare
 		return nil
 	case err != nil:
 		return fmt.Errorf("the directory that holds the name is unread: %w", err)
+	case holder.Status.Mutable():
+		return nil
 	}
-	return closed(holder)
+	return &holderError{kind: "directory", id: holder.ID, err: closed(holder)}
 }
 
 // Delete removes the empty directory with id, only at the version

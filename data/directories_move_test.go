@@ -149,17 +149,44 @@ func TestMoveClassifies(t *testing.T) {
 			if !errors.Is(err, blobfs.ErrNotFound) || errors.As(err, &ve) {
 				t.Errorf("Move under a missing parent = %v, want ErrNotFound", err)
 			}
-			err = move(append(append(unchanged(directoryResponse("D", blobfs.RootID, "d", 1)), active...), noDirectory())...)
+			// unexplained scripts an update the reads of the row, the
+			// parents, and the name's holder do not explain.
+			unexplained := append(append(unchanged(directoryResponse("D", blobfs.RootID, "d", 1)), active...), noDirectory())
+			err = move(append(slices.Clone(unexplained), unexplained...)...)
 			if err == nil || errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "active at version 1") {
-				t.Errorf("Move refused with every row active = %v, want an error naming the row's state", err)
+				t.Errorf("Move refused with every row active, twice = %v, want an error naming the row's state", err)
 			}
 			// A deleting directory that holds the name under the new parent
-			// refuses the move by its own delete, not as the taken name.
-			err = move(append(append(unchanged(directoryResponse("D", blobfs.RootID, "e", 1)), active...), directoryIn("H", "P", "d", blobfs.DirectoryStatusDeleting, 2))...)
-			if errors.Is(err, blobfs.ErrNameTaken) {
-				t.Errorf("Move onto a deleting holder's name = %v, want no ErrNameTaken", err)
+			// refuses the move by its own delete, not as the taken name, and
+			// is marked as the name's holder, apart from the moved row's own.
+			holder := append(append(unchanged(directoryResponse("D", blobfs.RootID, "e", 1)), active...), directoryIn("H", "P", "d", blobfs.DirectoryStatusDeleting, 2))
+			err = move(holder...)
+			if errors.Is(err, blobfs.ErrNameTaken) || !strings.Contains(err.Error(), "the directory H holds the name: ") {
+				t.Errorf("Move onto a deleting holder's name = %v, want the holder marked and no ErrNameTaken", err)
 			}
 			wantDeleting(t, "Move onto a deleting holder's name", err, true, "H")
+			// An update the reads do not explain, its holder purged or its
+			// name taken by a live row since the update's snapshot, runs once
+			// more: the rerun moves the row, meets the constraint, or selects
+			// nothing again with a holder the read finds.
+			changed := []sqltest.Response{directoryResponse("D", "P", "d", 2)}
+			if !f.single {
+				changed = []sqltest.Response{{Affected: 1}, directoryResponse("D", "P", "d", 2)}
+			}
+			s, db, rec := openStore(t, f, append(append([]sqltest.Response{within(0)}, unexplained...), changed...)...)
+			if dir, err := s.Directories.Move(ctx, begin(t, db), "D", "P", "d", 1); err != nil || dir.Version != 2 {
+				t.Errorf("Move whose rerun changed the row = %+v, %v, want the row", dir, err)
+			}
+			if updates := callsTo(rec, "UPDATE blobfs_directory"); len(updates) != 2 {
+				t.Errorf("Move ran %d updates, want the update and its rerun", len(updates))
+			}
+			wantDone(t, rec)
+			err = move(append(slices.Clone(unexplained), violation(blobfs.ConstraintUniqueDirectoryParentName, sqlate.ErrUniqueViolation))...)
+			if !errors.Is(err, blobfs.ErrNameTaken) || errors.Is(err, blobfs.ErrDeleting) {
+				t.Errorf("Move whose rerun met a live holder = %v, want ErrNameTaken", err)
+			}
+			err = move(append(slices.Clone(unexplained), holder...)...)
+			wantDeleting(t, "Move whose rerun met a deleting holder", err, true, "H")
 			for _, c := range []struct {
 				constraint string
 				class      error

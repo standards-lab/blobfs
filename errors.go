@@ -127,10 +127,12 @@ func (e *ViolationError) Unwrap() []error {
 // directory: the file's own directory, for a file deleting because its
 // branch was marked or whose directory is gone, or the directory the
 // mutation reached. The row may be the one the mutation acts on, or the
-// one that holds the name a create or a move asked for. Err is the refusal's cause when it has one, such as the
-// TransitionError of a completion refused from deleting, and is nil
-// otherwise. It matches ErrDeleting under errors.Is, and Unwrap yields Err,
-// so errors.Is and errors.As reach the cause and its sentinels.
+// one that holds the name a create or a move asked for, whose refusal the
+// persistence package wraps in a message naming it as the name's holder.
+// Err is the refusal's cause when it has one, such as the TransitionError
+// of a completion refused from deleting, and is nil otherwise. It matches
+// ErrDeleting under errors.Is, and Unwrap yields Err, so errors.Is and
+// errors.As reach the cause and its sentinels.
 type DeletingError struct {
 	Directory bool
 	ID        string

@@ -323,9 +323,11 @@ func TestPathPlans(t *testing.T) {
 
 // TestProtocolStepPlans checks every protocol step, in its single-statement
 // form, finds its row through the primary key, with and without a
-// nullable version, within 32 buffers. A tenth of the fixture's files are
-// pending, so the stale partial index is not the cheapest path to a row by
-// id.
+// nullable version, within 32 buffers. A create finds its directory or
+// parent the same way, and no step scans a table, a create's or a move's
+// probe for the name's deleting holder included. A tenth of the
+// fixture's files are pending, so the stale partial index is not the
+// cheapest path to a row by id.
 func TestProtocolStepPlans(t *testing.T) {
 	e := openCost(t, stepSizes)
 	stmts := statementsByName(e.store)
@@ -359,6 +361,7 @@ func TestProtocolStepPlans(t *testing.T) {
 		index string
 		args  query.Args
 	}{
+		{"create_file", "blobfs_pk_directory", query.Args{"id": blobfs.NewID(), "directory_id": e.tree.Big.ID, "name": "created.txt", "key": "created", "content_type": "text/plain"}},
 		{"complete_file", "blobfs_pk_file", query.Args{"id": pending, "version": int64(1), "size": int64(3), "content_type": "text/plain", "etag": "etag"}},
 		{"move_file", "blobfs_pk_file", query.Args{"id": available, "version": int64(1), "directory_id": e.tree.Chain[0].ID, "name": "moved.txt"}},
 		{"delete_file", "blobfs_pk_file", query.Args{"id": available, "version": nil}},
@@ -369,6 +372,7 @@ func TestProtocolStepPlans(t *testing.T) {
 		{"lock_file", "blobfs_pk_file", query.Args{"id": available, "version": int64(1)}},
 		{"purge_file", "blobfs_pk_file", query.Args{"id": deleting}},
 		{"file_by_id", "blobfs_pk_file", query.Args{"id": available}},
+		{"create_directory", "blobfs_pk_directory", query.Args{"id": blobfs.NewID(), "parent_id": blobfs.RootID, "name": "created"}},
 		{"move_directory", "blobfs_pk_directory", query.Args{"id": dir.ID, "version": int64(1), "parent_id": blobfs.RootID, "name": "moved"}},
 		{"delete_directory", "blobfs_pk_directory", query.Args{"id": empty, "version": nil}},
 		{"delete_directory", "blobfs_pk_directory", query.Args{"id": empty, "version": int64(1)}},
