@@ -5,9 +5,9 @@ go 1.27
 require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/standards-lab/blobfs v0.3.0
-	github.com/standards-lab/blobfs/postgres v0.2.0
-	github.com/standards-lab/go-storage v0.1.0
-	github.com/standards-lab/go-storage/azureblob v0.1.0
+	github.com/standards-lab/blobfs/postgres v0.3.0
+	github.com/standards-lab/go-storage v0.2.0
+	github.com/standards-lab/go-storage/azureblob v0.2.0
 	github.com/standards-lab/sqlate v0.4.1
 	github.com/standards-lab/sqlate/postgres v0.4.0
 )
@@ -32,10 +32,4 @@ require (
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
-)
-
-// Transient bridges to the unreleased modules; the release removes them.
-replace (
-	github.com/standards-lab/blobfs => ../
-	github.com/standards-lab/blobfs/postgres => ../postgres
 )
