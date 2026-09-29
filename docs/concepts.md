@@ -111,22 +111,22 @@ file. `data.Store.Purge` runs the last two steps, for a consumer that began the 
 transaction of its own; see [the protocols](features.md#the-protocols).
 
 A deleting row keeps its name until it is purged, so a write of the same name in the window is
-refused by the delete: the deleting row's `blobfs.DeletingError`, not `blobfs.ErrNameTaken`,
-since a listing hides the row that holds the name. A directory a mark reached holds its name the
-same way. Every mutation other than the delete steps refuses a deleting row with
+refused with the deleting row's `blobfs.DeletingError`, not `blobfs.ErrNameTaken` (see [errors
+and constraints](features.md#errors-and-constraints)). A directory a mark reached holds its name
+the same way. Every mutation other than the delete steps refuses a deleting row with
 `blobfs.ErrDeleting`, so no operation acts on a row whose object is gone or about to be. The
 refusal is a `blobfs.DeletingError`, which says whether the file's own delete or a directory's
 refused the mutation, so a consumer can report "the file is being deleted" apart from "the
 folder is being deleted" (see [errors and constraints](features.md#errors-and-constraints)).
 
-A move's `DeletingError` comes from one of two places: the delete of the moved row or of a
-directory it leaves or enters, or the delete of the row that holds the name the move asked for.
-The holder's refusal is marked: its message reads "the file ID holds the name" or "the directory
-ID holds the name", and the `DeletingError` beneath, which `errors.As` still reaches, names the
-holder. A consumer tells the two apart by that `ID`: one that names neither the moved row nor a
-directory it left or entered is the name's holder, whose delete the caller waits out or whose
-name it gives up. A holder whose directory a mark reached since the move's reads is reported as
-that directory's refusal, the directory the move entered.
+A move's `DeletingError` comes from one of two deletes: that of the moved row or of a directory
+it leaves or enters, or that of the row that holds the name the move asked for, whose refusal
+the store marks as the holder's (see [errors and
+constraints](features.md#errors-and-constraints)). A consumer tells the two apart by the
+`DeletingError`'s `ID`: one that names neither the moved row nor a directory it left or entered
+is the name's holder, and the caller waits out its delete or gives up the name. When a mark
+reaches a file holder's directory after the move read the directories, the refusal is that
+directory's, which is the directory the move entered.
 
 ### Deleting outranks the version
 

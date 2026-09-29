@@ -44,12 +44,12 @@ func inTransaction(sess sqlate.Session) bool {
 // sql.ErrNoRows, and reports whether it created the row. A
 // blobfs.ErrNameTaken from create is a concurrent creator: outside a
 // transaction the row is found again; inside one the error is returned,
-// since the failed insert may have aborted the transaction. A refusal by a
-// deleting row that holds the name, a holderError, is a row committed
-// since the lookup that the lookup would have found: it is found again
-// inside a transaction too, since the insert selected nothing and failed
-// no statement, so the caller gets what the lookup would have returned,
-// and the refusal stands when the second lookup finds no row.
+// since the failed insert may have aborted the transaction. A holderError
+// from create, the refusal by a deleting row that holds the name, means a
+// writer committed that row after the lookup. The insert selected nothing
+// and failed no statement, so find runs again inside a transaction too,
+// and the caller gets what the lookup would have returned. When the second
+// lookup finds no row, the refusal stands.
 func insertOrFind[T any](ctx context.Context, sess sqlate.Session, find, create func(context.Context, sqlate.Session) (T, error)) (T, bool, error) {
 	var zero T
 	row, err := find(ctx, sess)
@@ -170,11 +170,11 @@ func (r directoryReads) deletingFile(ctx context.Context, sess sqlate.Session, f
 	return &blobfs.DeletingError{ID: file.ID, Err: cause}
 }
 
-// refusedUnder classifies an insert that selected no row from parentID by
-// reading the parent, blobfs.ErrNotFound or the parent's
-// blobfs.DeletingError, and then by held, the refusal of a deleting row
-// that holds the name. When neither explains it, unexplained is true and
-// the refusal is untyped, for rerunOnce.
+// refusedUnder classifies an insert that selected no row from parentID. It
+// reads the parent, for blobfs.ErrNotFound or the parent's
+// blobfs.DeletingError, and then calls held, for the refusal of a deleting
+// row that holds the name. When neither explains the insert, unexplained
+// is true and the refusal is untyped, for rerunOnce.
 func (r directoryReads) refusedUnder(ctx context.Context, sess sqlate.Session, parentID string, held func() error) (unexplained bool, _ error) {
 	if err := r.active(ctx, sess, parentID); err != nil {
 		return false, err

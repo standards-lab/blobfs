@@ -15,11 +15,11 @@ var (
 	ErrNotFound = errors.New("blobfs: not found")
 
 	// ErrNameTaken reports a name already held in the target directory by a
-	// row of the same table that is not deleting. A deleting row holds its
-	// name too, until it is removed, but package data refuses a create or
-	// a move onto that name with the row's DeletingError, which does not
-	// match ErrNameTaken: the refusal is the delete, which the listings
-	// hide the row of.
+	// row of the same table that is not deleting. A deleting row also holds
+	// its name until it is removed, but package data refuses a create or a
+	// move onto that name with the row's DeletingError, which does not match
+	// ErrNameTaken: the listings hide the deleting row, and its delete is
+	// the refusal.
 	ErrNameTaken = errors.New("blobfs: name taken")
 
 	// ErrInvalidName reports a name ValidateName refused. A NameError
@@ -126,9 +126,10 @@ func (e *ViolationError) Unwrap() []error {
 // the file. Otherwise Directory is true and ID names the deleting
 // directory: the file's own directory, for a file deleting because its
 // branch was marked or whose directory is gone, or the directory the
-// mutation reached. The row may be the one the mutation acts on, or the
-// one that holds the name a create or a move asked for, whose refusal the
-// persistence package wraps in a message naming it as the name's holder.
+// mutation reached. The deleting row is either the one the mutation acts
+// on or the one that holds the name a create or a move asked for; the
+// persistence package wraps the second kind of refusal in a message that
+// names the row as the name's holder.
 // Err is the refusal's cause when it has one, such as the TransitionError
 // of a completion refused from deleting, and is nil otherwise. It matches
 // ErrDeleting under errors.Is, and Unwrap yields Err, so errors.Is and

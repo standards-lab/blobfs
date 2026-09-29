@@ -96,8 +96,8 @@ func (d *Directories) findByName(ctx context.Context, sess sqlate.Session, paren
 //
 // Refusals: blobfs.NameError; blobfs.IDError; blobfs.ErrNameTaken for a
 // name an active directory under the parent holds; for a name a deleting
-// directory holds, that directory's blobfs.DeletingError and no
-// ErrNameTaken; blobfs.ErrIDTaken; blobfs.ErrNotFound for a missing
+// directory holds, that directory's blobfs.DeletingError, which does not
+// match ErrNameTaken; blobfs.ErrIDTaken; blobfs.ErrNotFound for a missing
 // parent; blobfs.ErrDeleting for a deleting parent.
 func (d *Directories) Create(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (_ blobfs.Directory, err error) {
 	defer wrap(&err, "create directory %q under %s", name, parentID)
@@ -119,11 +119,11 @@ func (d *Directories) Create(ctx context.Context, sess sqlate.Session, parentID,
 // a deleting parent included.
 //
 // Refusals: Create's; blobfs.ErrDeleting for a found directory that is
-// deleting, the lookup's or the one the insert found holding the name,
-// looked up again; and, inside a transaction only, blobfs.ErrNameTaken
-// when a creator commits the name, active, between the lookup and the
-// insert, since the failed insert may have aborted the transaction. See
-// Directories in docs/features.md.
+// deleting, whether the lookup found it or it refused the insert and a
+// second lookup found it; and, inside a transaction only,
+// blobfs.ErrNameTaken when a creator commits an active directory under the
+// name between the lookup and the insert, since the failed insert may have
+// aborted the transaction. See Directories in docs/features.md.
 func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (_ blobfs.Directory, _ bool, err error) {
 	defer wrap(&err, "ensure directory %q under %s", name, parentID)
 	if name, err = validName(name); err != nil {

@@ -118,28 +118,31 @@ as the directory's refusal; a read that fails otherwise leaves the refusal an un
 `ErrDeleting` beside the read's error.
 
 A name is unique among the rows of one table in a directory, whatever their status, so a deleting
-row holds its name until it is purged or removed. A create or a move onto a name a deleting row
-holds is refused with that row's `DeletingError`, not `ErrNameTaken`, because the listings hide the
-row that holds the name: a file's own, or its directory's once the directory is deleting, and a
-directory's with `Directory` true. The error does not wrap `ErrNameTaken`: the refusal is the
-delete, which the caller waits out, and not a name the caller must change; a check that matches
-`ErrNameTaken` before `ErrDeleting` keeps the answer "name taken" for live rows only. `ErrNameTaken`
-remains the refusal of a name a pending or available file, or an active directory, holds. The
-statement itself refuses a deleting holder, selecting nothing rather than failing the unique
-constraint, and the store then reads the name's holder to report it, so the refusal runs no failing
-statement and leaves the caller's transaction usable. The refusal is marked as the holder's, "the
-file ID holds the name" or "the directory ID holds the name" around its `DeletingError`, so a move
-refused by the name's holder reads apart from one refused by the moved row's own delete (see [the
-two-phase delete](concepts.md#the-two-phase-delete)). A row that turns deleting after the statement
-ran, whose mark or delete commits in between, is still refused as `ErrNameTaken` by the constraint.
+row holds its name until it is purged or removed. A create or a move onto that name is refused
+with the holder's `DeletingError`, not `ErrNameTaken`, because the listings hide the holder. For a
+file holder the error is the file's own, or its directory's once the directory is deleting; for a
+directory holder it is the directory's, with `Directory` true. The error does not wrap
+`ErrNameTaken`, because the caller waits out the delete rather than changing the name. A check
+that matches `ErrNameTaken` before `ErrDeleting` therefore answers "name taken" for live rows
+only. `ErrNameTaken` remains the refusal of a name that a pending or available file, or an active
+directory, holds.
 
-At read committed each statement reads its own snapshot, so the holder the statement saw may be
-purged, by the sweep or the stale reclaim, or its name taken by a live row, before the store
-reads it. When the reads after a statement that selected nothing find no cause, the store runs
-the statement once more: the rerun succeeds, is refused by the constraint, `ErrNameTaken` for a
-live row, or selects nothing again with a holder the reads find. Nothing failed, so the rerun is
-safe inside the caller's transaction. It runs once only, and a rerun the reads explain no better
-is returned as an untyped error naming the row's state.
+The statement itself refuses a deleting holder: it selects nothing rather than failing the unique
+constraint, and the store then reads the name's holder to report it. The refusal therefore runs no
+failing statement and leaves the caller's transaction usable. The store wraps the holder's
+`DeletingError` in the message "the file `<id>` holds the name" or "the directory `<id>` holds the name",
+so a move refused by the name's holder reads apart from one refused by the moved row's own delete
+(see [the two-phase delete](concepts.md#the-two-phase-delete)). A row that turns deleting after
+the statement ran, because its mark or delete committed in between, is still refused by the
+constraint as `ErrNameTaken`.
+
+At read committed each statement reads its own snapshot, so between the statement and the store's
+reads the sweep or the stale reclaim may purge the holder, or a live row may take its name. When
+the reads find no cause for a statement that selected nothing, the store runs the statement once
+more. The rerun succeeds, is refused by the constraint as `ErrNameTaken` for a live row, or
+selects nothing again with a holder the reads find. Nothing failed, so the rerun is safe inside
+the caller's transaction. The store reruns only once, and returns a rerun the reads still do not
+explain as an untyped error naming the row's state.
 
 The names of the constraints the persistence package classifies are constants:
 
@@ -252,9 +255,9 @@ no failing statement and composes into a caller's transaction. A creator that co
 between the lookup and the insert makes the insert fail as `ErrNameTaken`. On the pool the row
 is then looked up again and returned as found; inside a transaction the error is returned,
 because on PostgreSQL the failed insert has aborted the transaction, and the caller retries the
-transaction. A deleting directory committed there fails no statement, since the insert selects
-nothing under it, so it is looked up again inside a transaction too, and refused as a found one
-is. A found row keeps its own id whatever `WithID` supplied.
+transaction. A deleting directory committed in that window fails no statement, because the
+insert selects nothing under it, so `Ensure` looks it up again inside a transaction too and
+refuses it as it refuses a found one. A found row keeps its own id whatever `WithID` supplied.
 
 `Move` runs `LockTree`, then `IsWithin(parentID, id)`, then the guarded update, in `tx`. The
 caller reads the directory in the same transaction and passes its `Version`. The directory's
@@ -304,10 +307,10 @@ make directory moves safe.
 | `WritePresent` | an available or deleting row, returned unchanged | the caller's decision: a put refuses the name, a copy skips or replaces it, a seeder skips it |
 
 The lookup-first behavior inside and outside a transaction is `Directories.Ensure`'s. A found
-row keeps its own id and key whatever `WithID` supplied. A deleting row the lookup finds is
-`WritePresent`, not refused, and so is one a writer committed between the lookup and the
-insert: the insert, which selects nothing under a deleting row and fails no statement, is
-followed by the lookup again, inside a transaction too. In a deleting directory, `Ensure`
+row keeps its own id and key whatever `WithID` supplied. `Ensure` returns a deleting row as
+`WritePresent`, not refused, whether the lookup finds it or a writer commits it between the
+lookup and the insert. In the second case the insert selects nothing and fails no statement, so
+`Ensure` runs the lookup again, inside a transaction too. In a deleting directory, `Ensure`
 reports a file the mark reached as `WritePresent`, its row deleting, and refuses a name no row
 holds with `Create`'s `ErrDeleting`. A found row that is not deleting is returned without a read
 of its directory, so a straggler, a row a create left active in a branch being deleted, is
@@ -380,9 +383,9 @@ leaves the row to the sweep.
 - An available row under `id` is returned as it stands, nothing put, and `stored` is false.
 - `Ensure` checks the id of the row `begin` returns, whatever it did, before any put. A row found
   under another id is not the caller's, such as a client's upload of the same name; it is left
-  as it stands, nothing put and nothing removed, and reported as `ErrNameTaken`, or, when it is
-  deleting, as its `DeletingError`, which `Ensure` does not retry. A row `begin`
-  created under another id, because it ran `Files.Ensure` without `WithID(id)`, is abandoned at
+  as it stands, nothing put and nothing removed. It is reported as `ErrNameTaken`, or, when it
+  is deleting, as its `DeletingError`, which `Ensure` does not retry. A row `begin` created
+  under another id, because it ran `Files.Ensure` without `WithID(id)`, is abandoned at
   its version, nothing put, and reported with both ids named.
 - When the first transaction is refused with `ErrNameTaken` or `ErrIDTaken`, because a
   concurrent writer's insert won the race, `Ensure` runs `begin` once more in a fresh

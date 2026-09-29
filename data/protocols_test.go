@@ -439,8 +439,9 @@ func TestEnsureWritePresent(t *testing.T) {
 // TestEnsureWriteUnderAnotherID checks a row found by the name under
 // another id, an upload of the same name, is left as it stands, nothing
 // put over its object and nothing removed, and reported as the taken
-// name, or as its DeletingError when it is deleting; a row a begin without WithID(id) created under another id is
-// abandoned at its version, nothing put, and reported naming both ids.
+// name, or as its DeletingError when it is deleting; a row a begin without
+// WithID(id) created under another id is abandoned at its version, nothing
+// put, and reported naming both ids.
 func TestEnsureWriteUnderAnotherID(t *testing.T) {
 	const other = "00000000-0000-7000-8000-0000000000c1"
 	for _, status := range []blobfs.Status{blobfs.StatusPending, blobfs.StatusAvailable} {

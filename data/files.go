@@ -97,8 +97,9 @@ func (f *Files) findByName(ctx context.Context, sess sqlate.Session, directoryID
 // any SQL; blobfs.ErrNameTaken for a name a pending or available file
 // holds in the directory; for a name a deleting file holds, that file's
 // blobfs.DeletingError, or its directory's once the directory is
-// deleting, and no ErrNameTaken; blobfs.ErrIDTaken; blobfs.ErrNotFound for
-// a missing directory; blobfs.ErrDeleting for a deleting directory.
+// deleting, which does not match ErrNameTaken; blobfs.ErrIDTaken;
+// blobfs.ErrNotFound for a missing directory; blobfs.ErrDeleting for a
+// deleting directory.
 func (f *Files) Create(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts ...CreateOption) (_ blobfs.File, err error) {
 	defer wrap(&err, "create file %q in %s", name, directoryID)
 	name, id, key, err := newFile(keys, name, opts)
@@ -133,13 +134,13 @@ const (
 // directory included. See Files in docs/features.md.
 //
 // A deleting row that holds the name is WritePresent, not refused, whether
-// the lookup found it or the insert, run after a writer committed it
-// between the two, refused by it; the insert failed no statement, so the
-// row is looked up again inside a transaction too.
+// the lookup found it or a writer committed it after the lookup and the
+// row refused the insert. That insert fails no statement, so Ensure looks the
+// row up again inside a transaction too.
 //
 // Refusals: Create's, except a deleting row's for the name; and, inside a
-// transaction only, blobfs.ErrNameTaken when a writer commits the name,
-// pending or available, between the lookup and the insert, as in
+// transaction only, blobfs.ErrNameTaken when a writer commits a pending or
+// available row under the name between the lookup and the insert, as in
 // Directories.Ensure.
 func (f *Files) Ensure(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts ...CreateOption) (_ blobfs.File, _ WriteOutcome, err error) {
 	defer wrap(&err, "ensure file %q in %s", name, directoryID)

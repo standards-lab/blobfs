@@ -324,8 +324,8 @@ func TestPathPlans(t *testing.T) {
 // TestProtocolStepPlans checks every protocol step, in its single-statement
 // form, finds its row through the primary key, with and without a
 // nullable version, within 32 buffers. A create finds its directory or
-// parent the same way, and no step scans a table, a create's or a move's
-// probe for the name's deleting holder included. A tenth of the
+// parent the same way. No step scans a table, including a create's or a
+// move's probe for a deleting row that holds the name. A tenth of the
 // fixture's files are pending, so the stale partial index is not the
 // cheapest path to a row by id.
 func TestProtocolStepPlans(t *testing.T) {
