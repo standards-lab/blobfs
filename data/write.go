@@ -105,12 +105,17 @@ func closed(dir blobfs.Directory) error {
 
 // deletingFile builds the refusal of a mutation of file, a deleting row,
 // by reading its directory: the file's own blobfs.DeletingError while the
-// directory is active, and the directory's once it is deleting, each
-// wrapping cause when it is not nil. A read that fails leaves the refusal
-// untyped, blobfs.ErrDeleting beside the read's error.
+// directory is active, and the directory's once it is deleting or gone,
+// each wrapping cause when it is not nil. A directory gone since the file
+// was read, which its foreign key allows only once the file's row is gone
+// too, as the sweep of its branch leaves them, is the directory's refusal.
+// A read that fails otherwise leaves the refusal untyped,
+// blobfs.ErrDeleting beside the read's error.
 func (r directoryReads) deletingFile(ctx context.Context, sess sqlate.Session, file blobfs.File, cause error) error {
 	dir, err := r.byID.One(ctx, sess, query.Args{"id": file.DirectoryID})
 	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return &blobfs.DeletingError{Directory: true, ID: file.DirectoryID, Err: cause}
 	case err != nil:
 		return fmt.Errorf("the file %s is %s, and its directory %s is unread: %w", file.ID, file.Status, file.DirectoryID, errors.Join(blobfs.ErrDeleting, cause, err))
 	case !dir.Status.Mutable():

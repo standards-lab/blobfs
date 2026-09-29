@@ -149,7 +149,7 @@ branch](#deleting-a-branch) sets and nothing undoes.
 
 | Step | Caller | Session |
 |---|---|---|
-| `Files.Create` or `Files.Ensure` | the consumer, often beside its own rows, or in `Store.Write`'s callback | the pool or a transaction |
+| `Files.Create` or `Files.Ensure` | the consumer, often beside its own rows, or `Files.Create` in `Store.Write`'s callback and `Files.Ensure` in `Store.Ensure`'s | the pool or a transaction |
 | the put | the consumer through its object store, or `Store.Write` through the consumer's `ObjectPutter` | none |
 | `Files.Complete` | the consumer, or `Store.Write` | the pool or a transaction |
 | `Files.Delete` | the consumer, after its own reference check, or `Store.Remove` after its callback | a transaction |

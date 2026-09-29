@@ -10,12 +10,14 @@ the `postgres` sub-module keeps its own.
 ### Added
 
 - `Store.Write`, which runs the two-phase write end to end: the consumer's callback creates the
-  pending row in one transaction, the store puts the object outside any transaction, and then
-  completes the row. A failed put or completion abandons the write, and a completion refused
-  because a sweep reached the row deletes the object just put.
+  pending row with `Files.Create` in one transaction, the store puts the object outside any
+  transaction, and then completes the row. A row that is not pending is refused before any put.
+  A failed put or completion abandons the write at the row's pending version, and a completion
+  refused because a sweep reached the row deletes the object just put.
 - `Store.Ensure`, the retry-safe `Write` of a file under a fixed id, which resumes a pending row,
-  returns an available one, reports a row under another id as `ErrNameTaken`, and shares a row
-  with a concurrent writer.
+  returns an available one, and shares a row with a concurrent writer. It checks the id of every
+  row its callback returns: a row found under another id is `ErrNameTaken`, and a row created
+  under another id is abandoned and refused naming both ids.
 - `Store.Remove`, which runs the two-phase delete end to end around the consumer's callback, and
   `Store.Purge`, which runs the object delete and the purge for a delete the consumer began
   itself.
@@ -41,7 +43,8 @@ the `postgres` sub-module keeps its own.
   file or the directory, unless the read that decides its kind fails. `errors.Is(err, ErrDeleting)`
   still holds, and `Complete`'s refusal of a deleting row wraps its `TransitionError`, which
   `errors.As` still reaches. `Complete`, `Move`, and `Hold` run one more read when they refuse a
-  deleting file: a read of the file's directory.
+  deleting file: a read of the file's directory. A directory gone by then is reported as the
+  directory's `DeletingError`.
 - The base module requires `sqlate` v0.4.1.
 
 ## [v0.2.0] - 2026-09-28

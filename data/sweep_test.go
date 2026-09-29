@@ -356,7 +356,7 @@ func sweepPass(s *data.Store, db *sqlate.DB, opts ...data.SweepOption) func(cont
 
 // TestSweepUntilDone checks the loop runs passes while one reports More,
 // reports each, and returns nil at the first that does not; a pass with
-// nothing to do is one pass.
+// nothing to do is one pass, and a nil report reports nothing.
 func TestSweepUntilDone(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, slices.Concat(morePass("A", "B"), lastPass("B"))...)
@@ -379,6 +379,16 @@ func TestSweepUntilDone(t *testing.T) {
 	}
 	if ops(rec) != "query query" {
 		t.Errorf("ops = %q, want the one pass's reads", ops(rec))
+	}
+
+	// A nil report discards each pass's result; the loop still runs until
+	// a pass reports no More.
+	s, db, rec = openStore(t, fallback, slices.Concat(morePass("A", "B"), lastPass("B"))...)
+	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, loopOpts...), nil); err != nil {
+		t.Fatalf("SweepUntilDone with a nil report = %v, want nil", err)
+	}
+	if ops(rec) != passOps+" "+passOps {
+		t.Errorf("ops = %q, want the two passes", ops(rec))
 	}
 }
 

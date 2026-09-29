@@ -23,10 +23,13 @@ func (s *suite) protocols(t *testing.T) {
 	t.Run("WriteFailedPut", s.protocolWriteFailedPut)
 	t.Run("WriteRefusedCompletion", s.protocolWriteRefusedCompletion)
 	t.Run("WriteRefusedBegin", s.protocolWriteRefusedBegin)
+	t.Run("WriteRefusesAnAvailableRow", s.protocolWriteRefusesAvailable)
 	t.Run("EnsureCreates", s.protocolEnsureCreates)
 	t.Run("EnsureResumes", s.protocolEnsureResumes)
 	t.Run("EnsureNameTaken", s.protocolEnsureNameTaken)
 	t.Run("EnsureDeleting", s.protocolEnsureDeleting)
+	t.Run("EnsureSharesARow", s.protocolEnsureShares)
+	t.Run("EnsureLostInsert", s.protocolEnsureLostInsert)
 	t.Run("Remove", s.protocolRemove)
 	t.Run("RemoveFailedObjectDelete", s.protocolRemoveFailedDelete)
 	t.Run("RemoveRefusedPick", s.protocolRemoveRefusedPick)
@@ -209,6 +212,36 @@ func (s *suite) protocolWriteRefusedBegin(t *testing.T) {
 	}
 }
 
+// protocolWriteRefusesAvailable checks Write over an available row its
+// begin found with Files.Ensure: the TransitionError to available, nothing
+// put or deleted, and the row and its object as they were.
+func (s *suite) protocolWriteRefusesAvailable(t *testing.T) {
+	for _, tier := range s.storesUnder() {
+		t.Run(tier.name, func(t *testing.T) {
+			dir := s.mkdir(t, "write-refuses-available-"+t.Name())
+			objects := newObjectStore()
+			before, err := s.writeFile(tier.store, objects, dir.ID, "report.txt", "report")
+			if err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			_, err = tier.store.Write(s.ctx, s.db, objects, strings.NewReader("other"), 5, func(tx *sqlate.Tx) (blobfs.File, error) {
+				f, _, err := tier.store.Files.Ensure(s.ctx, tx, acceptAll{}, dir.ID, "report.txt", "text/plain")
+				return f, err
+			})
+			var te *blobfs.TransitionError
+			if !errors.As(err, &te) || te.From != blobfs.StatusAvailable || errors.Is(err, blobfs.ErrDeleting) {
+				t.Errorf("Write over an available row = %v, want its TransitionError", err)
+			}
+			if objects.puts != 1 || objects.calls != 0 || objects.objects[before.Key] != "report" {
+				t.Errorf("the refused Write left %d puts, %d deletes, and %q under the key, want the first write's alone", objects.puts, objects.calls, objects.objects[before.Key])
+			}
+			if after := s.file(t, before.ID); !equalFile(before, after) {
+				t.Errorf("the refused Write changed the row to\n%+v\nfrom\n%+v", after, before)
+			}
+		})
+	}
+}
+
 // protocolEnsureCreates checks Ensure under a fixed id: the first call
 // creates, stores, and reports stored; a second finds the row available
 // and returns it as it stands, nothing put and stored false.
@@ -307,6 +340,74 @@ func (s *suite) protocolEnsureDeleting(t *testing.T) {
 				t.Errorf("the refused Ensure changed the row to\n%+v\nfrom\n%+v", after, deleting)
 			}
 			s.purge(t, id)
+		})
+	}
+}
+
+// protocolEnsureShares checks two Ensures sharing one row: a second
+// Ensure run inside the first one's put resumes the pending row and
+// completes it, stored true; the first's completion then finds it
+// completed and returns the row as found, stored false, nothing
+// abandoned, and one row under the id.
+func (s *suite) protocolEnsureShares(t *testing.T) {
+	for _, tier := range s.storesUnder() {
+		t.Run(tier.name, func(t *testing.T) {
+			dir := s.mkdir(t, "ensure-shares-"+t.Name())
+			id := blobfs.NewID()
+			first, second := newObjectStore(), newObjectStore()
+			var won blobfs.File
+			first.beforePut = func(string) {
+				var stored bool
+				var err error
+				if won, stored, err = s.ensureWrite(tier.store, second, dir.ID, "seed.txt", id, "seed"); err != nil || !stored {
+					t.Errorf("the second Ensure inside the put = %v, %v, want the row resumed and stored", stored, err)
+				}
+			}
+			got, stored, err := s.ensureWrite(tier.store, first, dir.ID, "seed.txt", id, "seed")
+			if err != nil || stored || !equalFile(got, won) {
+				t.Fatalf("the first Ensure = %+v, %v, %v, want the second's row\n%+v\nfound, stored false", got, stored, err, won)
+			}
+			s.wantWritten(t, second, got, "seed")
+			if first.objects[got.Key] != "seed" || first.calls != 0 || second.calls != 0 {
+				t.Errorf("the first put stored %q and the two deleted %d and %d, want the same bytes and nothing abandoned", first.objects[got.Key], first.calls, second.calls)
+			}
+			if n := s.count(t, s.db, "SELECT COUNT(*) FROM blobfs_file WHERE id = "+s.db.Dialect().Placeholder(1), id); n != 1 {
+				t.Errorf("%d rows under the id, want one", n)
+			}
+		})
+	}
+}
+
+// protocolEnsureLostInsert checks the lost insert's retry: a begin whose
+// insert loses to a row a competing writer committed under the id has its
+// transaction aborted, and Ensure runs begin once more in a fresh one,
+// which resumes the competing row and completes it, stored true.
+func (s *suite) protocolEnsureLostInsert(t *testing.T) {
+	for _, tier := range s.storesUnder() {
+		t.Run(tier.name, func(t *testing.T) {
+			dir := s.mkdir(t, "ensure-lost-insert-"+t.Name())
+			id := blobfs.NewID()
+			objects := newObjectStore()
+			var begun int
+			var competing blobfs.File
+			begin := func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
+				if begun++; begun > 1 {
+					return tier.store.Files.Ensure(s.ctx, tx, acceptAll{}, dir.ID, "seed.txt", "text/plain", data.WithID(id))
+				}
+				// The competing writer commits between this writer's lookup,
+				// which found nothing, and its insert.
+				var err error
+				if competing, err = tier.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "seed.txt", "text/plain", data.WithID(id)); err != nil {
+					t.Errorf("the competing Create: %v", err)
+				}
+				f, err := tier.store.Files.Create(s.ctx, tx, acceptAll{}, dir.ID, "seed.txt", "text/plain", data.WithID(id))
+				return f, data.WriteCreated, err
+			}
+			got, stored, err := tier.store.Ensure(s.ctx, s.db, objects, id, strings.NewReader("seed"), 4, begin)
+			if err != nil || !stored || begun != 2 || got.ID != id || got.Version != competing.Version+1 || !got.CreatedAt.Equal(competing.CreatedAt) {
+				t.Fatalf("Ensure after a lost insert = %+v, %v, %v after %d begins, want the competing row resumed and stored", got, stored, err, begun)
+			}
+			s.wantWritten(t, objects, got, "seed")
 		})
 	}
 }

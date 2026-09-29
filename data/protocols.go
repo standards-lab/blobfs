@@ -30,23 +30,34 @@ type ObjectStore interface {
 
 // Write runs the two-phase write of the file begin creates, with size bytes
 // of body as its object. It runs begin in one transaction on db, where the
-// caller checks its own scope and runs Files.Create or Files.Ensure, so the
-// pending row commits before any byte is stored. It then puts body under
-// the row's Key through objects, outside any transaction, in the content
-// type the row declares, and completes the row on the pool, returning it
-// available. begin's error, or its transaction's, is returned as it came.
-// See The two-phase write in docs/concepts.md.
+// caller checks its own scope and runs Files.Create, so the pending row
+// commits before any byte is stored. It then puts body under the row's Key
+// through objects, outside any transaction, in the content type the row
+// declares, and completes the row on the pool, returning it available.
+// begin's error, or its transaction's, is returned as it came. The
+// retry-safe form, for a file under a fixed id, is Ensure. See The
+// two-phase write in docs/concepts.md.
 //
-// A put or a completion that fails abandons the write through Remove, so
-// the name is free for a retry; the abandon and the delete below run under
-// ctx without its cancellation, so a caller that hangs up mid-body still
-// leaves nothing. An abandon that fails too leaves the row pending or
-// deleting, a stale row the sweep reclaims; begin therefore inserts no row
-// that references the file, since a reference would refuse the reclaim's
-// purge. A completion refused with blobfs.ErrDeleting or
-// blobfs.ErrNotFound means a sweep reached the row before the put landed:
-// the write deletes the object it put, which that sweep could not have
-// deleted, and leaves the row to the sweep.
+// Write writes only a pending row: a row begin returns in any other status,
+// such as an available row Files.Ensure found, is refused before any put,
+// and nothing is removed.
+//
+// A put or a completion that fails abandons the write through Remove at the
+// row's pending version, so the name is free for a retry, and a row another
+// writer completed or moved meanwhile is left as it stands. The abandon and
+// the delete below run under ctx without its cancellation, so a caller that
+// hangs up mid-body still leaves nothing; ctx's cancellation is all they
+// drop, so the consumer's adapter and pool bound their own calls. An
+// abandon that fails too leaves the row pending or deleting, a stale row the
+// sweep reclaims; begin therefore inserts no row that references the file,
+// since a reference would refuse the reclaim's purge. A completion refused
+// with blobfs.ErrDeleting or blobfs.ErrNotFound means a sweep reached the
+// row before the put landed: the write deletes the object it put, which
+// that sweep could not have deleted, and leaves the row to the sweep.
+//
+// Refusals: begin's; a blobfs.TransitionError to blobfs.StatusAvailable for
+// a row that is not pending, or a blobfs.DeletingError wrapping it for a
+// deleting row; the put's; Files.Complete's.
 func (s *Store) Write(ctx context.Context, db *sqlate.DB, objects ObjectStore, body io.Reader, size int64, begin func(*sqlate.Tx) (blobfs.File, error)) (_ blobfs.File, err error) {
 	file, err := db.Transact(ctx, begin)
 	if err != nil {
@@ -64,9 +75,13 @@ func (s *Store) Write(ctx context.Context, db *sqlate.DB, objects ObjectStore, b
 // returned as it stands, nothing put. begin's error, or its transaction's,
 // is returned as it came.
 //
-// A row found under another id is not the caller's: an upload of the same
-// name, pending or complete. Ensure leaves it as it stands, nothing put
-// and nothing removed, and reports blobfs.ErrNameTaken.
+// Ensure checks the id of the row begin returns, whatever the outcome,
+// before any put. A row found under another id is not the caller's: an
+// upload of the same name, pending or complete. Ensure leaves it as it
+// stands, nothing put and nothing removed, and reports
+// blobfs.ErrNameTaken. A row begin created under another id, since it ran
+// Files.Ensure without WithID(id), is abandoned at its version, nothing
+// put, and reported naming both ids.
 //
 // Two writers may race for one row. The loser of the insert has its
 // transaction aborted by the violation, so begin runs once more, in a
@@ -75,15 +90,18 @@ func (s *Store) Write(ctx context.Context, db *sqlate.DB, objects ObjectStore, b
 // resumes it, so the two may share one row. The abandon begins the delete
 // only at the pending version it holds, so it never removes a row the
 // other writer completed. When the other writer completed the row first,
-// the completion finds a stale version or a row already available, and
-// Ensure reads the row back and returns it as found, stored false. The two
-// puts store the same bytes under the same key, all or nothing, so the
-// object is whole whichever lands last. The key is the row's id and name,
-// so a write under its fixed id after a reset of the tables, but not of
-// the store, puts over the object the earlier write left and completes.
+// the completion or the abandon finds a stale version or a row already
+// available, and Ensure reads the row back and returns it as found, stored
+// false. A completion refused as deleting or not found is no such race and
+// is returned as it came. The two puts store the same bytes under the same
+// key, all or nothing, so the object is whole whichever lands last. The key
+// is the row's id and name, so a write under its fixed id after a reset of
+// the tables, but not of the store, puts over the object the earlier write
+// left and completes.
 //
 // Refusals: blobfs.IDError before any SQL; begin's; blobfs.ErrNameTaken
-// for a row under another id; a blobfs.DeletingError for a deleting row
+// for a row found under another id; an error naming both ids for a row
+// created under another id; a blobfs.DeletingError for a deleting row
 // under id; Write's.
 func (s *Store) Ensure(ctx context.Context, db *sqlate.DB, objects ObjectStore, id string, body io.Reader, size int64, begin func(*sqlate.Tx) (blobfs.File, WriteOutcome, error)) (_ blobfs.File, stored bool, err error) {
 	canonical, err := blobfs.ParseID(id)
@@ -110,16 +128,29 @@ func (s *Store) Ensure(ctx context.Context, db *sqlate.DB, objects ObjectStore, 
 	}
 	defer wrap(&err, "ensure file %s", canonical)
 	switch {
-	case e.outcome != WriteCreated && e.file.ID != canonical:
+	case e.file.ID != canonical && e.outcome == WriteCreated:
+		err := fmt.Errorf("begin created the file %s, not %s", e.file.ID, canonical)
+		if rerr := s.remove(context.WithoutCancel(ctx), db, objects, e.file.ID, &e.file.Version); rerr != nil {
+			err = errors.Join(err, fmt.Errorf("abandon: %w", rerr))
+		}
+		return blobfs.File{}, false, err
+	case e.file.ID != canonical:
 		return blobfs.File{}, false, fmt.Errorf("the file %s holds the name: %w", e.file.ID, blobfs.ErrNameTaken)
 	case e.outcome == WritePresent && e.file.Status != blobfs.StatusAvailable:
 		return blobfs.File{}, false, s.Files.dirs.deletingFile(ctx, db, e.file, nil)
 	case e.outcome == WritePresent:
 		return e.file, false, nil
 	}
-	file, err := s.store(ctx, db, objects, body, size, e.file, AtVersion(e.file.Version))
-	if !errors.Is(err, query.ErrVersionMismatch) && !errors.Is(err, blobfs.ErrInvalidTransition) {
-		return file, err == nil, err
+	file, err := s.store(ctx, db, objects, body, size, e.file)
+	switch {
+	case err == nil:
+		return file, true, nil
+	case errors.Is(err, blobfs.ErrDeleting), errors.Is(err, blobfs.ErrNotFound):
+		// A sweep reached the row, or it is gone: no writer completed it.
+		// Checked first, since a DeletingError wraps its TransitionError.
+		return blobfs.File{}, false, err
+	case !errors.Is(err, query.ErrVersionMismatch) && !errors.Is(err, blobfs.ErrInvalidTransition):
+		return blobfs.File{}, false, err
 	}
 	// Another writer completed the row first.
 	found, ferr := s.Files.byID.One(ctx, db, query.Args{"id": e.file.ID})
@@ -129,20 +160,27 @@ func (s *Store) Ensure(ctx context.Context, db *sqlate.DB, objects ObjectStore, 
 	return found, false, nil
 }
 
-// store is the write after its first transaction: the put of body under
-// the pending file's key, outside any transaction, then the completion on
-// the pool, with the abandon and the delete Write describes, its errors
-// bare. guard is the abandon's version guard: none for a row the writer
-// holds alone, the pending version for a row Ensure may share. A guarded
-// write abandons nothing when its completion finds the version moved on or
-// the row available, since another writer completed it.
-func (s *Store) store(ctx context.Context, db *sqlate.DB, objects ObjectStore, body io.Reader, size int64, file blobfs.File, guard ...VersionOption) (blobfs.File, error) {
+// store is the write after its first transaction: the refusal of a row
+// that is not pending, the put of body under the pending file's key,
+// outside any transaction, then the completion on the pool, with the
+// abandon and the delete Write describes, its errors bare. The abandon
+// begins the delete only at the pending version, and a completion that
+// finds the version moved on or the row available abandons nothing, since
+// another writer moved or completed the row, which a guarded abandon would
+// find too.
+func (s *Store) store(ctx context.Context, db *sqlate.DB, objects ObjectStore, body io.Reader, size int64, file blobfs.File) (blobfs.File, error) {
+	if err := blobfs.Transition(file.Status, blobfs.StatusAvailable); err != nil {
+		if !file.Status.Mutable() {
+			return blobfs.File{}, s.Files.dirs.deletingFile(ctx, db, file, err)
+		}
+		return blobfs.File{}, err
+	}
 	// The cleanup outlives ctx's cancellation: a caller that hangs up
 	// mid-body cancels ctx, and the abandon and the delete must still run
 	// rather than leave the row to the stale reclaim.
 	cleanup := context.WithoutCancel(ctx)
 	abandon := func(err error) (blobfs.File, error) {
-		if rerr := s.remove(cleanup, db, objects, file.ID, atVersion(guard)); rerr != nil {
+		if rerr := s.remove(cleanup, db, objects, file.ID, &file.Version); rerr != nil {
 			return blobfs.File{}, errors.Join(err, fmt.Errorf("abandon: %w", rerr))
 		}
 		return blobfs.File{}, err
@@ -158,7 +196,7 @@ func (s *Store) store(ctx context.Context, db *sqlate.DB, objects ObjectStore, b
 			return blobfs.File{}, errors.Join(err, fmt.Errorf("delete the object: %w", derr))
 		}
 		return blobfs.File{}, err
-	case len(guard) > 0 && (errors.Is(err, query.ErrVersionMismatch) || errors.Is(err, blobfs.ErrInvalidTransition)):
+	case errors.Is(err, query.ErrVersionMismatch), errors.Is(err, blobfs.ErrInvalidTransition):
 		return blobfs.File{}, err
 	case err != nil:
 		return abandon(err)

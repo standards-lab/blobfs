@@ -27,22 +27,30 @@ const (
 )
 
 // objectStore is an ObjectStore over a map: it records its puts and
-// deletes, and fails a put with putErr and a delete with deleteErr when
-// they are set.
+// deletes, and the error of the context each delete ran under, and fails a
+// put with putErr and a delete with deleteErr when they are set. With
+// cancel set, a put cancels the caller's context and fails with its error,
+// as a caller that hangs up mid-body.
 type objectStore struct {
-	objects   map[string]string
-	puts      int
-	lastType  string
-	deletes   []string
-	putErr    error
-	deleteErr error
+	objects    map[string]string
+	puts       int
+	lastType   string
+	deletes    []string
+	deleteCtxs []error
+	putErr     error
+	deleteErr  error
+	cancel     context.CancelFunc
 }
 
 func newObjectStore() *objectStore { return &objectStore{objects: map[string]string{}} }
 
-func (o *objectStore) PutObject(_ context.Context, key string, body io.Reader, contentType string, size int64) (blobfs.Object, error) {
+func (o *objectStore) PutObject(ctx context.Context, key string, body io.Reader, contentType string, size int64) (blobfs.Object, error) {
 	o.puts++
 	o.lastType = contentType
+	if o.cancel != nil {
+		o.cancel()
+		return blobfs.Object{}, ctx.Err()
+	}
 	if o.putErr != nil {
 		return blobfs.Object{}, o.putErr
 	}
@@ -57,8 +65,9 @@ func (o *objectStore) PutObject(_ context.Context, key string, body io.Reader, c
 	return blobfs.Object{Size: size, ContentType: contentType, ETag: `"etag"`}, nil
 }
 
-func (o *objectStore) DeleteObject(_ context.Context, key string) error {
+func (o *objectStore) DeleteObject(ctx context.Context, key string) error {
 	o.deletes = append(o.deletes, key)
+	o.deleteCtxs = append(o.deleteCtxs, ctx.Err())
 	if o.deleteErr != nil {
 		return o.deleteErr
 	}
@@ -151,8 +160,8 @@ func TestWriteRefusedBegin(t *testing.T) {
 }
 
 // TestWriteFailedPut checks a failed put abandons the write through the
-// delete: the row's delete begun at no version, the object's delete, and
-// the purge; an abandon the store refuses too leaves the row deleting and
+// delete: the row's delete begun at its pending version, the object's
+// delete, and the purge; an abandon the store refuses too leaves the row deleting and
 // reports both failures.
 func TestWriteFailedPut(t *testing.T) {
 	ctx := context.Background()
@@ -166,8 +175,8 @@ func TestWriteFailedPut(t *testing.T) {
 	if want := "begin query commit begin query commit exec"; ops(rec) != want {
 		t.Errorf("ops = %q, want %q", ops(rec), want)
 	}
-	if del := rec.Calls()[4]; !strings.HasPrefix(del.SQL, "UPDATE blobfs_file") || !slices.Equal(del.Args, []any{protocolFile, nil}) {
-		t.Errorf("the delete is %q %v, want the pending row's, at no version", del.SQL, del.Args)
+	if del := rec.Calls()[4]; !strings.HasPrefix(del.SQL, "UPDATE blobfs_file") || !slices.Equal(del.Args, []any{protocolFile, int64(1)}) {
+		t.Errorf("the delete is %q %v, want the pending row's, at its version", del.SQL, del.Args)
 	}
 	if !slices.Equal(objects.deletes, []string{protocolKey}) {
 		t.Errorf("deletes = %v, want the abandoned key", objects.deletes)
@@ -240,6 +249,109 @@ func TestWriteFailedCompletion(t *testing.T) {
 	wantDone(t, rec)
 }
 
+// found is a write's first step whose begin runs Files.Ensure, which
+// may find a row that is no longer pending.
+func found(ctx context.Context, s *data.Store) func(*sqlate.Tx) (blobfs.File, error) {
+	return func(tx *sqlate.Tx) (blobfs.File, error) {
+		f, _, err := s.Files.Ensure(ctx, tx, accepting{}, protocolDir, "report.txt", "text/plain")
+		return f, err
+	}
+}
+
+// TestWriteRefusesARowNotPending checks Write writes only a pending row:
+// an available row begin found is refused with its TransitionError, and a
+// deleting one with its DeletingError wrapping it, each before any put,
+// nothing removed.
+func TestWriteRefusesARowNotPending(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusAvailable, 2))
+	objects := newObjectStore()
+	_, err := s.Write(ctx, db, objects, strings.NewReader("report"), 6, found(ctx, s))
+	var te *blobfs.TransitionError
+	if !errors.As(err, &te) || te.From != blobfs.StatusAvailable || te.To != blobfs.StatusAvailable || errors.Is(err, blobfs.ErrDeleting) ||
+		!strings.HasPrefix(err.Error(), "data: write file "+protocolFile+": ") {
+		t.Errorf("Write of an available row = %v, want its TransitionError to available, named", err)
+	}
+	if objects.puts != 0 || len(objects.deletes) != 0 || ops(rec) != "begin query commit" {
+		t.Errorf("puts = %d, deletes = %v, ops = %q, want the first transaction alone", objects.puts, objects.deletes, ops(rec))
+	}
+	wantDone(t, rec)
+
+	s, db, rec = openStore(t, single, protocolRow(blobfs.StatusDeleting, 3), protocolDirectory())
+	_, err = s.Write(ctx, db, objects, strings.NewReader("report"), 6, found(ctx, s))
+	wantDeleting(t, "Write of a deleting row", err, false, protocolFile)
+	if !errors.As(err, &te) || te.From != blobfs.StatusDeleting {
+		t.Errorf("Write of a deleting row = %v, want its TransitionError from deleting", err)
+	}
+	if objects.puts != 0 || len(objects.deletes) != 0 || ops(rec) != "begin query commit query" {
+		t.Errorf("puts = %d, deletes = %v, ops = %q, want the directory's read alone past the first transaction", objects.puts, objects.deletes, ops(rec))
+	}
+	wantDone(t, rec)
+}
+
+// hangUp is a context the caller abandons once the database has answered
+// every scripted statement: from then on it is done and reports
+// context.Canceled, so whatever runs after the last statement runs with
+// the caller gone.
+type hangUp struct {
+	context.Context
+	rec *sqltest.Recorder
+}
+
+var hungUp = func() chan struct{} { c := make(chan struct{}); close(c); return c }()
+
+func (h hangUp) Done() <-chan struct{} {
+	if h.rec.Pending() == 0 {
+		return hungUp
+	}
+	return nil
+}
+
+func (h hangUp) Err() error {
+	if h.rec.Pending() == 0 {
+		return context.Canceled
+	}
+	return nil
+}
+
+// TestWriteCleansUpAfterCancellation checks the cleanup outlives the
+// caller's context: a put that fails because the caller hung up is still
+// abandoned, the row's delete, the object's, and the purge all run; and a
+// completion refused as deleting still deletes the object put when the
+// caller hangs up before the delete, each delete under a context that is
+// not cancelled.
+func TestWriteCleansUpAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1})
+	objects := newObjectStore()
+	objects.cancel = cancel
+	if _, err := s.Write(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Write = %v, want the put's cancellation", err)
+	}
+	if want := "begin query commit begin query commit exec"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q: the abandon run whole", ops(rec), want)
+	}
+	if !slices.Equal(objects.deletes, []string{protocolKey}) || !slices.Equal(objects.deleteCtxs, []error{nil}) {
+		t.Errorf("deletes = %v under %v, want the abandoned key under a live context", objects.deletes, objects.deleteCtxs)
+	}
+	wantDone(t, rec)
+
+	s, db, rec = openStore(t, single, protocolRow(blobfs.StatusPending, 1), noFile(), protocolRow(blobfs.StatusDeleting, 2), protocolDirectory())
+	objects = newObjectStore()
+	caller := hangUp{context.Background(), rec}
+	// The directory's read is the last statement, so the caller has hung
+	// up by the time the refusal is classified; a read the hang-up cuts
+	// short leaves the refusal untyped, still ErrDeleting.
+	if _, err := s.Write(caller, db, objects, strings.NewReader("report"), 6, create(caller, s, allow)); !errors.Is(err, blobfs.ErrDeleting) {
+		t.Fatalf("Write = %v, want ErrDeleting", err)
+	}
+	if caller.Err() == nil || !slices.Equal(objects.deletes, []string{protocolKey}) || !slices.Equal(objects.deleteCtxs, []error{nil}) || objects.stored() {
+		t.Errorf("caller %v, deletes = %v under %v, want the put object deleted under a live context after the hang-up", caller.Err(), objects.deletes, objects.deleteCtxs)
+	}
+	wantDone(t, rec)
+}
+
 // ensure is a seed's first step as its begin runs it: Files.Ensure of the
 // file under the fixed id.
 func ensure(ctx context.Context, s *data.Store) func(*sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
@@ -306,7 +418,8 @@ func TestEnsureWritePresent(t *testing.T) {
 // TestEnsureWriteUnderAnotherID checks a row found by the name under
 // another id, an upload of the same name, is left as it stands, nothing
 // put over its object and nothing removed, and reported as the taken
-// name.
+// name; a row a begin without WithID(id) created under another id is
+// abandoned at its version, nothing put, and reported naming both ids.
 func TestEnsureWriteUnderAnotherID(t *testing.T) {
 	const other = "00000000-0000-7000-8000-0000000000c1"
 	for _, status := range []blobfs.Status{blobfs.StatusPending, blobfs.StatusAvailable, blobfs.StatusDeleting} {
@@ -323,6 +436,30 @@ func TestEnsureWriteUnderAnotherID(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("Created", func(t *testing.T) {
+		ctx := context.Background()
+		s, db, rec := openStore(t, single,
+			noFile(), fileIn(other, protocolDir, "report.txt", blobfs.StatusPending, 1), // created under a minted id
+			fileIn(other, protocolDir, "report.txt", blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1}, // abandoned
+		)
+		objects := newObjectStore()
+		minted := func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
+			return s.Files.Ensure(ctx, tx, accepting{}, protocolDir, "report.txt", "text/plain")
+		}
+		got, stored, err := s.Ensure(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, minted)
+		if err == nil || errors.Is(err, blobfs.ErrNameTaken) || stored || got.ID != "" ||
+			!strings.Contains(err.Error(), other) || !strings.Contains(err.Error(), protocolFile) {
+			t.Fatalf("Ensure = %+v, %v, %v, want a refusal naming both ids", got, stored, err)
+		}
+		if want := "begin query query commit begin query commit exec"; objects.puts != 0 || ops(rec) != want {
+			t.Errorf("puts = %d, ops = %q, want nothing put and %q", objects.puts, ops(rec), want)
+		}
+		if del := rec.Calls()[5]; !slices.Equal(del.Args, []any{other, int64(1)}) {
+			t.Errorf("the delete bound %v, want the created row at its version", del.Args)
+		}
+		wantDone(t, rec)
+	})
 }
 
 // TestEnsureWriteRaces checks two writers sharing a row: a completion the
@@ -380,6 +517,63 @@ func TestEnsureWriteFailedPut(t *testing.T) {
 		t.Errorf("the delete is %q %v, want the pending row's, at its version", del.SQL, del.Args)
 	}
 	wantDone(t, rec)
+}
+
+// TestEnsureWriteAbandonAfterTheOtherWriter checks a failed put whose
+// abandon, at the pending version, finds the row the other writer
+// completed: nothing removed, and the row read back and returned as found.
+func TestEnsureWriteAbandonAfterTheOtherWriter(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, single, slices.Concat(
+		[]sqltest.Response{protocolRow(blobfs.StatusPending, 1)},      // resumed
+		unchangedFile(single, protocolRow(blobfs.StatusAvailable, 2)), // the abandon at 1 finds it completed
+		[]sqltest.Response{protocolRow(blobfs.StatusAvailable, 2)},    // the row read back
+	)...)
+	objects := newObjectStore()
+	objects.putErr = errors.New("put failed")
+	got, stored, err := s.Ensure(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+	if err != nil || stored || got.Status != blobfs.StatusAvailable || got.Version != 2 {
+		t.Fatalf("Ensure = %+v, %v, %v, want the other writer's row, found", got, stored, err)
+	}
+	if want := "begin query commit begin query query rollback query"; len(objects.deletes) != 0 || ops(rec) != want {
+		t.Errorf("deletes = %v, ops = %q, want nothing removed and %q", objects.deletes, ops(rec), want)
+	}
+	wantDone(t, rec)
+}
+
+// TestEnsureWriteRefusedCompletion checks a completion refused as
+// deleting or not found is returned as it came, the object put deleted
+// again, with no read back as if another writer had won.
+func TestEnsureWriteRefusedCompletion(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		read []sqltest.Response
+		want error
+		ops  string
+	}{
+		{"Deleting", []sqltest.Response{protocolRow(blobfs.StatusDeleting, 2), protocolDirectory()}, blobfs.ErrDeleting, "begin query commit query query query"},
+		{"Removed", []sqltest.Response{noFile()}, blobfs.ErrNotFound, "begin query commit query query"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			s, db, rec := openStore(t, single, append([]sqltest.Response{protocolRow(blobfs.StatusPending, 1), noFile()}, c.read...)...)
+			objects := newObjectStore()
+			_, stored, err := s.Ensure(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+			if !errors.Is(err, c.want) || stored {
+				t.Fatalf("Ensure = %v, %v, want %v", stored, err, c.want)
+			}
+			if c.want == blobfs.ErrDeleting {
+				wantDeleting(t, "Ensure across a delete", err, false, protocolFile)
+				if errors.Is(err, blobfs.ErrNotFound) {
+					t.Errorf("Ensure across a delete = %v, want no ErrNotFound beside it", err)
+				}
+			}
+			if !slices.Equal(objects.deletes, []string{protocolKey}) || objects.stored() || ops(rec) != c.ops {
+				t.Errorf("deletes = %v, ops = %q, want the object deleted and %q", objects.deletes, ops(rec), c.ops)
+			}
+			wantDone(t, rec)
+		})
+	}
 }
 
 // TestEnsureWriteRefusesAnID checks an id blobfs.ParseID refuses is

@@ -2,6 +2,7 @@ package data_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"slices"
 	"strings"
@@ -84,6 +85,13 @@ func TestHoldFile(t *testing.T) {
 	marked := directoryIn("S", blobfs.RootID, "s", blobfs.DirectoryStatusDeleting, 2)
 	_, err = hold(t, []sqltest.Response{{Affected: 0}, fileIn("F", "S", "a.txt", blobfs.StatusDeleting, 3), marked})
 	wantDeleting(t, "Hold of a file its branch's mark reached", err, true, "S")
+	// A directory gone since the row was read, as a sweep of its branch
+	// leaves it, is the directory's refusal, with no sql.ErrNoRows.
+	_, err = hold(t, []sqltest.Response{{Affected: 0}, fileIn("F", "S", "a.txt", blobfs.StatusDeleting, 3), noDirectory()})
+	wantDeleting(t, "Hold of a file whose directory is gone", err, true, "S")
+	if errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("Hold of a file whose directory is gone = %v, want no sql.ErrNoRows", err)
+	}
 	// A directory that cannot be read leaves the refusal untyped, the
 	// read's error beside it.
 	errRead := errors.New("the connection dropped")

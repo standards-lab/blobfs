@@ -17,6 +17,7 @@ changelog covers this sub-module only; the base module keeps its own.
 
 - The scripted test of the hold also scripts the read of the file's directory, which blobfs now
   runs when it refuses a deleting file, to tell the file's own delete from its branch's.
+- The module requires `sqlate` v0.4.1, as the base module does.
 
 ## [v0.2.0] - 2026-09-28
 
