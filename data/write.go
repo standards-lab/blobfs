@@ -125,13 +125,17 @@ func (r directoryReads) deletingFile(ctx context.Context, sess sqlate.Session, f
 }
 
 // refusedUnder classifies an insert that selected no row from parentID by
-// reading the parent: blobfs.ErrNotFound or the parent's
-// blobfs.DeletingError.
-func (r directoryReads) refusedUnder(ctx context.Context, sess sqlate.Session, parentID string) error {
+// reading the parent, blobfs.ErrNotFound or the parent's
+// blobfs.DeletingError, and then by held, the refusal of a deleting row
+// that holds the name, or nil when none does.
+func (r directoryReads) refusedUnder(ctx context.Context, sess sqlate.Session, parentID string, held func() error) error {
 	if err := r.active(ctx, sess, parentID); err != nil {
 		return err
 	}
-	return fmt.Errorf("the insert selected no row, yet the directory %s is %s", parentID, blobfs.DirectoryStatusActive)
+	if err := held(); err != nil {
+		return err
+	}
+	return fmt.Errorf("the insert selected no row, yet the directory %s is %s and no deleting row holds the name", parentID, blobfs.DirectoryStatusActive)
 }
 
 // refusedMove classifies a move of a row that is not deleting whose update

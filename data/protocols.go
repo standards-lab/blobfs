@@ -79,7 +79,9 @@ func (s *Store) Write(ctx context.Context, db *sqlate.DB, objects ObjectStore, b
 // before any put. A row found under another id is not the caller's: an
 // upload of the same name, pending or complete. Ensure leaves it as it
 // stands, nothing put and nothing removed, and reports
-// blobfs.ErrNameTaken. A row begin created under another id, since it ran
+// blobfs.ErrNameTaken. A deleting row, under id or another, is reported
+// as its blobfs.DeletingError, as Files.Create reports a name a deleting
+// row holds. A row begin created under another id, since it ran
 // Files.Ensure without WithID(id), is abandoned at its version, nothing
 // put, and reported naming both ids.
 //
@@ -100,9 +102,9 @@ func (s *Store) Write(ctx context.Context, db *sqlate.DB, objects ObjectStore, b
 // left and completes.
 //
 // Refusals: blobfs.IDError before any SQL; begin's; blobfs.ErrNameTaken
-// for a row found under another id; an error naming both ids for a row
-// created under another id; a blobfs.DeletingError for a deleting row
-// under id; Write's.
+// for a pending or available row found under another id; an error naming
+// both ids for a row created under another id; a blobfs.DeletingError for
+// a deleting row found, under id or another; Write's.
 func (s *Store) Ensure(ctx context.Context, db *sqlate.DB, objects ObjectStore, id string, body io.Reader, size int64, begin func(*sqlate.Tx) (blobfs.File, WriteOutcome, error)) (_ blobfs.File, stored bool, err error) {
 	canonical, err := blobfs.ParseID(id)
 	if err != nil {
@@ -134,10 +136,11 @@ func (s *Store) Ensure(ctx context.Context, db *sqlate.DB, objects ObjectStore, 
 			err = errors.Join(err, fmt.Errorf("abandon: %w", rerr))
 		}
 		return blobfs.File{}, false, err
+	case e.outcome == WritePresent && e.file.Status != blobfs.StatusAvailable:
+		// A deleting row, under id or another, is refused by its delete.
+		return blobfs.File{}, false, s.Files.dirs.deletingFile(ctx, db, e.file, nil)
 	case e.file.ID != canonical:
 		return blobfs.File{}, false, fmt.Errorf("the file %s holds the name: %w", e.file.ID, blobfs.ErrNameTaken)
-	case e.outcome == WritePresent && e.file.Status != blobfs.StatusAvailable:
-		return blobfs.File{}, false, s.Files.dirs.deletingFile(ctx, db, e.file, nil)
 	case e.outcome == WritePresent:
 		return e.file, false, nil
 	}

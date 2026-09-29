@@ -159,6 +159,27 @@ func TestWriteRefusedBegin(t *testing.T) {
 	}
 }
 
+// TestWriteUnderADeletingName checks a write under a name a deleting row
+// holds, a stopped write's or delete's, is refused in begin by that row's
+// DeletingError, not as the taken name, with nothing put and no statement
+// failed inside the transaction.
+func TestWriteUnderADeletingName(t *testing.T) {
+	ctx := context.Background()
+	const holder = "00000000-0000-7000-8000-0000000000c1"
+	s, db, rec := openStore(t, single, noFile(), noFile(), protocolDirectory(),
+		fileIn(holder, protocolDir, "report.txt", blobfs.StatusDeleting, 2), protocolDirectory())
+	objects := newObjectStore()
+	_, err := s.Write(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow))
+	if errors.Is(err, blobfs.ErrNameTaken) {
+		t.Errorf("Write = %v, want no ErrNameTaken", err)
+	}
+	wantDeleting(t, "Write under a deleting row's name", err, false, holder)
+	if objects.puts != 0 || ops(rec) != "begin query query query query query rollback" {
+		t.Errorf("puts = %d, ops = %q, want nothing put and begin's reads rolled back", objects.puts, ops(rec))
+	}
+	wantDone(t, rec)
+}
+
 // TestWriteFailedPut checks a failed put abandons the write through the
 // delete: the row's delete begun at its pending version, the object's
 // delete, and the purge; an abandon the store refuses too leaves the row deleting and
@@ -418,11 +439,11 @@ func TestEnsureWritePresent(t *testing.T) {
 // TestEnsureWriteUnderAnotherID checks a row found by the name under
 // another id, an upload of the same name, is left as it stands, nothing
 // put over its object and nothing removed, and reported as the taken
-// name; a row a begin without WithID(id) created under another id is
+// name, or as its DeletingError when it is deleting; a row a begin without WithID(id) created under another id is
 // abandoned at its version, nothing put, and reported naming both ids.
 func TestEnsureWriteUnderAnotherID(t *testing.T) {
 	const other = "00000000-0000-7000-8000-0000000000c1"
-	for _, status := range []blobfs.Status{blobfs.StatusPending, blobfs.StatusAvailable, blobfs.StatusDeleting} {
+	for _, status := range []blobfs.Status{blobfs.StatusPending, blobfs.StatusAvailable} {
 		t.Run(string(status), func(t *testing.T) {
 			ctx := context.Background()
 			s, db, rec := openStore(t, single, fileIn(other, protocolDir, "report.txt", status, 2))
@@ -436,6 +457,23 @@ func TestEnsureWriteUnderAnotherID(t *testing.T) {
 			}
 		})
 	}
+
+	// A deleting row under another id is refused by its delete, not as the
+	// taken name, and is not run again as a concurrent writer's.
+	t.Run(string(blobfs.StatusDeleting), func(t *testing.T) {
+		ctx := context.Background()
+		s, db, rec := openStore(t, single, fileIn(other, protocolDir, "report.txt", blobfs.StatusDeleting, 2), protocolDirectory())
+		objects := newObjectStore()
+		got, stored, err := s.Ensure(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+		if errors.Is(err, blobfs.ErrNameTaken) || stored || got.ID != "" {
+			t.Errorf("Ensure = %+v, %v, %v, want the deleting row's refusal", got, stored, err)
+		}
+		wantDeleting(t, "Ensure over a deleting row under another id", err, false, other)
+		if objects.puts != 0 || len(objects.deletes) != 0 || ops(rec) != "begin query commit query" {
+			t.Errorf("puts = %d, deletes = %v, ops = %q, want the first transaction and the directory's read", objects.puts, objects.deletes, ops(rec))
+		}
+		wantDone(t, rec)
+	})
 
 	t.Run("Created", func(t *testing.T) {
 		ctx := context.Background()

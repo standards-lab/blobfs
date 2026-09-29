@@ -261,6 +261,43 @@ func TestCreateFileRefusals(t *testing.T) {
 			}
 		}
 	}
+	// An insert that selected no row from an active directory reads the
+	// file that holds the name: a deleting holder is refused by its delete,
+	// or by its directory's once the directory is deleting, and never as
+	// the taken name; no deleting holder leaves the refusal unexplained.
+	for _, f := range forms {
+		active := directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusActive, 1)
+		deleting := fileIn("H", "D", "ok.txt", blobfs.StatusDeleting, 2)
+		for _, c := range []struct {
+			name      string
+			reads     []sqltest.Response
+			directory bool
+			id        string
+		}{
+			{"a deleting holder", []sqltest.Response{deleting, active}, false, "H"},
+			{"a holder its branch's mark reached", []sqltest.Response{deleting, directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusDeleting, 2)}, true, "D"},
+			{"no holder", []sqltest.Response{noFile()}, false, ""},
+			{"an available holder", []sqltest.Response{fileIn("H", "D", "ok.txt", blobfs.StatusAvailable, 1)}, false, ""},
+		} {
+			s, db, rec := openStore(t, f, append(append(unchangedFile(f, noFile()), active), c.reads...)...)
+			_, err := s.Files.Create(ctx, db, accepting{}, "D", "ok.txt", "text/plain")
+			if errors.Is(err, blobfs.ErrNameTaken) {
+				t.Errorf("%s: Create under %s = %v, want no ErrNameTaken", f.name, c.name, err)
+			}
+			if c.id != "" {
+				wantDeleting(t, f.name+": Create under "+c.name, err, c.directory, c.id)
+			} else if err == nil || errors.Is(err, blobfs.ErrDeleting) || !strings.Contains(err.Error(), "no deleting row holds the name") {
+				t.Errorf("%s: Create under %s = %v, want the refusal unexplained", f.name, c.name, err)
+			}
+			if reads := callsTo(rec, "SELECT f.id"); len(reads) == 0 || !slices.Equal(reads[len(reads)-1].Args, []any{"D", "ok.txt"}) {
+				t.Errorf("%s: the file reads are %v, want the last by the directory and the name", f.name, reads)
+			}
+			if insert := callsTo(rec, "INSERT INTO blobfs_file")[0]; !strings.Contains(insert.SQL, "h.status = 'deleting'") {
+				t.Errorf("%s: the insert is %q, want the deleting holder's predicate", f.name, insert.SQL)
+			}
+			wantDone(t, rec)
+		}
+	}
 	// A caller-supplied id another row carries does not make an insert that
 	// selected nothing a success: the read found that row unchanged.
 	s, db, _ = openStore(t, fallback, sqltest.Response{Affected: 0}, fileResponse("F", "other.txt", blobfs.StatusAvailable, 1),
@@ -566,9 +603,25 @@ func TestMoveFile(t *testing.T) {
 			}
 			err = move(append(unchangedFile(f, fileIn("F", "S", "a", blobfs.StatusDeleting, 2)), directoryIn("S", blobfs.RootID, "s", blobfs.DirectoryStatusDeleting, 2))...)
 			wantDeleting(t, "Move of a file its branch's mark reached", err, true, "S")
-			// An available row the update left unchanged is reported, not
-			// taken for success.
-			err = move(append(unchangedFile(f, fileResponse("F", "a", blobfs.StatusAvailable, 1)), active...)...)
+			// A deleting file that holds the name in the new directory
+			// refuses the move by its own delete, not as the taken name.
+			s, db, rec = openStore(t, f, append(append(unchangedFile(f, fileResponse("F", "b", blobfs.StatusAvailable, 1)), active...),
+				fileIn("H", "P", "a", blobfs.StatusDeleting, 2), directoryResponse("P", blobfs.RootID, "p", 1))...)
+			_, err = s.Files.Move(ctx, db, "F", "P", "a", 1)
+			if errors.Is(err, blobfs.ErrNameTaken) {
+				t.Errorf("Move onto a deleting holder's name = %v, want no ErrNameTaken", err)
+			}
+			wantDeleting(t, "Move onto a deleting holder's name", err, false, "H")
+			if reads := callsTo(rec, "SELECT f.id"); !slices.Equal(reads[len(reads)-1].Args, []any{"P", "a"}) {
+				t.Errorf("the last file read bound %v, want the new directory and the name", reads[len(reads)-1].Args)
+			}
+			if update := callsTo(rec, "UPDATE blobfs_file")[0]; !strings.Contains(update.SQL, "h.status = 'deleting'") {
+				t.Errorf("the update is %q, want the deleting holder's predicate", update.SQL)
+			}
+			wantDone(t, rec)
+			// An available row the update left unchanged, with no deleting
+			// holder, is reported, not taken for success.
+			err = move(append(append(unchangedFile(f, fileResponse("F", "a", blobfs.StatusAvailable, 1)), active...), noFile())...)
 			if err == nil || errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "available at version 1") {
 				t.Errorf("Move refused over an available row = %v, want an error naming the row's state", err)
 			}

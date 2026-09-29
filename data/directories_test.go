@@ -179,6 +179,43 @@ func TestCreateUnderAClosedParent(t *testing.T) {
 			}
 		}
 	}
+	// Under an active parent, the read of the directory that holds the name
+	// tells a deleting holder, refused by its own delete and never as the
+	// taken name; no deleting holder leaves the refusal unexplained.
+	for _, f := range forms {
+		unchanged := []sqltest.Response{noDirectory(), noDirectory()}
+		if !f.single {
+			unchanged = []sqltest.Response{{Affected: 0}, noDirectory()}
+		}
+		for _, c := range []struct {
+			name     string
+			holder   sqltest.Response
+			deleting bool
+		}{
+			{"a deleting holder", directoryIn("H", "P", "docs", blobfs.DirectoryStatusDeleting, 2), true},
+			{"an active holder", directoryResponse("H", "P", "docs", 1), false},
+			{"no holder", noDirectory(), false},
+		} {
+			s, db, rec := openStore(t, f, append(unchanged, directoryResponse("P", blobfs.RootID, "p", 1), c.holder)...)
+			_, err := s.Directories.Create(ctx, db, "P", "docs")
+			if errors.Is(err, blobfs.ErrNameTaken) {
+				t.Errorf("%s: Create over %s = %v, want no ErrNameTaken", f.name, c.name, err)
+			}
+			if c.deleting {
+				wantDeleting(t, f.name+": Create over "+c.name, err, true, "H")
+			} else if err == nil || errors.Is(err, blobfs.ErrDeleting) || !strings.Contains(err.Error(), "no deleting row holds the name") {
+				t.Errorf("%s: Create over %s = %v, want the refusal unexplained", f.name, c.name, err)
+			}
+			calls := rec.Calls()
+			if last := calls[len(calls)-1]; !slices.Equal(last.Args, []any{"P", "docs"}) {
+				t.Errorf("%s: the last call bound %v, want the read by the parent and the name", f.name, last.Args)
+			}
+			if insert := callsTo(rec, "INSERT INTO blobfs_directory")[0]; !strings.Contains(insert.SQL, "h.status = 'deleting'") {
+				t.Errorf("%s: the insert is %q, want the deleting holder's predicate", f.name, insert.SQL)
+			}
+			wantDone(t, rec)
+		}
+	}
 	s, db, _ := openStore(t, fallback, sqltest.Response{Affected: 0}, childResponse("X", "other"),
 		directoryIn("P", blobfs.RootID, "p", blobfs.DirectoryStatusDeleting, 2))
 	if _, err := s.Directories.Create(ctx, db, "P", "docs", data.WithID(blobfs.NewID())); !errors.Is(err, blobfs.ErrDeleting) {

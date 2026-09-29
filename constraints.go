@@ -25,11 +25,13 @@ const (
 	ConstraintUniqueDirectoryRoot = "blobfs_uq_directory_root"
 
 	// ConstraintUniqueDirectoryParentName is the unique constraint on
-	// blobfs_directory (parent_id, name). A violation is ErrNameTaken.
+	// blobfs_directory (parent_id, name). A violation is ErrNameTaken; a
+	// deleting holder is refused before the constraint is reached.
 	ConstraintUniqueDirectoryParentName = "blobfs_uq_directory_parent_name"
 
 	// ConstraintUniqueFileDirectoryName is the unique constraint on
-	// blobfs_file (directory_id, name). A violation is ErrNameTaken.
+	// blobfs_file (directory_id, name). A violation is ErrNameTaken; a
+	// deleting holder is refused before the constraint is reached.
 	ConstraintUniqueFileDirectoryName = "blobfs_uq_file_directory_name"
 
 	// ConstraintForeignKeyDirectoryParent is the foreign key from

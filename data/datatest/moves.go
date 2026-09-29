@@ -191,6 +191,17 @@ func (s *suite) renameDirectory(t *testing.T) {
 func (s *suite) moveDirectoryRefusals(t *testing.T) {
 	p := s.mkdir(t, "taken-"+t.Name())
 	s.mkdirUnder(t, p.ID, "held")
+	held := s.mkdirUnder(t, p.ID, "held-deleting")
+	if _, err := s.mark(s.store, held.ID); err != nil {
+		t.Fatalf("MarkDeleting: %v", err)
+	}
+	// The marked branch is removed once the refusals ran, so no later
+	// group's sweep finds it.
+	t.Cleanup(func() {
+		if err := s.store.Directories.Delete(s.ctx, s.db, held.ID); err != nil {
+			t.Errorf("remove the deleting holder: %v", err)
+		}
+	})
 	s.insertFile(t, p.ID, "file-name", blobfs.StatusAvailable)
 	d := s.mkdir(t, "mover-"+t.Name())
 	missing := blobfs.NewID()
@@ -204,6 +215,8 @@ func (s *suite) moveDirectoryRefusals(t *testing.T) {
 		constraint string
 	}{
 		{"NameTaken", d.ID, p.ID, "held", d.Version, blobfs.ErrNameTaken, blobfs.ConstraintUniqueDirectoryParentName},
+		{"NameHeldByADeletingDirectory", d.ID, p.ID, "held-deleting", d.Version, blobfs.ErrDeleting, ""},
+		{"NameHeldByADeletingDirectoryAtAStaleVersion", d.ID, p.ID, "held-deleting", d.Version + 1, query.ErrVersionMismatch, ""},
 		{"MissingParent", d.ID, blobfs.NewID(), "d", d.Version, blobfs.ErrNotFound, ""},
 		{"MissingDirectory", missing, blobfs.RootID, "ghost", 1, blobfs.ErrNotFound, ""},
 		{"StaleVersion", d.ID, blobfs.RootID, name("stale-" + t.Name()), d.Version + 1, query.ErrVersionMismatch, ""},
@@ -215,6 +228,12 @@ func (s *suite) moveDirectoryRefusals(t *testing.T) {
 				wantViolation(t, err, c.want, c.constraint)
 			} else if !errors.Is(err, c.want) {
 				t.Errorf("Move = %v, want %v", err, c.want)
+			}
+			if c.want == blobfs.ErrDeleting {
+				wantDeletingKind(t, err, true, held.ID)
+			}
+			if c.want != blobfs.ErrNameTaken && errors.Is(err, blobfs.ErrNameTaken) {
+				t.Errorf("Move = %v, want no ErrNameTaken", err)
 			}
 			_, base := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
 				return s.baseline.Directories.Move(s.ctx, tx, c.id, c.parent, c.dir, c.version)

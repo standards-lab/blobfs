@@ -72,7 +72,7 @@ func TestMoveIsThreeStepsUnderOneLock(t *testing.T) {
 			}
 			update := calls[2]
 			if !strings.HasPrefix(update.SQL, "UPDATE blobfs_directory") || !strings.Contains(update.SQL, "AND parent_id IS NOT NULL") ||
-				strings.Count(update.SQL, "status = 'active'") != 3 ||
+				strings.Count(update.SQL, "status = 'active'") != 3 || !strings.Contains(update.SQL, "h.status = 'deleting'") ||
 				strings.Contains(update.SQL, "RETURNING") != f.single {
 				t.Errorf("the update is %q", update.SQL)
 			}
@@ -149,10 +149,17 @@ func TestMoveClassifies(t *testing.T) {
 			if !errors.Is(err, blobfs.ErrNotFound) || errors.As(err, &ve) {
 				t.Errorf("Move under a missing parent = %v, want ErrNotFound", err)
 			}
-			err = move(append(unchanged(directoryResponse("D", blobfs.RootID, "d", 1)), active...)...)
+			err = move(append(append(unchanged(directoryResponse("D", blobfs.RootID, "d", 1)), active...), noDirectory())...)
 			if err == nil || errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "active at version 1") {
 				t.Errorf("Move refused with every row active = %v, want an error naming the row's state", err)
 			}
+			// A deleting directory that holds the name under the new parent
+			// refuses the move by its own delete, not as the taken name.
+			err = move(append(append(unchanged(directoryResponse("D", blobfs.RootID, "e", 1)), active...), directoryIn("H", "P", "d", blobfs.DirectoryStatusDeleting, 2))...)
+			if errors.Is(err, blobfs.ErrNameTaken) {
+				t.Errorf("Move onto a deleting holder's name = %v, want no ErrNameTaken", err)
+			}
+			wantDeleting(t, "Move onto a deleting holder's name", err, true, "H")
 			for _, c := range []struct {
 				constraint string
 				class      error

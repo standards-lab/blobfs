@@ -7,6 +7,30 @@ the `postgres` sub-module keeps its own.
 
 ## [Unreleased]
 
+### Changed
+
+- **Behavior change in a patch:** a create or a move onto a name a deleting row holds is refused
+  with that row's `*blobfs.DeletingError`, where it was `ErrNameTaken`. The deleting row is one a
+  stopped write or delete left, or a directory a mark reached, and the listings hide it, so
+  `ErrNameTaken` named a row the caller could not see. It applies to `Files.Create`, `Files.Move`,
+  `Directories.Create`, `Directories.Ensure`'s insert, and `Directories.Move`, and so to
+  `Store.Write`'s `begin`; a file holder is reported as the file's own `DeletingError`, or its
+  directory's once the directory is deleting, and a directory holder with `Directory` true. The
+  error does not match `ErrNameTaken`, so a caller that checks `ErrNameTaken` first now reaches
+  its `ErrDeleting` branch, and `Store.Ensure` does not retry it as a concurrent writer's.
+  `ErrNameTaken` stays the refusal of a name a pending or available file, or an active directory,
+  holds, still as a `ViolationError` over the unique constraint.
+- `Store.Ensure` reports a deleting row found under another id as its `DeletingError`, where it
+  was `ErrNameTaken`. `Files.Ensure` still returns a deleting row it finds as `WritePresent`.
+- `create_file`, `create_directory`, `move_file`, and `move_directory` select nothing when a
+  deleting row holds the name, rather than failing the unique constraint, so the refusal runs no
+  failing statement and leaves the caller's transaction usable; the store then reads the name's
+  holder to report it. The success path runs no extra statement. A row that turns deleting after
+  the statement ran is still refused as `ErrNameTaken` by the constraint.
+- `data/datatest`: the create, move, sweep, and protocol groups assert the `DeletingError` for a
+  name a deleting row holds, and the Protocols group adds `WriteUnderADeletingName` and
+  `EnsureNameHeldByADeletingRow`.
+
 ## [v0.3.0] - 2026-09-29
 
 ### Added

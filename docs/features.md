@@ -117,6 +117,20 @@ allows only once the file's row is gone too, as the sweep of its branch leaves t
 as the directory's refusal; a read that fails otherwise leaves the refusal an untyped
 `ErrDeleting` beside the read's error.
 
+A name is unique among the rows of one table in a directory, whatever their status, so a deleting
+row holds its name until it is purged or removed. A create or a move onto a name a deleting row
+holds is refused with that row's `DeletingError`, not `ErrNameTaken`, because the listings hide
+the row that holds the name: a file's own, or its directory's once the directory is deleting,
+and a directory's with `Directory` true. The error does not wrap `ErrNameTaken`: the refusal is
+the delete, which the caller waits out, and not a name the caller must change; a check that
+matches `ErrNameTaken` before `ErrDeleting` keeps the answer "name taken" for live rows only.
+`ErrNameTaken` remains the refusal of a name a pending or available file, or an active
+directory, holds. The statement itself refuses a deleting holder, selecting nothing rather than
+failing the unique constraint, and the store then reads the name's holder to report it, so the
+refusal runs no failing statement and leaves the caller's transaction usable. A row that turns
+deleting after the statement ran, whose mark or delete commits in between, is still refused as
+`ErrNameTaken` by the constraint.
+
 The names of the constraints the persistence package classifies are constants:
 
 | Constant | Name | Violation means |
@@ -210,9 +224,9 @@ directory from the module's own `[export]`.
 | `FindByName(ctx, sess, parentID, name)` | Reads the child directory named `name`, normalized first. A file of the same name is not found. | `NameError`, `ErrNotFound` |
 | `FindByPath(ctx, sess, startID, path)` | Resolves a relative path, `a/b`, below a directory; the empty path is the start. | `ErrInvalidPath` for a leading slash, an empty segment, a trailing slash, or a refused segment (which also matches `ErrInvalidName`); `ErrNotFound` for a missing start, a file's id, or a segment that names no directory, with the failing prefix in the text |
 | `Path(ctx, sess, id)` | Computes the path from the root at read time, `/` for the root and `/a/b` below it, in one recursive statement whose cost is the directory's depth. | `ErrNotFound`; `ErrCycle` when the chain of parents loops |
-| `Create(ctx, sess, parentID, name, opts...)` | Inserts a directory and returns the row. `WithID` supplies the id. | `NameError`, `IDError`, `ErrNameTaken`, `ErrIDTaken`, `ErrNotFound` for the parent, `ErrDeleting` for a deleting parent |
+| `Create(ctx, sess, parentID, name, opts...)` | Inserts a directory and returns the row. `WithID` supplies the id. | `NameError`, `IDError`, `ErrNameTaken` (by an active directory), `ErrIDTaken`, `ErrNotFound` for the parent, `ErrDeleting` for a deleting parent, and a deleting directory's `DeletingError` for a name it holds |
 | `Ensure(ctx, sess, parentID, name, opts...)` | Returns the directory with that name, creating it when none exists, and whether this call created it. | as `Create`; a name already held is found, not refused, except in the race below; a found directory that is deleting is `ErrDeleting` |
-| `Move(ctx, tx, id, parentID, name, version)` | Moves or renames a directory under the tree lock, after the cycle check, guarded by `version`. | `ErrRootDirectory`, `NameError`, `ErrCycle`, `ErrNotFound` for the directory or the new parent, `ErrNameTaken`, `ErrDeleting` when the directory or either parent is deleting, `query.ErrVersionMismatch`; at repeatable read or serializable, `sqlate.ErrSerializationFailure` |
+| `Move(ctx, tx, id, parentID, name, version)` | Moves or renames a directory under the tree lock, after the cycle check, guarded by `version`. | `ErrRootDirectory`, `NameError`, `ErrCycle`, `ErrNotFound` for the directory or the new parent, `ErrNameTaken` (by an active directory), `ErrDeleting` when the directory or either parent is deleting, `query.ErrVersionMismatch`, a deleting directory's `DeletingError` for a name it holds; at repeatable read or serializable, `sqlate.ErrSerializationFailure` |
 | `Delete(ctx, sess, id, opts...)` | Removes one empty directory, only at the version `AtVersion` names when it is given. | `ErrRootDirectory`, `ErrNotEmpty`, `ErrReferenced`, `ErrNotFound`, and with `AtVersion`, `query.ErrVersionMismatch` |
 | `MarkDeleting(ctx, tx, id, opts...)` | The first step of [a branch's delete](#deleting-a-branch): marks the directory, every directory beneath it, and every file in them deleting, and returns the counts it changed as `Marked`. | `ErrRootDirectory`, `ErrNotFound`, and with `AtVersion`, `query.ErrVersionMismatch` |
 | `Deleting(ctx, sess, limit)` | Returns at most `limit` roots of the branches being deleted, in id order. | a `limit` below 1 |
@@ -260,10 +274,10 @@ make directory moves safe.
 |---|---|---|
 | `Find(ctx, sess, id)` | Reads a file by id, whatever its status. | `ErrNotFound` |
 | `FindByName(ctx, sess, directoryID, name)` | Reads the file named `name` in a directory, whatever its status: the last step of resolving a file's path. A directory of the same name is not found. | `NameError`, `ErrNotFound` |
-| `Create(ctx, sess, keys, directoryID, name, contentType, opts...)` | The write's first step: inserts the row as `pending` with its key and the declared content type, and returns it. | `NameError`, `IDError`, `KeyError`, all before any SQL; `ErrNameTaken` (by a row of any status), `ErrIDTaken`, `ErrNotFound` for the directory, `ErrDeleting` for a deleting directory |
+| `Create(ctx, sess, keys, directoryID, name, contentType, opts...)` | The write's first step: inserts the row as `pending` with its key and the declared content type, and returns it. | `NameError`, `IDError`, `KeyError`, all before any SQL; `ErrNameTaken` (by a pending or available row), `ErrIDTaken`, `ErrNotFound` for the directory, `ErrDeleting` for a deleting directory, and a deleting row's `DeletingError` for a name it holds |
 | `Ensure(ctx, sess, keys, directoryID, name, contentType, opts...)` | The retry-safe first step: returns the row that holds the name and a `WriteOutcome`. | as `Create`; a name already held is found, not refused, except in the race `Directories.Ensure` describes |
 | `Complete(ctx, sess, id, version, obj)` | The write's last step: moves the pending row to `available`, records `obj`, and returns the row. | `ErrNotFound`; a `DeletingError` wrapping the `TransitionError` when a delete began; `query.ErrVersionMismatch`; or a `TransitionError` matching `ErrInvalidTransition` when the write was already completed |
-| `Move(ctx, sess, id, directoryID, name, version)` | Moves or renames a file, guarded by `version`. The key is untouched. | `NameError`, `ErrNotFound` for the file or the directory, `ErrNameTaken`, a `DeletingError` when the file, its directory, or the new directory is deleting, `query.ErrVersionMismatch` |
+| `Move(ctx, sess, id, directoryID, name, version)` | Moves or renames a file, guarded by `version`. The key is untouched. | `NameError`, `ErrNotFound` for the file or the directory, `ErrNameTaken` (by a pending or available row), a `DeletingError` when the file, its directory, or the new directory is deleting, `query.ErrVersionMismatch`, a deleting row's `DeletingError` for a name it holds |
 | `Hold(ctx, tx, id, opts...)` | Locks the row for the rest of `tx` without changing it. | `ErrNotFound`, a `DeletingError`, and with `AtVersion`, `query.ErrVersionMismatch` |
 | `Delete(ctx, tx, id, opts...)` | The delete's first step: moves the row to `deleting`, advancing its version once, and returns it with its key. | `ErrNotFound`, and with `AtVersion`, `query.ErrVersionMismatch` |
 | `Purge(ctx, sess, id)` | The delete's last step: removes a deleting row. A row already gone is success. | `ErrNotDeleting`, `ErrReferenced` |
@@ -278,7 +292,9 @@ make directory moves safe.
 | `WritePresent` | an available or deleting row, returned unchanged | the caller's decision: a put refuses the name, a copy skips or replaces it, a seeder skips it |
 
 The lookup-first behavior inside and outside a transaction is `Directories.Ensure`'s. A found
-row keeps its own id and key whatever `WithID` supplied. In a deleting directory, `Ensure`
+row keeps its own id and key whatever `WithID` supplied. A deleting row the lookup finds is
+`WritePresent`, not refused; only a row that committed the name after the lookup and was
+deleting by the insert is refused, as `Create` refuses it. In a deleting directory, `Ensure`
 reports a file the mark reached as `WritePresent`, its row deleting, and refuses a name no row
 holds with `Create`'s `ErrDeleting`. A found row that is not deleting is returned without a read
 of its directory, so a straggler, a row a create left active in a branch being deleted, is
@@ -324,7 +340,7 @@ as it came, and names every other error once as `data: <op> file <id>: ...`.
 | Method | What it does | Refusals |
 |---|---|---|
 | `Write(ctx, db, objects, body, size, begin)` | Runs `begin`, which calls `Files.Create`, in one transaction, so the pending row commits before any byte; puts `body` under the row's `Key` outside any transaction, in the type the row declares; completes the row on the pool and returns it available. | `begin`'s; before any put, a `TransitionError` for a row that is not pending, wrapped in its `DeletingError` for a deleting one; the put's; `Complete`'s |
-| `Ensure(ctx, db, objects, id, body, size, begin)` | The retry-safe `Write` of the file under the fixed `id`, such as a seed's: `begin` calls `Files.Ensure` with `WithID(id)`. Returns the row and whether this call stored its object. | `IDError` before any SQL; `begin`'s; `ErrNameTaken` for a row found under another id; an error naming both ids for a row `begin` created under another id; a `DeletingError` for a deleting row under `id`; `Write`'s |
+| `Ensure(ctx, db, objects, id, body, size, begin)` | The retry-safe `Write` of the file under the fixed `id`, such as a seed's: `begin` calls `Files.Ensure` with `WithID(id)`. Returns the row and whether this call stored its object. | `IDError` before any SQL; `begin`'s; `ErrNameTaken` for a pending or available row found under another id; an error naming both ids for a row `begin` created under another id; a `DeletingError` for a deleting row found, under `id` or another; `Write`'s |
 | `Remove(ctx, db, objects, pick, opts...)` | Runs `pick`, which returns the file's id, and `Files.Delete` under `opts` in one transaction, then `Purge`. | `pick`'s; `Files.Delete`'s; `Purge`'s |
 | `Purge(ctx, db, objects, file)` | The delete's last two steps, for a file whose `Files.Delete` the consumer ran itself: deletes the object under its `Key`, then purges the row. | the object delete's, which leaves the row deleting; `Files.Purge`'s |
 
@@ -351,7 +367,8 @@ leaves the row to the sweep.
 - An available row under `id` is returned as it stands, nothing put, and `stored` is false.
 - `Ensure` checks the id of the row `begin` returns, whatever it did, before any put. A row found
   under another id is not the caller's, such as a client's upload of the same name; it is left
-  as it stands, nothing put and nothing removed, and reported as `ErrNameTaken`. A row `begin`
+  as it stands, nothing put and nothing removed, and reported as `ErrNameTaken`, or, when it is
+  deleting, as its `DeletingError`, which `Ensure` does not retry. A row `begin`
   created under another id, because it ran `Files.Ensure` without `WithID(id)`, is abandoned at
   its version, nothing put, and reported with both ids named.
 - When the first transaction is refused with `ErrNameTaken` or `ErrIDTaken`, because a
@@ -858,7 +875,7 @@ library that a step returns are listed after them.
 | Sentinel | Returned when |
 |---|---|
 | `ErrNotFound` | A read finds no row; a parent or directory an insert or move names does not exist; a step targets a file that does not exist; a mark targets a directory that does not exist; a path segment names no directory. |
-| `ErrNameTaken` | A directory or file of the same kind already holds the name in the target directory, a deleting row included. |
+| `ErrNameTaken` | A directory or file of the same kind that is not deleting already holds the name in the target directory. A deleting row holds its name too, and is reported as its `DeletingError` (see [errors and constraints](#errors-and-constraints)). |
 | `ErrInvalidName` | A name `ValidateName` refuses; a `NameError` carries the reason. |
 | `ErrInvalidPath` | A path that starts with a slash, has an empty segment or a trailing slash, or has a segment `ValidateName` refuses. |
 | `ErrRootDirectory` | A delete, move, or rename of the root, or a second row without a parent. |
@@ -867,7 +884,7 @@ library that a step returns are listed after them.
 | `ErrIDTaken` | An id supplied through `WithID` that a row of the same table already carries. |
 | `ErrNotEmpty` | A directory delete while the directory has child directories or files, deleting ones included. |
 | `ErrInvalidTransition` | A status change the table does not allow, such as `Complete` of a row already available; a `TransitionError` carries the statuses. |
-| `ErrDeleting` | `Complete`, `Move`, or `Hold` of a deleting row, whatever version the caller holds; a create or an ensure under a deleting directory, a move into one or out of one, and the move of a deleting directory; a listing of a deleting directory without `IncludeDeleting`. Each is a `DeletingError` naming whose delete refused. |
+| `ErrDeleting` | `Complete`, `Move`, or `Hold` of a deleting row, whatever version the caller holds; a create or an ensure under a deleting directory, a move into one or out of one, and the move of a deleting directory; a create or a move onto a name a deleting row holds; a listing of a deleting directory without `IncludeDeleting`. Each is a `DeletingError` naming whose delete refused. |
 | `ErrNotDeleting` | `Purge` of a row whose delete has not begun. |
 | `ErrReferenced` | A directory `Delete` or a file `Purge`, or the sweep's removal or purge, refused by a foreign key blobfs does not own: a consumer's row references the row. |
 | `ErrCycle` | A directory move under the directory itself or one of its descendants; `Path` of a directory whose chain of parents loops. |
