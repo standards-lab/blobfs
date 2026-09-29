@@ -168,7 +168,8 @@ An engine's error is returned as `data: new store: engine: ...`.
 - `Write`, `Ensure`, `Remove`, and `Purge` run the two-phase write and delete end to end over
   the consumer's object store; see [the protocols](#the-protocols).
 - `Sweep(ctx, db, objects, opts...)` runs one bounded pass that finishes the deletes callers
-  began, and `SweepUntilDone` runs passes until the work is done; see [the sweep](#the-sweep).
+  began, and the package's `SweepUntilDone` runs passes until the work is done; see [the
+  sweep](#the-sweep).
 
 Every operation takes the context and the session first and passes the session through
 unwrapped, so a call runs on the pool or inside the caller's transaction. The five operations
@@ -497,7 +498,6 @@ all.
 | `Batch(n)` | Bounds the records one pass handles: each file whose object it deletes and whose row it purges, each directory it removes, and each stale row it reclaims counts one. The default is 100; an `n` below 1 is refused before any SQL. |
 | `OnRemoveDirectory(fn)` | Runs `fn(ctx, tx, dir)` in the transaction that removes each directory, before the removal, with the directory as the pass read it. An error rolls the removal back and leaves the branch for the next pass; `fn` runs again on each attempt, with nothing of an aborted attempt left. |
 | `StaleOlderThan(age)` | Also reclaims, from the budget the branches leave, the oldest file rows that are pending or deleting and were last written more than `age` ago: a pending row is moved to deleting at the version the pass read, so a write completed meanwhile is left as it is, then its object is deleted and its row purged. An `age` that is not positive is refused before any SQL. |
-| `AroundPass(fn)` | Runs the pass inside `fn(ctx, pass)`, which calls `pass` once and returns what it returns, so the consumer holds a lock or a gate of its own for the whole pass. An `fn` that returns without calling `pass` runs no pass, and its error is the pass's. |
 
 `SweepResult` counts what the pass did, each row once, by the step that purged it: `Files`
 counts the files of branches, `Directories` the directories removed, and `Stale` the stale rows
@@ -517,17 +517,17 @@ no budget and does not set `More`. A file refused in a branch's walk is not trie
 pass, by the walk or the stale reclaim. The pass returns every refusal joined and wrapped as
 `data: sweep: ...`, with the result counting what it did.
 
-`Store.SweepUntilDone(ctx, db, objects, stop, report, opts...)` is the loop a consumer's worker
-runs: passes of `Sweep` with `opts` while a pass reports `More`, each pass's result and error
-handed to `report` (a nil `report` discards them). It checks `ctx` and `stop` before each pass
-and returns nil once a pass reports no `More` or once `stop` is closed, which ends the loop
-between passes and never interrupts one; a nil `stop` never closes. It returns `ctx`'s error
+`data.SweepUntilDone(ctx, stop, pass, report)` is the loop a consumer's worker runs: `pass`
+while it reports `More`, each pass's result and error handed to `report` (a nil `report`
+discards them). `pass` is one pass as the consumer runs it, a closure that calls `Sweep` with
+its session, object store, and options, inside whatever it holds for a whole pass, such as a
+gate that orders the sweep against its schema changes; `report` is where it logs. The loop
+checks `ctx` and `stop` before each pass and returns nil once a pass reports no `More` or once
+`stop` is closed, which ends the loop between passes and never interrupts one; a nil `stop` never closes. It returns `ctx`'s error
 once `ctx` ends, before a pass or during one, and does not report a pass `ctx` ended. A pass's
 own error never ends the loop: every step is idempotent and the next pass finds the work in the
-database, so what the error means is `report`'s to judge. Options a pass would refuse are
-refused before the first pass. With `AroundPass`, each pass the loop runs is wrapped, which is
-where a consumer takes a gate that orders the sweep against its schema changes; `report` is
-where it logs.
+database, so what the error means is `report`'s to judge. A pass that refuses its options
+reports no `More`, so the loop reports that refusal once and ends.
 
 `StaleOlderThan`'s `age` must exceed the longest write the consumer lets run, counted from the
 write's first step. The age is measured against the consumer's clock and `updated_at` against
@@ -808,7 +808,7 @@ during the put, which deletes the object it put and leaves the row to the sweep,
 begin; `Store.Ensure` creating, returning an available row, resuming a pending one, and refusing a
 name held under another id or a deleting row; `Store.Remove`, its failed object delete and retry,
 and a refusing pick; `Store.Purge` after the caller's own `Files.Delete`; and
-`Store.SweepUntilDone` draining a backlog larger than one batch under `AroundPass`, and running no
+`SweepUntilDone` draining a backlog larger than one batch in counted passes, and running no
 pass once stopped. It runs before any group marks a branch and sweeps the branches it marks
 itself. Branches checks the mark's counts, its convergence and stragglers, its version guard and
 its retry at any version, its wait on a hold, every refusal a deleting directory makes, the

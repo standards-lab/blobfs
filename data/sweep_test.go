@@ -346,6 +346,14 @@ func (p *passes) report(res data.SweepResult, err error) {
 	p.errs = append(p.errs, err)
 }
 
+// sweepPass is one pass of s's sweep over db with opts, as a consumer
+// hands it to the loop.
+func sweepPass(s *data.Store, db *sqlate.DB, opts ...data.SweepOption) func(context.Context) (data.SweepResult, error) {
+	return func(ctx context.Context) (data.SweepResult, error) {
+		return s.Sweep(ctx, db, &objectLog{}, opts...)
+	}
+}
+
 // TestSweepUntilDone checks the loop runs passes while one reports More,
 // reports each, and returns nil at the first that does not; a pass with
 // nothing to do is one pass.
@@ -353,7 +361,7 @@ func TestSweepUntilDone(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, slices.Concat(morePass("A", "B"), lastPass("B"))...)
 	var got passes
-	if err := s.SweepUntilDone(ctx, db, &objectLog{}, nil, got.report, loopOpts...); err != nil {
+	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, loopOpts...), got.report); err != nil {
 		t.Fatalf("SweepUntilDone = %v, want nil", err)
 	}
 	want := []data.SweepResult{{Stale: 1, More: true}, {Stale: 1}}
@@ -366,7 +374,7 @@ func TestSweepUntilDone(t *testing.T) {
 
 	s, db, rec = openStore(t, fallback, noDirectory(), noFile())
 	got = passes{}
-	if err := s.SweepUntilDone(ctx, db, &objectLog{}, nil, got.report, loopOpts...); err != nil || len(got.results) != 1 || got.results[0] != (data.SweepResult{}) {
+	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, loopOpts...), got.report); err != nil || len(got.results) != 1 || got.results[0] != (data.SweepResult{}) {
 		t.Errorf("SweepUntilDone with nothing to do = %v after %+v, want one empty pass", err, got.results)
 	}
 	if ops(rec) != "query query" {
@@ -376,8 +384,8 @@ func TestSweepUntilDone(t *testing.T) {
 
 // TestSweepUntilDoneRefusals checks a pass's refusals are reported and
 // never end the loop: it goes on while the pass reports More and ends with
-// nil when it does not. Options a pass would refuse are refused before
-// any pass.
+// nil when it does not. A pass that refuses its options reports no More,
+// so the loop reports it once and ends.
 func TestSweepUntilDoneRefusals(t *testing.T) {
 	ctx := context.Background()
 	refused := sqltest.Response{Err: errors.New("the purge was refused")}
@@ -389,7 +397,7 @@ func TestSweepUntilDoneRefusals(t *testing.T) {
 		noDirectory(), staleRow("C"), refused, noFile(),
 	)
 	var got passes
-	if err := s.SweepUntilDone(ctx, db, &objectLog{}, nil, got.report, loopOpts...); err != nil {
+	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, loopOpts...), got.report); err != nil {
 		t.Fatalf("SweepUntilDone = %v, want nil despite the refusals", err)
 	}
 	if len(got.errs) != 2 || !strings.Contains(fmt.Sprint(got.errs[0]), "the purge was refused") || got.results[0] != (data.SweepResult{Stale: 1, More: true}) || got.errs[1] == nil {
@@ -401,8 +409,8 @@ func TestSweepUntilDoneRefusals(t *testing.T) {
 
 	s, db, rec = openStore(t, fallback)
 	got = passes{}
-	if err := s.SweepUntilDone(ctx, db, &objectLog{}, nil, got.report, data.Batch(0)); err == nil || !strings.HasPrefix(err.Error(), "data: sweep until done: ") || len(got.results) != 0 || len(rec.Calls()) != 0 {
-		t.Errorf("SweepUntilDone with a refused batch = %v after %d passes, want the refusal before any", err, len(got.results))
+	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, data.Batch(0)), got.report); err != nil || len(got.results) != 1 || got.errs[0] == nil || len(rec.Calls()) != 0 {
+		t.Errorf("SweepUntilDone with a refused batch = %v after %+v, %v, want the refusal reported once and no statement", err, got.results, got.errs)
 	}
 }
 
@@ -415,7 +423,7 @@ func TestSweepUntilDoneStops(t *testing.T) {
 	cancel()
 	s, db, rec := openStore(t, fallback)
 	var got passes
-	if err := s.SweepUntilDone(ended, db, &objectLog{}, nil, got.report); !errors.Is(err, context.Canceled) || len(got.results) != 0 || len(rec.Calls()) != 0 {
+	if err := data.SweepUntilDone(ended, nil, sweepPass(s, db), got.report); !errors.Is(err, context.Canceled) || len(got.results) != 0 || len(rec.Calls()) != 0 {
 		t.Errorf("SweepUntilDone on an ended context = %v after %d passes, want no pass", err, len(got.results))
 	}
 
@@ -426,13 +434,14 @@ func TestSweepUntilDoneStops(t *testing.T) {
 	calls := 0
 	// The second pass ends the context before it runs, so it reaches no
 	// statement.
-	around := data.AroundPass(func(ctx context.Context, pass func(context.Context) (data.SweepResult, error)) (data.SweepResult, error) {
+	pass := sweepPass(s, db, loopOpts...)
+	cancelling := func(ctx context.Context) (data.SweepResult, error) {
 		if calls++; calls == 2 {
 			cancel()
 		}
 		return pass(ctx)
-	})
-	if err := s.SweepUntilDone(ctx, db, &objectLog{}, nil, got.report, append(loopOpts, around)...); !errors.Is(err, context.Canceled) {
+	}
+	if err := data.SweepUntilDone(ctx, nil, cancelling, got.report); !errors.Is(err, context.Canceled) {
 		t.Fatalf("SweepUntilDone = %v, want the context's cancellation", err)
 	}
 	if calls != 2 || len(got.results) != 1 || ops(rec) != passOps {
@@ -446,41 +455,10 @@ func TestSweepUntilDoneStops(t *testing.T) {
 		got.report(res, err)
 		close(stop)
 	}
-	if err := s.SweepUntilDone(context.Background(), db, &objectLog{}, stop, report, loopOpts...); err != nil {
+	if err := data.SweepUntilDone(context.Background(), stop, sweepPass(s, db, loopOpts...), report); err != nil {
 		t.Fatalf("SweepUntilDone = %v, want nil once stop closes", err)
 	}
 	if len(got.results) != 1 || !got.results[0].More || ops(rec) != passOps {
 		t.Errorf("reported %+v after %q, want the pass in flight alone, though it reported More", got.results, ops(rec))
-	}
-}
-
-// TestAroundPass checks each pass runs whole inside the function: none of
-// its statements before the function calls it or after it returns. A
-// function that returns without calling the pass runs none, and its error
-// is the pass's.
-func TestAroundPass(t *testing.T) {
-	ctx := context.Background()
-	s, db, rec := openStore(t, fallback, slices.Concat(morePass("A", "B"), lastPass("B"))...)
-	var at []int
-	around := data.AroundPass(func(ctx context.Context, pass func(context.Context) (data.SweepResult, error)) (data.SweepResult, error) {
-		at = append(at, len(rec.Calls()))
-		defer func() { at = append(at, len(rec.Calls())) }()
-		return pass(ctx)
-	})
-	if err := s.SweepUntilDone(ctx, db, &objectLog{}, nil, nil, append(loopOpts, around)...); err != nil {
-		t.Fatalf("SweepUntilDone = %v", err)
-	}
-	if want := []int{0, 5, 5, 10}; !slices.Equal(at, want) {
-		t.Errorf("statements at each entry and return = %v, want %v", at, want)
-	}
-
-	s, db, rec = openStore(t, fallback)
-	errGate := errors.New("the gate is held")
-	refuse := data.AroundPass(func(context.Context, func(context.Context) (data.SweepResult, error)) (data.SweepResult, error) {
-		return data.SweepResult{}, errGate
-	})
-	got, err := s.Sweep(ctx, db, &objectLog{}, refuse)
-	if !errors.Is(err, errGate) || !strings.HasPrefix(err.Error(), "data: sweep: ") || got != (data.SweepResult{}) || len(rec.Calls()) != 0 {
-		t.Errorf("Sweep under a refusing AroundPass = %+v, %v, want its error and no statement", got, err)
 	}
 }

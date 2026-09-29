@@ -14,8 +14,8 @@ import (
 )
 
 // protocols checks the protocols end to end over the database: Store.Write,
-// Store.Ensure, Store.Remove, Store.Purge, and Store.SweepUntilDone with
-// AroundPass. Each case runs over the store under test and then the
+// Store.Ensure, Store.Remove, Store.Purge, and SweepUntilDone over the
+// store's passes. Each case runs over the store under test and then the
 // baseline. It runs before any group marks a branch, and every branch it
 // marks it sweeps again, so SweepUntilDone drains only its own backlog.
 func (s *suite) protocols(t *testing.T) {
@@ -414,12 +414,12 @@ func (s *suite) protocolPurge(t *testing.T) {
 	}
 }
 
-// passes records what SweepUntilDone reported, and around counts the
-// passes AroundPass wrapped.
+// passes records what SweepUntilDone reported, and ran counts the passes
+// the loop ran.
 type passes struct {
 	results []data.SweepResult
 	errs    []error
-	around  int
+	ran     int
 }
 
 func (p *passes) report(r data.SweepResult, err error) {
@@ -427,17 +427,18 @@ func (p *passes) report(r data.SweepResult, err error) {
 	p.errs = append(p.errs, err)
 }
 
-// aroundPass is the AroundPass option that counts each pass it runs.
-func (p *passes) aroundPass() data.SweepOption {
-	return data.AroundPass(func(ctx context.Context, pass func(context.Context) (data.SweepResult, error)) (data.SweepResult, error) {
-		p.around++
-		return pass(ctx)
-	})
+// pass is one pass of store's sweep through objects with opts, counted in
+// ran, as a consumer hands it to SweepUntilDone.
+func (p *passes) pass(s *suite, store *data.Store, objects *objectStore, opts ...data.SweepOption) func(context.Context) (data.SweepResult, error) {
+	return func(ctx context.Context) (data.SweepResult, error) {
+		p.ran++
+		return store.Sweep(ctx, s.db, objects, opts...)
+	}
 }
 
 // protocolSweepUntilDone checks SweepUntilDone drains a backlog larger
 // than one batch: a branch of eight records at Batch(3) takes the three
-// passes sweepBatch counts, AroundPass wraps each once, report sees each
+// passes sweepBatch counts, the loop runs each once, report sees each
 // with no error, and the branch is gone with each object deleted once.
 func (s *suite) protocolSweepUntilDone(t *testing.T) {
 	want := []data.SweepResult{{Files: 3, More: true}, {Files: 2, Directories: 1, More: true}, {Directories: 2}}
@@ -450,11 +451,11 @@ func (s *suite) protocolSweepUntilDone(t *testing.T) {
 			}
 			objects := newObjectStore()
 			var got passes
-			if err := tier.store.SweepUntilDone(s.ctx, s.db, objects, nil, got.report, data.Batch(3), got.aroundPass()); err != nil {
+			if err := data.SweepUntilDone(s.ctx, nil, got.pass(s, tier.store, objects, data.Batch(3)), got.report); err != nil {
 				t.Fatalf("SweepUntilDone: %v", err)
 			}
-			if !slices.Equal(got.results, want) || !slices.Equal(got.errs, make([]error, len(want))) || got.around != len(want) {
-				t.Errorf("SweepUntilDone reported %+v, %v over %d passes wrapped, want %+v, no error, and each pass wrapped once", got.results, got.errs, got.around, want)
+			if !slices.Equal(got.results, want) || !slices.Equal(got.errs, make([]error, len(want))) || got.ran != len(want) {
+				t.Errorf("SweepUntilDone reported %+v, %v over %d passes, want %+v, no error, and each pass run once", got.results, got.errs, got.ran, want)
 			}
 			wantDeletedOnce(t, objects, keys)
 			s.wantDirectoriesGone(t, b.top.ID, b.mid.ID, b.leaf.ID)
@@ -464,7 +465,7 @@ func (s *suite) protocolSweepUntilDone(t *testing.T) {
 }
 
 // protocolSweepUntilDoneStopped checks a stop closed before the loop runs
-// no pass: nothing wrapped, reported, or deleted, and the branch still
+// no pass: nothing run, reported, or deleted, and the branch still
 // marked, which an unstopped loop then drains.
 func (s *suite) protocolSweepUntilDoneStopped(t *testing.T) {
 	for _, tier := range s.storesUnder() {
@@ -477,14 +478,14 @@ func (s *suite) protocolSweepUntilDoneStopped(t *testing.T) {
 			close(stop)
 			objects := newObjectStore()
 			var got passes
-			if err := tier.store.SweepUntilDone(s.ctx, s.db, objects, stop, got.report, got.aroundPass()); err != nil || len(got.results) != 0 || got.around != 0 || objects.calls != 0 {
-				t.Errorf("SweepUntilDone with a closed stop = %v after %d passes reported and %d wrapped, %d deletes, want nothing run", err, len(got.results), got.around, objects.calls)
+			if err := data.SweepUntilDone(s.ctx, stop, got.pass(s, tier.store, objects), got.report); err != nil || len(got.results) != 0 || got.ran != 0 || objects.calls != 0 {
+				t.Errorf("SweepUntilDone with a closed stop = %v after %d passes reported and %d run, %d deletes, want nothing run", err, len(got.results), got.ran, objects.calls)
 			}
 			if d := s.directory(t, b.top.ID); d.Status != blobfs.DirectoryStatusDeleting {
 				t.Errorf("the stopped loop left the branch %s, want deleting", d.Status)
 			}
 			got = passes{}
-			if err := tier.store.SweepUntilDone(s.ctx, s.db, objects, nil, got.report); err != nil || len(got.results) != 1 ||
+			if err := data.SweepUntilDone(s.ctx, nil, got.pass(s, tier.store, objects), got.report); err != nil || len(got.results) != 1 ||
 				got.results[0] != (data.SweepResult{Files: 5, Directories: 3}) {
 				t.Errorf("the unstopped SweepUntilDone = %v after %+v, want the branch in one pass", err, got.results)
 			}

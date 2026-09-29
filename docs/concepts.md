@@ -156,7 +156,7 @@ branch](#deleting-a-branch) sets and nothing undoes.
 | the object delete | the consumer through its object store, or `Store.Remove` and `Store.Purge` through its `ObjectDeleter` | none |
 | `Files.Purge` | the consumer, or `Store.Remove` and `Store.Purge` | the pool or a transaction |
 | `Directories.MarkDeleting` | the consumer, to delete a branch | a transaction |
-| `Store.Sweep` or `Store.SweepUntilDone` | the consumer, now and then, with its object delete | the pool |
+| `Store.Sweep`, alone or in `SweepUntilDone`'s passes | the consumer, now and then, with its object delete | the pool |
 
 ## Reference-then-delete
 

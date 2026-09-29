@@ -5,7 +5,7 @@
 // never imported. It runs one file's whole life through the store's
 // protocols: a directory, Store.Write, a listing, Store.Remove, the
 // provider's key rule reaching blobfs through the adapter, and a branch
-// marked for removal and drained by Store.SweepUntilDone.
+// marked for removal and drained by data.SweepUntilDone.
 //
 // It reads BLOBFS_DSN and the BLOBFS_STORAGE_* settings go-storage
 // documents; mise.toml sets both for the compose stack, so from the
@@ -135,7 +135,7 @@ func run(ctx context.Context) error {
 
 	// A branch: a subdirectory holding three files, marked for removal in
 	// one step and drained by the sweep in passes of two records, each pass
-	// wrapped as a consumer would hold a gate of its own around it.
+	// the consumer's own closure, where it would hold a gate of its own.
 	if err := sweepBranch(ctx, db, store, objs, dir.ID); err != nil {
 		return err
 	}
@@ -148,7 +148,7 @@ func run(ctx context.Context) error {
 }
 
 // sweepBranch writes a branch of three files under parentID, marks it
-// deleting, and drains it with Store.SweepUntilDone, reporting each pass.
+// deleting, and drains it with data.SweepUntilDone, reporting each pass.
 func sweepBranch(ctx context.Context, db *sqlate.DB, store *data.Store, objs objectStore, parentID string) error {
 	branch, err := store.Directories.Create(ctx, db, parentID, "archive")
 	if err != nil {
@@ -171,14 +171,14 @@ func sweepBranch(ctx context.Context, db *sqlate.DB, store *data.Store, objs obj
 	fmt.Printf("marked archive deleting: %d directory, %d files\n", marked.Directories, marked.Files)
 
 	passes := 0
-	around := data.AroundPass(func(ctx context.Context, pass func(context.Context) (data.SweepResult, error)) (data.SweepResult, error) {
+	pass := func(ctx context.Context) (data.SweepResult, error) {
 		passes++
-		return pass(ctx)
-	})
+		return store.Sweep(ctx, db, objs, data.Batch(2))
+	}
 	report := func(res data.SweepResult, err error) {
 		fmt.Printf("  pass %d: %d files, %d directories, more %t, err %v\n", passes, res.Files, res.Directories, res.More, err)
 	}
-	if err := store.SweepUntilDone(ctx, db, objs, nil, report, data.Batch(2), around); err != nil {
+	if err := data.SweepUntilDone(ctx, nil, pass, report); err != nil {
 		return err
 	}
 	if _, err := store.Directories.Find(ctx, db, branch.ID); !errors.Is(err, blobfs.ErrNotFound) {

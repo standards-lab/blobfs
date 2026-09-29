@@ -71,7 +71,7 @@ full.
 - **Sweep**: `Store.Sweep`, one bounded, stateless pass that finishes the deletes callers began:
   it deletes the objects of each marked branch through the consumer's `data.ObjectDeleter`,
   purges the rows, removes the directories deepest first, and, when asked, reclaims stale rows.
-  `Store.SweepUntilDone` runs passes until one reports no more work.
+  `data.SweepUntilDone` runs a consumer's passes until one reports no more work.
 - **Stale row**: a file row a protocol left partway, older than the age the sweep is given: a
   pending row whose write never completed, or a deleting row whose purge never ran.
 - **Orphaned object**: an object with no row, left by a put that landed after a sweep had

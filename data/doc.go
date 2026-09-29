@@ -4,8 +4,9 @@
 // engine sqlate has a dialect for. New compiles the statements once
 // against the consumer's pattern catalog. Store.Write, Store.Ensure,
 // Store.Remove, and Store.Purge run the two-phase write and delete over
-// the consumer's object store; Store.Sweep and Store.SweepUntilDone finish
-// the deletes callers began. The Variant interface names the variation
+// the consumer's object store; Store.Sweep finishes the deletes callers
+// began, a pass at a time, and SweepUntilDone runs a consumer's passes
+// until the work is done. The Variant interface names the variation
 // points an engine installed through WithEngine may implement natively.
 //
 // Every operation takes the context and a session first and passes the

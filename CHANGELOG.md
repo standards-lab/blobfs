@@ -20,16 +20,16 @@ the `postgres` sub-module keeps its own.
   `Store.Purge`, its tail for a delete the consumer began itself.
 - `ObjectPutter`, the consumer's put, and `ObjectStore`, the putter and `ObjectDeleter`
   together, which the write takes.
-- `Store.SweepUntilDone`, the loop over `Sweep`'s passes while one reports `More`, with a stop
-  channel and a report of each pass, and the `SweepOption` `AroundPass`, which runs each pass
-  inside the consumer's function.
+- `SweepUntilDone`, the loop over a consumer's pass while it reports `More`, with a stop channel
+  and a report of each pass. The pass is the consumer's closure over `Store.Sweep`, so whatever
+  it holds for a whole pass, a gate or a lock, stays its own.
 - `Listing[T]`, the interface `*Directories` and `*Files` satisfy.
 - `blobfs.DeletingError`, which every `ErrDeleting` now is: it tells a file whose own delete
   began from a deleting directory, names the row, and unwraps its cause.
 - `data/datatest`: `FileRows` and `DirectoryRows`, which script blobfs's rows for `sqltest`, and
   checks of the `DeletingError`'s kind in the groups that assert `ErrDeleting`.
 - `data/datatest`: the Protocols group, which checks `Store.Write`, `Store.Ensure`,
-  `Store.Remove`, `Store.Purge`, and `Store.SweepUntilDone` with `AroundPass` against the live
+  `Store.Remove`, `Store.Purge`, and `SweepUntilDone` over `Store.Sweep` against the live
   database, over an in-memory object store that fails on demand.
 
 ### Changed
