@@ -103,10 +103,10 @@ func (e *ViolationError) Unwrap() []error {
 	return []error{e.Sentinel, e.Err}
 }
 
-// DeletingError reports a mutation refused with ErrDeleting and whose
-// delete refused it: a file's own, with Directory false and ID the file, or
-// a directory's, with Directory true and ID the directory. Err is the
-// refusal's cause when it has one. See Errors and constraints in
+// DeletingError reports a mutation refused with ErrDeleting and names
+// whose delete refused it: a file's own, with Directory false and ID the
+// file, or a directory's, with Directory true and ID the directory. Err is
+// the refusal's cause when it has one. See Errors and constraints in
 // docs/features.md.
 type DeletingError struct {
 	Directory bool

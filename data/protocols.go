@@ -13,7 +13,7 @@ import (
 )
 
 // ObjectPutter is the consumer's object store as Store.WriteFile and
-// Store.EnsureFile put through it. PutObject stores size bytes of body
+// Store.EnsureFile call it. PutObject stores size bytes of body
 // under key in contentType, all or nothing, replacing whatever the key
 // held, and reports the stored object as Files.Complete records it.
 type ObjectPutter interface {
@@ -21,9 +21,9 @@ type ObjectPutter interface {
 }
 
 // ObjectStore is the consumer's object store as the protocols call it: the
-// key check, the put, and the delete. One adapter over the store
-// implements it, and it is the KeyValidator the write's begin passes to
-// Files.Create or Files.Ensure.
+// key check, the put, and the delete. The consumer implements it with one
+// adapter over its store, which the write's begin also passes to
+// Files.Create or Files.Ensure as their KeyValidator.
 type ObjectStore interface {
 	blobfs.KeyValidator
 	ObjectPutter
@@ -31,11 +31,11 @@ type ObjectStore interface {
 }
 
 // WriteFile runs the two-phase write of the file begin creates, with size
-// bytes of body as its object: begin runs Files.Create in one transaction
-// on db, the put runs outside any transaction, and the completion on the
-// pool returns the row available. A failed put or completion abandons the
-// write. begin's error is returned as it came. See The protocols in
-// docs/features.md.
+// bytes of body as its object. begin runs Files.Create in one transaction
+// on db; the put runs outside any transaction; the completion runs on the
+// pool and returns the row available. A failed put or completion abandons
+// the write. begin's error, or its transaction's, is returned as it came.
+// See The protocols in docs/features.md.
 func (s *Store) WriteFile(ctx context.Context, db *sqlate.DB, objects ObjectStore, body io.Reader, size int64, begin func(*sqlate.Tx) (blobfs.File, error)) (_ blobfs.File, err error) {
 	file, err := db.Transact(ctx, begin)
 	if err != nil {
@@ -149,13 +149,13 @@ func (s *Store) store(ctx context.Context, db *sqlate.DB, objects ObjectStore, b
 	return done, nil
 }
 
-// RemoveFile runs the two-phase delete of the file pick names: pick and
+// RemoveFile runs the two-phase delete of the file pick names. pick and
 // Files.Delete under opts run in one transaction on db, where the caller
-// removes its own references to the file, then the object is deleted and
-// the row purged, as PurgeFile does. A retry of an interrupted RemoveFile
-// finishes it; a retry of a finished one returns blobfs.ErrNotFound.
-// pick's error is returned as it came. See The protocols in
-// docs/features.md.
+// removes its own references to the file; RemoveFile then deletes the
+// object and purges the row, as PurgeFile does. A retry of an interrupted
+// RemoveFile finishes it; a retry of a finished one returns
+// blobfs.ErrNotFound. pick's error, or its transaction's, is returned as it
+// came. See The protocols in docs/features.md.
 func (s *Store) RemoveFile(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, pick func(*sqlate.Tx) (string, error), opts ...VersionOption) (err error) {
 	version := atVersion(opts)
 	var id string
@@ -185,8 +185,8 @@ func (s *Store) RemoveFileID(ctx context.Context, db *sqlate.DB, objects ObjectD
 	return s.remove(ctx, db, objects, id, atVersion(opts))
 }
 
-// remove is RemoveFileID at version, nil for any, with its errors bare for
-// the write's abandon.
+// remove is RemoveFileID at version, or at any version when version is
+// nil, with its errors bare for the write's abandon.
 func (s *Store) remove(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, id string, version *int64) error {
 	file, err := db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 		return s.Files.deleteFile(ctx, tx, id, version)

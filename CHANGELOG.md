@@ -13,10 +13,10 @@ the `postgres` sub-module keeps its own.
 
 - `Store.RemoveFileID`, the two-phase delete of a file the caller names by id, for a caller with
   no scope to check and no reference to remove in the delete's transaction.
-- `data/datatest`: the Directories and Writes groups race two `Ensure` calls that supply one id,
-  `EnsureConcurrentUnderOneID`; the Branches group races a file move out of a branch against the
-  branch's mark in both orders, `MarkRacesAFileMove`; and the Protocols group checks that a
-  retry of a finished `RemoveFile` is `ErrNotFound`.
+- `data/datatest` checks new races. The Directories and Writes groups race two `Ensure` calls
+  that supply one id (`EnsureConcurrentUnderOneID`), and the Branches group races a file move
+  out of a branch against the branch's mark in both orders (`MarkRacesAFileMove`). The Protocols
+  group also checks that a retry of a finished `RemoveFile` is `ErrNotFound`.
 
 ### Changed
 
@@ -30,22 +30,22 @@ the `postgres` sub-module keeps its own.
 - **Breaking:** `Directories.Deleting` is `Directories.BranchRoots`, named for what it returns;
   its error reads `data: branch roots: ...`.
 - Each package's documentation names every exported identifier by concept and states the
-  package-level contracts; each symbol's documentation states its own contract and names its
+  package-level contracts. Each symbol's documentation states its own contract, names its
   refusals briefly, and links `docs/features.md`, which holds the refusals, the races, and the
-  protocols in full. The
-  statement headers keep why each clause is there and drop the clause-by-clause narration.
+  protocols in full. The statement headers keep why each clause is there and drop the
+  clause-by-clause narration.
 
 ### Fixed
 
 - `Files.Ensure` and `Directories.Ensure` on the pool recover when two callers supply one id
-  through `WithID` and race: PostgreSQL checks the primary key before the name's constraint, so
-  the loser's insert failed as `ErrIDTaken`. The name is now looked up again, and the row found
-  is returned when it carries the id supplied; otherwise `ErrIDTaken` stands, joined to the
+  through `WithID` and race. PostgreSQL checks the primary key before the name's constraint, so
+  the loser's insert failed as `ErrIDTaken`. The loser now looks the name up again and returns
+  the row found when it carries the id supplied. Otherwise `ErrIDTaken` stands, joined to the
   second lookup's error when that lookup fails. Inside a transaction the violation is returned,
   as before.
 - `Directories.Delete`, `Directories.MarkDeleting`, and `Directories.Move` refuse the root
-  before any SQL under every spelling of the nil UUID PostgreSQL accepts, braced or hyphenated
-  otherwise, where only `RootID`'s canonical text was caught.
+  before any SQL under every spelling of the nil UUID PostgreSQL accepts, braced or with its
+  hyphens placed otherwise. Previously they caught only `RootID`'s canonical text.
 - `Files.Complete`'s documentation: a retry at the pending version after its completion
   committed is `query.ErrVersionMismatch`, since the completion advanced the version;
   `ErrInvalidTransition` is the refusal of a row available at the version named.

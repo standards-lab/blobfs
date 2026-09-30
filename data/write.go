@@ -42,11 +42,16 @@ func inTransaction(sess sqlate.Session) bool {
 
 // insertOrFind runs find, then create only when find returned
 // sql.ErrNoRows, and reports whether it created the row, whose id is id.
-// A create refused by a concurrent creator is looked up again: on the pool
-// for blobfs.ErrNameTaken, and for blobfs.ErrIDTaken when the row found
-// carries id, since PostgreSQL checks the primary key before the name's
-// constraint, and a lookup that fails is joined to the ErrIDTaken; in a
-// transaction too for a holderError, whose insert failed no statement.
+// When a concurrent creator refuses the create, insertOrFind looks the
+// name up again:
+//
+//   - for a holderError, on the pool and inside a transaction, since its
+//     insert failed no statement;
+//   - on the pool, for blobfs.ErrNameTaken;
+//   - on the pool, for blobfs.ErrIDTaken, returning the row found only when
+//     it carries id, since PostgreSQL checks the primary key before the
+//     name's constraint. A lookup that fails is joined to the ErrIDTaken.
+//
 // Inside a transaction a violation is returned, since it may have aborted
 // the transaction.
 func insertOrFind[T any](ctx context.Context, sess sqlate.Session, id string, idOf func(T) string, find, create func(context.Context, sqlate.Session) (T, error)) (T, bool, error) {

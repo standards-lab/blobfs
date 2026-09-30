@@ -13,11 +13,11 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// protocols checks the protocols end to end over the database:
-// Store.WriteFile, Store.EnsureFile, Store.RemoveFile, Store.RemoveFileID,
-// Store.PurgeFile, and SweepUntilDone over the store's passes. Each case runs over the store under test and then the
-// baseline. It runs before any group marks a branch, and it sweeps every
-// branch it marks, so SweepUntilDone drains only its own backlog.
+// protocols checks the protocols end to end over the database: Store.WriteFile,
+// Store.EnsureFile, Store.RemoveFile, Store.RemoveFileID, Store.PurgeFile, and
+// SweepUntilDone over the store's passes. Each case runs over the store under
+// test and then the baseline. It runs before any group marks a branch, and it
+// sweeps every branch it marks, so SweepUntilDone drains only its own backlog.
 func (s *suite) protocols(t *testing.T) {
 	t.Run("Write", s.protocolWrite)
 	t.Run("WriteFailedPut", s.protocolWriteFailedPut)

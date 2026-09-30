@@ -213,8 +213,8 @@ func openDatabase(ctx context.Context, dsn string) (*sqlate.DB, error) {
 
 ## 5. Write the object-store adapter
 
-blobfs asks three things of the object store, a key check, a put, and a delete, through one
-interface, `data.ObjectStore`, which the store's protocols call (see [the
+blobfs asks three things of the object store: a key check, a put, and a delete. It asks them
+through one interface, `data.ObjectStore`, which the store's protocols call (see [the
 protocols](features.md#the-protocols)). The adapter wires the three to `go-storage`'s own
 methods and is the only place the two libraries meet. `openObjects` builds the Azure Blob
 store from the environment and starts it, which ensures the container exists.

@@ -26,9 +26,10 @@ const (
 	protocolKey  = protocolFile + "/report.txt"
 )
 
-// objectStore is an ObjectStore over a map: it accepts every key, records
-// its puts and deletes, and the error of the context each delete ran under, and fails a
-// put with putErr and a delete with deleteErr when they are set. With
+// objectStore is an ObjectStore over a map. It accepts every key, records
+// its puts, its deletes, and the error of the context each delete ran
+// under, and fails a put with putErr and a delete with deleteErr when they
+// are set. With
 // cancel set, a put cancels the caller's context and fails with its error,
 // as a caller that hangs up mid-body.
 type objectStore struct {
@@ -183,8 +184,8 @@ func TestWriteUnderADeletingName(t *testing.T) {
 
 // TestWriteFailedPut checks a failed put abandons the write through the
 // delete: the row's delete begun at its pending version, the object's
-// delete, and the purge; an abandon the store refuses too leaves the row deleting and
-// reports both failures.
+// delete, and the purge. An abandon the store refuses too leaves the row
+// deleting and reports both failures.
 func TestWriteFailedPut(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1})

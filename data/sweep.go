@@ -55,8 +55,8 @@ func (s *Store) Sweep(ctx context.Context, db *sqlate.DB, objects ObjectDeleter,
 }
 
 // SweepUntilDone runs pass, the consumer's closure over one Store.Sweep,
-// while it reports More, handing each result to report, and returns nil
-// once the work is done or stop closes, or ctx's error once ctx ends. A
+// while it reports More, and hands each result to report. It returns nil
+// once the work is done or stop closes, and ctx's error once ctx ends. A
 // pass's error never ends the loop. See The sweep in docs/features.md.
 func SweepUntilDone(ctx context.Context, stop <-chan struct{}, pass func(context.Context) (SweepResult, error), report func(SweepResult, error)) error {
 	for {

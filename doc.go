@@ -13,8 +13,11 @@
 //
 //   - Directory is a node of the tree, File a file's metadata, and Object
 //     what the store reports about a stored object.
-//   - Status is a file's place in the two-phase write and delete, and
-//     DirectoryStatus a directory's; Transition checks a change of Status.
+//   - Status is a file's place in the two-phase write and delete:
+//     StatusPending, StatusAvailable, or StatusDeleting. Transition checks
+//     a change of Status.
+//   - DirectoryStatus is a directory's: DirectoryStatusActive or
+//     DirectoryStatusDeleting.
 //
 // Keys:
 //

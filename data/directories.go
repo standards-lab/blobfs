@@ -207,10 +207,10 @@ func (d *Directories) deleteDirectory(ctx context.Context, sess sqlate.Session, 
 }
 
 // isRoot reports whether id is the nil UUID once braces and hyphens are
-// removed: every spelling of blobfs.RootID PostgreSQL accepts, braced or
-// hyphenated after any group of four digits, and some it refuses, which
-// the guards refuse as the root before any SQL. Anything else, a prefix or
-// a space included, reaches the statement.
+// removed. That covers every spelling of blobfs.RootID PostgreSQL accepts,
+// braced or hyphenated after any group of four digits, and some it
+// refuses; the guards refuse each as the root before any SQL. Anything
+// else, a prefix or a space included, reaches the statement.
 func isRoot(id string) bool {
 	id = strings.TrimSuffix(strings.TrimPrefix(id, "{"), "}")
 	u, err := uuid.Parse(strings.ReplaceAll(id, "-", ""))

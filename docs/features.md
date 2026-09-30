@@ -62,13 +62,12 @@ deleting directory refuses them.
 
 ### Keys
 
-`KeyValidator` is the one method a write asks of an object store:
-`ValidateKey(key string) error`, non-nil with the reason when the store refuses the key. A
-consumer wires its store's own rule to it at the composition root, in the same adapter as its
-put and delete, since `data.ObjectStore` embeds it; the [quick
-start](quick-start.md#5-write-the-object-store-adapter) shows the adapter over `go-storage`. The
-interface carries no maximum length: the store's own validation enforces its limit, counted the
-way the store counts.
+`KeyValidator` is the one method a write asks of an object store: `ValidateKey(key string) error`,
+non-nil with the reason when the store refuses the key. A consumer wires its store's own rule to it
+at the composition root, in the same adapter as its put and delete, since `data.ObjectStore` embeds
+it. The [quick start](quick-start.md#5-write-the-object-store-adapter) shows the adapter over
+`go-storage`. The interface carries no maximum length: the store's own validation enforces its
+limit, counted the way the store counts.
 
 `SanitizeFilename(name)` turns a display name into a key's filename segment: each invalid UTF-8
 sequence, slash, backslash, and control character becomes an underscore, trailing dots and
@@ -131,7 +130,7 @@ The statement itself refuses a deleting holder: it selects nothing rather than f
 constraint, and the store then reads the name's holder to report it. The refusal therefore runs no
 failing statement and leaves the caller's transaction usable. The store wraps the holder's
 `DeletingError` in the message "the file `<id>` holds the name" or "the directory `<id>` holds the
-name". A move's `DeletingError` therefore comes from one of two deletes: that of the moved row or
+name". A move's `DeletingError` comes from one of two deletes: that of the moved row or
 of a directory it leaves or enters, or that of the name's holder. A consumer tells them apart by
 the `ID`: one that names neither the moved row nor a directory it left or entered is the holder,
 and the caller waits out its delete or gives up the name. When a mark reaches a file holder's
@@ -254,17 +253,17 @@ directory from the module's own `[export]`.
 
 `Create` never creates a root, since it always binds a parent.
 
-`Ensure` looks the name up first and inserts only when it finds no row, so the common case runs
-no failing statement and composes into a caller's transaction. A creator that commits the name
-between the lookup and the insert makes the insert fail: as `ErrNameTaken`, or as `ErrIDTaken`
-when both callers supplied one id through `WithID`, since PostgreSQL checks the primary key
-before the name's constraint. On the pool the name is then looked up again, and the row found is
-returned, for `ErrIDTaken` only when it carries the id supplied; otherwise `ErrIDTaken` stands.
-Inside a transaction the error is returned, because on PostgreSQL the failed insert has aborted
-the transaction, and the caller retries the transaction. A deleting directory committed in that
-window fails no statement, because the insert selects nothing under it, so `Ensure` looks it up
-again inside a transaction too and refuses it as it refuses a found one. A found row keeps its
-own id whatever `WithID` supplied.
+`Ensure` looks the name up first and inserts only when it finds no row, so the common case runs no
+failing statement and composes into a caller's transaction. A creator that commits the name between
+the lookup and the insert makes the insert fail: as `ErrNameTaken`, or as `ErrIDTaken` when both
+callers supplied one id through `WithID`, since PostgreSQL checks the primary key before the name's
+constraint. On the pool the name is then looked up again and the row found is returned. After
+`ErrIDTaken` the row is returned only when it carries the id supplied, and otherwise `ErrIDTaken`
+stands. Inside a transaction the error is returned, because on PostgreSQL the failed insert has
+aborted the transaction, and the caller retries the transaction. A deleting directory committed in
+that window fails no statement, because the insert selects nothing under it, so `Ensure` looks it up
+again inside a transaction too and refuses it as it refuses a found one. A found row keeps its own
+id whatever `WithID` supplied.
 
 `Move` runs `LockTree`, then `IsWithin(parentID, id)`, then the guarded update, in `tx`. The
 caller reads the directory in the same transaction and passes its `Version`. The directory's
@@ -313,12 +312,11 @@ make directory moves safe.
 | `WriteResumed` | a pending row an earlier write left | the same, under the row's own `Key` |
 | `WritePresent` | an available or deleting row, returned unchanged | the caller's decision: a put refuses the name, a copy skips or replaces it, a seeder skips it |
 
-The lookup-first behavior and its race are `Directories.Ensure`'s. A found row keeps its own id
-and key whatever `WithID` supplied. `Ensure` returns a deleting row as `WritePresent`, not
-refused, whether the lookup finds it or a writer commits it after the lookup. In a deleting
-directory, `Ensure`
-reports a file the mark reached as `WritePresent`, its row deleting, and refuses a name no row
-holds with `Create`'s `ErrDeleting`. A found row that is not deleting is returned without a read
+The lookup-first behavior and its race are `Directories.Ensure`'s. A found row keeps its own id and
+key whatever `WithID` supplied. `Ensure` returns a deleting row as `WritePresent`, not refused,
+whether the lookup finds it or a writer commits it after the lookup. In a deleting directory,
+`Ensure` reports a file the mark reached as `WritePresent`, its row deleting, and refuses a name no
+row holds with `Create`'s `ErrDeleting`. A found row that is not deleting is returned without a read
 of its directory, so a straggler, a row a create left active in a branch being deleted, is
 `WriteResumed` or `WritePresent` like any other; `Directories.Ensure` likewise returns an active
 directory it finds under a deleting parent. The sweep removes such a row with its branch (see
@@ -348,7 +346,7 @@ own.
 
 The `Store` runs the two-phase write and delete end to end over the consumer's object store,
 which it reaches only through `ObjectStore`, the one interface the consumer's adapter
-satisfies. It embeds three:
+satisfies. `ObjectStore` embeds three interfaces:
 
 - `blobfs.KeyValidator`: `ValidateKey(key) error`, the key check `Files.Create` and
   `Files.Ensure` run; a write's `begin` passes the same adapter to them.
@@ -499,7 +497,8 @@ branch.
 Each row the mark changes advances its version once and has its `updated_at` stamped; a row
 already deleting is left as it is. `Marked`'s `Directories` and `Files` count the rows this call
 moved to deleting, so a repeated mark reports only what it reached anew. The walk descends
-through directories already deleting, so a repeated mark reaches a straggler.
+through directories already deleting, so a repeated mark reaches a straggler: an active row a
+create left in the branch after reading its parent before the first mark committed.
 
 The root is `ErrRootDirectory` before any SQL, and a directory that does not exist is
 `ErrNotFound`. With `AtVersion`, the version guards the walk's anchor: an active directory at
@@ -852,15 +851,14 @@ of its own, proves its variant:
 - `engine` is the engine under test; nil is the baseline.
 
 The suite builds a second store over the baseline on the same database and asserts, wherever an
-outcome belongs to a variation point or a returning command, the same rows and the same
-refusals, in text, for the same inputs. The concurrency checks assert what `Serializes` reports:
-that the lock blocks a second mover, or that two opposing moves on a variant without a lock form
-the cycle, that `IsWithin` and `Path` terminate on it with their defined answers and a `Move`
-repairs it, and that serializable isolation refuses one of them on every variant. The concurrent
-`Ensure` checks force the race they test, with and without one id supplied to both callers:
-the suite holds each caller's lookup until both have looked, so both insert and one recovers
-from the refused insert. It creates two
-tables of its own, `datatest_reference` and `datatest_owner`, with foreign keys into blobfs's
+outcome belongs to a variation point or a returning command, the same rows and the same refusals, in
+text, for the same inputs. The concurrency checks assert what `Serializes` reports: that the lock
+blocks a second mover, or that two opposing moves on a variant without a lock form the cycle, that
+`IsWithin` and `Path` terminate on it with their defined answers and a `Move` repairs it, and that
+serializable isolation refuses one of them on every variant. The concurrent `Ensure` checks force
+the race they test, with and without one id supplied to both callers: the suite holds each caller's
+lookup until both have looked, so both insert and one recovers from the refused insert. It creates
+two tables of its own, `datatest_reference` and `datatest_owner`, with foreign keys into blobfs's
 tables, to stand in for a consumer's references, and an index on
 `blobfs_file (directory_id, created_at)`, which it drops again.
 

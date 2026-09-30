@@ -121,10 +121,10 @@ const (
 // Ensure is the retry-safe first step: it returns the row that holds name
 // in directoryID, creating it pending when none does, and the WriteOutcome
 // that says which. A found row, a deleting one included, keeps its own id
-// and key. Its refusals are Create's, except a deleting row's for the
-// name, which is returned as WritePresent; and blobfs.ErrNameTaken inside
-// a transaction for a writer that commits the name after the lookup. See
-// Files in docs/features.md.
+// and key. Its refusals are Create's, except that a deleting row that
+// holds the name is returned as WritePresent, and blobfs.ErrNameTaken
+// inside a transaction for a writer that commits the name after the
+// lookup. See Files in docs/features.md.
 func (f *Files) Ensure(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts ...CreateOption) (_ blobfs.File, _ WriteOutcome, err error) {
 	defer wrap(&err, "ensure file %q in %s", name, directoryID)
 	name, id, key, err := newFile(keys, name, opts)
