@@ -132,7 +132,8 @@ func TestConstraints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert docs: %v", err)
 	}
-	if _, err := insertFile(ctx, db, docs, "a.txt", "available"); err != nil {
+	aTxt, err := insertFile(ctx, db, docs, "a.txt", "available")
+	if err != nil {
 		t.Fatalf("insert a.txt: %v", err)
 	}
 	for _, c := range []struct {
@@ -160,6 +161,20 @@ func TestConstraints(t *testing.T) {
 		{"DirectoryNameTaken", func() error { _, err := insertDirectory(ctx, db, &root, ptr("docs")); return err }, sqlate.ErrUniqueViolation, blobfs.ConstraintUniqueDirectoryParentName},
 		{"MissingParent", func() error { _, err := insertDirectory(ctx, db, ptr(blobfs.NewID()), ptr("orphan")); return err }, sqlate.ErrForeignKeyViolation, blobfs.ConstraintForeignKeyDirectoryParent},
 		{"FileNameTaken", func() error { _, err := insertFile(ctx, db, docs, "a.txt", "pending"); return err }, sqlate.ErrUniqueViolation, blobfs.ConstraintUniqueFileDirectoryName},
+		// A row that repeats both the id and the name fails the primary
+		// key: PostgreSQL checks a table's unique indexes in creation
+		// order, the primary key's first, which is why a caller that loses
+		// a race under one supplied id meets ErrIDTaken, not ErrNameTaken.
+		{"DirectoryIDAndNameTaken", func() error {
+			_, err := db.ExecContext(ctx, "INSERT INTO blobfs_directory (id, parent_id, name) VALUES ($1, $2, 'docs')", docs, root)
+			return err
+		}, sqlate.ErrUniqueViolation, blobfs.ConstraintPrimaryKeyDirectory},
+		{"FileIDAndNameTaken", func() error {
+			_, err := db.ExecContext(ctx,
+				"INSERT INTO blobfs_file (id, directory_id, name, status, key, content_type) VALUES ($1, $2, 'a.txt', 'pending', $3, 'text/plain')",
+				aTxt, docs, aTxt+"/a.txt")
+			return err
+		}, sqlate.ErrUniqueViolation, blobfs.ConstraintPrimaryKeyFile},
 		{"FileStatus", func() error { _, err := insertFile(ctx, db, docs, "b.txt", "bogus"); return err }, sqlate.ErrCheckViolation, "blobfs_cc_file_status"},
 		{"EmptyFileName", func() error { _, err := insertFile(ctx, db, docs, "", "pending"); return err }, sqlate.ErrCheckViolation, "blobfs_cc_file_name"},
 		{"MissingDirectory", func() error { _, err := insertFile(ctx, db, blobfs.NewID(), "c.txt", "pending"); return err }, sqlate.ErrForeignKeyViolation, blobfs.ConstraintForeignKeyFileDirectory},

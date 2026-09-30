@@ -442,6 +442,31 @@ func TestEnsureFile(t *testing.T) {
 					t.Errorf("ops = %q, want %q", got, want)
 				}
 			}
+			// A second lookup that fails leaves the ErrIDTaken, its failure
+			// joined.
+			errLookup := errors.New("the lookup failed")
+			s, db, _ = openStore(t, f, noFile(), violation(blobfs.ConstraintPrimaryKeyFile, sqlate.ErrUniqueViolation), sqltest.Response{Err: errLookup})
+			_, _, err = s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.WithID(id))
+			if !errors.Is(err, blobfs.ErrIDTaken) || !errors.Is(err, errLookup) {
+				t.Errorf("Ensure under a taken id whose lookup failed = %v, want ErrIDTaken joined to the lookup's failure", err)
+			}
+			// Inside a transaction the id's violation is returned with no
+			// second lookup, since it may have aborted the transaction.
+			s, db, rec = openStore(t, f, noFile(), violation(blobfs.ConstraintPrimaryKeyFile, sqlate.ErrUniqueViolation))
+			_, err = db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
+				file, _, err := s.Files.Ensure(ctx, tx, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.WithID(id))
+				return file, err
+			})
+			if !errors.Is(err, blobfs.ErrIDTaken) {
+				t.Errorf("Ensure under a taken id inside a transaction = %v, want ErrIDTaken", err)
+			}
+			txOps := "begin query query rollback"
+			if !f.single {
+				txOps = "begin query exec rollback"
+			}
+			if got := ops(rec); got != txOps {
+				t.Errorf("ops = %q, want %q: no lookup after the refused insert inside the transaction", got, txOps)
+			}
 
 			s, db, rec = openStore(t, f, noFile(), violation(blobfs.ConstraintUniqueFileDirectoryName, sqlate.ErrUniqueViolation))
 			_, err = db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {

@@ -45,9 +45,10 @@ func inTransaction(sess sqlate.Session) bool {
 // A create refused by a concurrent creator is looked up again: on the pool
 // for blobfs.ErrNameTaken, and for blobfs.ErrIDTaken when the row found
 // carries id, since PostgreSQL checks the primary key before the name's
-// constraint; in a transaction too for a holderError, whose insert failed
-// no statement. Inside a transaction a violation is returned, since it may
-// have aborted the transaction.
+// constraint, and a lookup that fails is joined to the ErrIDTaken; in a
+// transaction too for a holderError, whose insert failed no statement.
+// Inside a transaction a violation is returned, since it may have aborted
+// the transaction.
 func insertOrFind[T any](ctx context.Context, sess sqlate.Session, id string, idOf func(T) string, find, create func(context.Context, sqlate.Session) (T, error)) (T, bool, error) {
 	var zero T
 	row, err := find(ctx, sess)
@@ -66,8 +67,12 @@ func insertOrFind[T any](ctx context.Context, sess sqlate.Session, id string, id
 	case inTransaction(sess):
 		return zero, false, err
 	case errors.Is(err, blobfs.ErrIDTaken):
-		if found, ferr := find(ctx, sess); ferr == nil && idOf(found) == id {
+		found, ferr := find(ctx, sess)
+		switch {
+		case ferr == nil && idOf(found) == id:
 			return found, false, nil
+		case ferr != nil && !errors.Is(ferr, sql.ErrNoRows):
+			return zero, false, errors.Join(err, fmt.Errorf("after a concurrent create: %w", ferr))
 		}
 		return zero, false, err
 	case !errors.Is(err, blobfs.ErrNameTaken):

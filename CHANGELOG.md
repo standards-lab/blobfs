@@ -29,20 +29,20 @@ the `postgres` sub-module keeps its own.
   `KeyValidator` parameter, since a consumer that runs the steps itself needs no put or delete.
 - **Breaking:** `Directories.Deleting` is `Directories.BranchRoots`, named for what it returns;
   its error reads `data: branch roots: ...`.
-- The package documentation states each contract and names each refusal briefly, and links
-  `docs/features.md`, which holds the refusals, the races, and the protocols in full. The
+- Each package's documentation names every exported identifier by concept and states the
+  package-level contracts; each symbol's documentation states its own contract and names its
+  refusals briefly, and links `docs/features.md`, which holds the refusals, the races, and the
+  protocols in full. The
   statement headers keep why each clause is there and drop the clause-by-clause narration.
-- `Store.EnsureFile` keeps its one retry of `begin`'s transaction on `ErrNameTaken` or
-  `ErrIDTaken`: `begin` runs inside a transaction, where `Files.Ensure` returns the violation
-  rather than look the name up in an aborted transaction.
 
 ### Fixed
 
 - `Files.Ensure` and `Directories.Ensure` on the pool recover when two callers supply one id
   through `WithID` and race: PostgreSQL checks the primary key before the name's constraint, so
   the loser's insert failed as `ErrIDTaken`. The name is now looked up again, and the row found
-  is returned when it carries the id supplied; otherwise `ErrIDTaken` stands. Inside a
-  transaction the violation is returned, as before.
+  is returned when it carries the id supplied; otherwise `ErrIDTaken` stands, joined to the
+  second lookup's error when that lookup fails. Inside a transaction the violation is returned,
+  as before.
 - `Directories.Delete`, `Directories.MarkDeleting`, and `Directories.Move` refuse the root
   before any SQL under every spelling of the nil UUID PostgreSQL accepts, braced or hyphenated
   otherwise, where only `RootID`'s canonical text was caught.

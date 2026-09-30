@@ -7,9 +7,10 @@
 --| [native]: []string as that parameter; an engine without one keeps the baseline's walk.
 -- The deepest directory reached below start_id along segments, normalized
 -- names in path order, with its depth; no row means the start does not
--- exist. A step past the last segment compares a name with NULL, so a
--- cycle in the tree cannot extend the walk. The row is selected by the
--- maximum depth rather than sorted and cut, which saves a sort's buffers.
+-- exist, and an empty array returns the start at depth 0. A step past
+-- the last segment compares a name with NULL, so a cycle in the tree
+-- cannot extend the walk. The row is selected by the maximum depth rather
+-- than sorted and cut, which saves a sort's buffers.
 WITH RECURSIVE walk (id, parent_id, name, status, version, created_at, updated_at, depth) AS (
     SELECT {{> blobfs.directory_columns}}, CAST(0 AS integer)
     FROM blobfs_directory d

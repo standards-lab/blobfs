@@ -345,6 +345,14 @@ func TestEnsure(t *testing.T) {
 					t.Errorf("ops = %q, want %q", got, want)
 				}
 			}
+			// A second lookup that fails leaves the ErrIDTaken, its failure
+			// joined.
+			errLookup := errors.New("the lookup failed")
+			s, db, _ = openStore(t, f, noDirectory(), violation(blobfs.ConstraintPrimaryKeyDirectory, sqlate.ErrUniqueViolation), sqltest.Response{Err: errLookup})
+			_, _, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.WithID(id))
+			if !errors.Is(err, blobfs.ErrIDTaken) || !errors.Is(err, errLookup) {
+				t.Errorf("Ensure under a taken id whose lookup failed = %v, want ErrIDTaken joined to the lookup's failure", err)
+			}
 			s, db, rec = openStore(t, f, noDirectory(), violation(blobfs.ConstraintPrimaryKeyDirectory, sqlate.ErrUniqueViolation))
 			_, err = db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
 				d, _, err := s.Directories.Ensure(ctx, tx, blobfs.RootID, "docs", data.WithID(id))
@@ -421,6 +429,16 @@ func TestDelete(t *testing.T) {
 		}
 	}
 
+	for _, id := range notRootSpellings {
+		s, db, rec := openStore(t, fallback, sqltest.Response{Affected: 1})
+		if err := s.Directories.Delete(ctx, db, id); err != nil {
+			t.Errorf("Delete(%q) = %v, want the removal run", id, err)
+		}
+		if calls := rec.Calls(); len(calls) != 1 || !slices.Equal(calls[0].Args, []any{id, nil}) {
+			t.Errorf("Delete(%q) ran %+v, want the removal bound to the id as given", id, calls)
+		}
+	}
+
 	s, db, rec := openStore(t, fallback, sqltest.Response{Affected: 1}, sqltest.Response{Affected: 0})
 	if err := s.Directories.Delete(ctx, db, "D"); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -463,6 +481,16 @@ var rootSpellings = []string{
 	"00000000000000000000000000000000",
 	"{00000000000000000000000000000000}",
 	"0000-0000-0000-0000-0000-0000-0000-0000",
+}
+
+// notRootSpellings are strings near blobfs.RootID that are not the nil
+// UUID once braces and hyphens are removed; the root's guards leave each
+// to the statement.
+var notRootSpellings = []string{
+	"00000000-0000-0000-0000-000000000001",
+	"urn:uuid:00000000-0000-0000-0000-000000000000",
+	"",
+	" 00000000-0000-0000-0000-000000000000",
 }
 
 // TestCreateOnASessionThatCannotBegin checks the fallback needs a session

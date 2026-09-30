@@ -1,8 +1,8 @@
-// Package datatest is the conformance suite of the data package: the checks
-// every data.Store must pass against a live database, whatever the engine,
-// the returning commands' form, and the variant. An engine sub-module's
-// integration tier runs it over the baseline and its own variant; a
-// consumer with an Engine of its own runs it over that. It is a package of
+// Package datatest is the conformance suite of the data package: Run, the
+// checks every data.Store must pass against a live database, whatever the
+// engine, the returning commands' form, and the variant. An engine
+// sub-module's integration tier runs it over the baseline and its own
+// variant; a consumer with an Engine of its own runs it over that. It is a package of
 // its own because another module's tests cannot import a _test.go helper.
 //
 // The suite imports no engine and no driver, and every statement it runs

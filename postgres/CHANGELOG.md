@@ -9,13 +9,11 @@ changelog covers this sub-module only; the base module keeps its own.
 
 ### Changed
 
-- The module requires `blobfs` v0.4.0, whose conformance it runs, and the plan test covers the
-  `create_file` and `create_directory` statements. v0.3.0 works with blobfs v0.4.0 as released.
-- The module requires `blobfs` v0.5.0, whose conformance it runs; the plan test reads the
-  branch roots through `Directories.BranchRoots`, blobfs v0.5.0's name for
-  `Directories.Deleting`. The package documentation and the headers of `lock_file` and
-  `resolve_path` are shorter, and the engine's behavior is unchanged: v0.3.0 works with blobfs
-  v0.5.0 as released.
+- The module requires `blobfs` v0.5.0, whose conformance it runs; the plan test covers the
+  `create_file` and `create_directory` statements and reads the branch roots through
+  `Directories.BranchRoots`, blobfs v0.5.0's name for `Directories.Deleting`. The package
+  documentation names every exported identifier, and the engine's behavior is unchanged: v0.3.0
+  works with blobfs v0.5.0 as released.
 
 ## [v0.3.0] - 2026-09-29
 

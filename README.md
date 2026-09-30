@@ -93,9 +93,9 @@ Four conventions the library keeps are stricter than a reader might expect:
   names.
 - `data` is the persistence package: `New` compiles the `Store`, whose `Directories` and `Files`
   handles run the operations and listings, whose protocols, `WriteFile`, `EnsureFile`,
-  `RemoveFile`, and `PurgeFile`, run the write and the delete end to end over the consumer's
-  `ObjectStore`, and whose `Sweep` finishes the deletes of marked branches and stopped
-  protocols. The package also holds the `Variant` interface, the `Engine` type, and the
+  `RemoveFile`, `RemoveFileID`, and `PurgeFile`, run the write and the delete end to end over
+  the consumer's `ObjectStore`, and whose `Sweep` finishes the deletes of marked branches and
+  stopped protocols. The package also holds the `Variant` interface, the `Engine` type, and the
   published patterns.
 - `data/datatest` is the conformance suite, `Run`, which an engine or a consumer's own variant
   runs against a live database.

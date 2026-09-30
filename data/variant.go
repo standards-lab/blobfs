@@ -13,17 +13,23 @@ import (
 
 // Variant is the set of variation points an engine may implement
 // natively. A variant embeds the variant its Engine is given and overrides
-// what it needs. See Variants and engines in docs/features.md.
+// what it needs; a type that implements Variant without embedding the
+// given one is outside the contract. See Variants and engines in
+// docs/features.md.
 type Variant interface {
 	// LockTree takes the tree lock in tx, held until tx ends.
 	LockTree(ctx context.Context, tx *sqlate.Tx) error
 	// Serializes reports whether LockTree serializes across transactions.
 	Serializes() bool
 	// ResolvePath walks segments down from startID and returns the deepest
-	// directory reached and the number of segments matched.
+	// directory reached and the number of segments matched. A missing
+	// start is blobfs.ErrNotFound; no segments returns the start at depth
+	// 0.
 	ResolvePath(ctx context.Context, sess sqlate.Session, startID string, segments []string) (blobfs.Directory, int, error)
 	// HoldFile takes the row lock Files.Delete waits on, for the rest of
-	// tx, and reports whether it held a row that is not deleting.
+	// tx, and reports whether it held a row that is not deleting and sits
+	// at *version when version is not nil. A false takes no lock and is
+	// not an error.
 	HoldFile(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (bool, error)
 	// Statements returns the variant's own compiled statements.
 	Statements() []query.Statement
