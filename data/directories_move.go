@@ -57,10 +57,11 @@ func (d *Directories) Serializes() bool {
 // Refusals: blobfs.ErrRootDirectory before any SQL; blobfs.NameError;
 // blobfs.ErrCycle for a new parent inside the directory's subtree;
 // blobfs.ErrNotFound for a missing directory or new parent;
-// blobfs.ErrNameTaken for a name a directory under the new parent holds;
-// blobfs.ErrDeleting when the directory or either parent is deleting;
-// query.ErrVersionMismatch; sqlate.ErrSerializationFailure at repeatable
-// read or serializable.
+// blobfs.ErrNameTaken for a name an active directory under the new parent
+// holds; blobfs.ErrDeleting when the directory or either parent is
+// deleting; query.ErrVersionMismatch; for a name a deleting directory
+// holds, that directory's blobfs.DeletingError;
+// sqlate.ErrSerializationFailure at repeatable read or serializable.
 func (d *Directories) Move(ctx context.Context, tx *sqlate.Tx, id, parentID, name string, version int64) (_ blobfs.Directory, err error) {
 	defer wrap(&err, "move directory %s under %s as %q", id, parentID, name)
 	if id == blobfs.RootID {
@@ -79,24 +80,33 @@ func (d *Directories) Move(ctx context.Context, tx *sqlate.Tx, id, parentID, nam
 	case within:
 		return blobfs.Directory{}, fmt.Errorf("the new parent is the directory or one of its descendants: %w", blobfs.ErrCycle)
 	}
-	dir, changed, err := d.move.One(ctx, tx, query.Args{"id": id, "parent_id": parentID, "name": name, "version": version})
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return blobfs.Directory{}, blobfs.ErrNotFound
-	case err != nil:
-		return blobfs.Directory{}, classifyWrite(err)
-	case changed:
-		return dir, nil
-	case dir.IsRoot():
-		// The update's parent_id predicate refused the root.
-		return blobfs.Directory{}, blobfs.ErrRootDirectory
-	case !dir.Status.Mutable():
-		// Deleting outranks the stale version.
-		return blobfs.Directory{}, closed(dir)
-	}
-	// The parents tell a closed or missing parent from a stale version.
-	if err := d.dirs.refusedMove(ctx, tx, dir.ParentID, parentID, version, dir.Version); err != nil {
-		return blobfs.Directory{}, err
-	}
-	return blobfs.Directory{}, fmt.Errorf("the update matched no row, yet the directory is %s at version %d", dir.Status, dir.Version)
+	args := query.Args{"id": id, "parent_id": parentID, "name": name, "version": version}
+	return rerunOnce(func() (blobfs.Directory, bool, error) {
+		dir, changed, err := d.move.One(ctx, tx, args)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return blobfs.Directory{}, false, blobfs.ErrNotFound
+		case err != nil:
+			return blobfs.Directory{}, false, classifyWrite(err)
+		case changed:
+			return dir, false, nil
+		case dir.IsRoot():
+			// The update's parent_id predicate refused the root.
+			return blobfs.Directory{}, false, blobfs.ErrRootDirectory
+		case !dir.Status.Mutable():
+			// Deleting outranks the stale version.
+			return blobfs.Directory{}, false, closed(dir)
+		}
+		// The parents tell a closed or missing parent from a stale version,
+		// and then the name's holder tells a deleting one; an update none
+		// explains runs once more, as rerunOnce says, under the lock the
+		// cycle check ran under.
+		if err := d.dirs.refusedMove(ctx, tx, dir.ParentID, parentID, version, dir.Version); err != nil {
+			return blobfs.Directory{}, false, err
+		}
+		if err := d.refusedName(ctx, tx, parentID, name); err != nil {
+			return blobfs.Directory{}, false, err
+		}
+		return blobfs.Directory{}, true, fmt.Errorf("the update matched no row, yet the directory is %s at version %d", dir.Status, dir.Version)
+	})
 }

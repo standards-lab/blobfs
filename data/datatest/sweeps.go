@@ -569,9 +569,12 @@ func (s *suite) sweepStale(t *testing.T) {
 		for _, id := range []string{abandoned, young, available, stopped, starting} {
 			before[id] = s.file(t, id)
 		}
-		if _, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "stopped.txt", "text/plain"); !errors.Is(err, blobfs.ErrNameTaken) {
-			t.Errorf("Create over the stopped delete's name = %v, want ErrNameTaken while its row remains", err)
+		_, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "stopped.txt", "text/plain")
+		if errors.Is(err, blobfs.ErrNameTaken) {
+			t.Errorf("Create over the stopped delete's name = %v, want its DeletingError and not ErrNameTaken", err)
 		}
+		// The stopped delete's row holds its name until the reclaim.
+		wantDeletingKind(t, err, false, stopped)
 
 		objects := newObjectStore()
 		if r, err := s.sweep(store, objects); err != nil || r != (data.SweepResult{}) || objects.calls != 0 {

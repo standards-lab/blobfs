@@ -179,6 +179,70 @@ func TestCreateUnderAClosedParent(t *testing.T) {
 			}
 		}
 	}
+	// Under an active parent, the read of the directory that holds the name
+	// tells a deleting holder, refused by its own delete, marked as the
+	// name's holder, and never as the taken name. A read that explains
+	// nothing, the holder purged or replaced by a live row since the
+	// insert's snapshot, runs the insert once more: it succeeds, meets the
+	// constraint, or selects nothing again with a holder the read finds,
+	// and only a rerun as unexplained leaves the refusal untyped.
+	for _, f := range forms {
+		unchanged := []sqltest.Response{noDirectory(), noDirectory()}
+		changed := []sqltest.Response{directoryResponse("N", "P", "docs", 1)}
+		if !f.single {
+			unchanged = []sqltest.Response{{Affected: 0}, noDirectory()}
+			changed = []sqltest.Response{{Affected: 1}, directoryResponse("N", "P", "docs", 1)}
+		}
+		parent := directoryResponse("P", blobfs.RootID, "p", 1)
+		deleting := directoryIn("H", "P", "docs", blobfs.DirectoryStatusDeleting, 2)
+		again := func(holder sqltest.Response) []sqltest.Response {
+			return append(append(append([]sqltest.Response{}, unchanged...), parent), holder)
+		}
+		for _, c := range []struct {
+			name    string
+			reads   []sqltest.Response
+			want    error // nil for success
+			inserts int
+		}{
+			{"a deleting holder", []sqltest.Response{deleting}, blobfs.ErrDeleting, 1},
+			{"an active holder, the rerun taken", []sqltest.Response{directoryResponse("H", "P", "docs", 1),
+				violation(blobfs.ConstraintUniqueDirectoryParentName, sqlate.ErrUniqueViolation)}, blobfs.ErrNameTaken, 2},
+			{"no holder, the rerun selected", append([]sqltest.Response{noDirectory()}, changed...), nil, 2},
+			{"no holder, then a deleting holder", append([]sqltest.Response{noDirectory()}, again(deleting)...), blobfs.ErrDeleting, 2},
+			{"no holder twice", append([]sqltest.Response{noDirectory()}, again(noDirectory())...), errUnexplained, 2},
+			{"an active holder twice", append([]sqltest.Response{directoryResponse("H", "P", "docs", 1)}, again(directoryResponse("H", "P", "docs", 1))...), errUnexplained, 2},
+		} {
+			s, db, rec := openStore(t, f, append(append(append([]sqltest.Response{}, unchanged...), parent), c.reads...)...)
+			dir, err := s.Directories.Create(ctx, db, "P", "docs")
+			switch c.want {
+			case nil:
+				if err != nil || dir.ID != "N" {
+					t.Errorf("%s: Create over %s = %+v, %v, want the rerun's row", f.name, c.name, dir, err)
+				}
+			case blobfs.ErrNameTaken:
+				if !errors.Is(err, blobfs.ErrNameTaken) || errors.Is(err, blobfs.ErrDeleting) {
+					t.Errorf("%s: Create over %s = %v, want ErrNameTaken", f.name, c.name, err)
+				}
+			case blobfs.ErrDeleting:
+				wantDeleting(t, f.name+": Create over "+c.name, err, true, "H")
+				if errors.Is(err, blobfs.ErrNameTaken) || !strings.Contains(err.Error(), "the directory H holds the name: ") {
+					t.Errorf("%s: Create over %s = %v, want the holder marked and no ErrNameTaken", f.name, c.name, err)
+				}
+			default:
+				if err == nil || errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, blobfs.ErrNameTaken) || !strings.Contains(err.Error(), "no deleting row holds the name") {
+					t.Errorf("%s: Create over %s = %v, want the refusal unexplained", f.name, c.name, err)
+				}
+			}
+			inserts := callsTo(rec, "INSERT INTO blobfs_directory")
+			if len(inserts) != c.inserts || !strings.Contains(inserts[0].SQL, "h.status = 'deleting'") {
+				t.Errorf("%s: Create over %s ran the inserts %v, want %d with the deleting holder's predicate", f.name, c.name, inserts, c.inserts)
+			}
+			if reads := callsTo(rec, "SELECT d.id"); c.want != nil && c.want != blobfs.ErrNameTaken && !slices.Equal(reads[len(reads)-1].Args, []any{"P", "docs"}) {
+				t.Errorf("%s: Create over %s read last %v, want the read by the parent and the name", f.name, c.name, reads[len(reads)-1].Args)
+			}
+			wantDone(t, rec)
+		}
+	}
 	s, db, _ := openStore(t, fallback, sqltest.Response{Affected: 0}, childResponse("X", "other"),
 		directoryIn("P", blobfs.RootID, "p", blobfs.DirectoryStatusDeleting, 2))
 	if _, err := s.Directories.Create(ctx, db, "P", "docs", data.WithID(blobfs.NewID())); !errors.Is(err, blobfs.ErrDeleting) {
@@ -282,6 +346,23 @@ func TestEnsureFindsADeletingDirectory(t *testing.T) {
 	if got := ops(rec); got != "query" {
 		t.Errorf("ops = %q, want the one lookup", got)
 	}
+	// One a creator committed between the lookup and the insert is found
+	// again inside a transaction too, since the insert failed no statement,
+	// and refused as the lookup would have refused it.
+	deleting := directoryIn("D", blobfs.RootID, "docs", blobfs.DirectoryStatusDeleting, 2)
+	s, db, rec = openStore(t, single, noDirectory(), noDirectory(), noDirectory(), directoryResponse(blobfs.RootID, "", "/", 1), deleting, deleting)
+	_, err := db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
+		dir, _, err := s.Directories.Ensure(ctx, tx, blobfs.RootID, "docs")
+		return dir, err
+	})
+	wantDeleting(t, "Ensure under a concurrent deleting directory", err, true, "D")
+	if strings.Contains(err.Error(), "holds the name") {
+		t.Errorf("Ensure under a concurrent deleting directory = %v, want the found directory's refusal", err)
+	}
+	if got := ops(rec); got != "begin query query query query query query rollback" {
+		t.Errorf("ops = %q, want the lookup, the insert and its read, the two reads, and the lookup again", got)
+	}
+	wantDone(t, rec)
 }
 
 // TestEnsureRefusals proves the checks that run before any SQL: an invalid

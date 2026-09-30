@@ -92,6 +92,10 @@ func wantDeleting(t *testing.T, what string, err error, directory bool, id strin
 	}
 }
 
+// errUnexplained stands in a test case for an untyped refusal the reads
+// after a statement that selected nothing did not explain.
+var errUnexplained = errors.New("the refusal unexplained")
+
 // callsTo returns the calls whose text starts with prefix.
 func callsTo(rec *sqltest.Recorder, prefix string) []sqltest.Call {
 	var out []sqltest.Call
@@ -261,6 +265,70 @@ func TestCreateFileRefusals(t *testing.T) {
 			}
 		}
 	}
+	// An insert that selected no row from an active directory reads the
+	// file that holds the name: a deleting holder is refused by its delete,
+	// or by its directory's once the directory is deleting, marked as the
+	// name's holder, and never as the taken name. A read that explains
+	// nothing, the holder purged or replaced by a live row since the
+	// insert's snapshot, runs the insert once more: it succeeds, meets the
+	// constraint, or selects nothing again with a holder the read finds,
+	// and only a rerun as unexplained leaves the refusal untyped.
+	for _, f := range forms {
+		active := directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusActive, 1)
+		deleting := fileIn("H", "D", "ok.txt", blobfs.StatusDeleting, 2)
+		again := func(reads ...sqltest.Response) []sqltest.Response {
+			return append(append(unchangedFile(f, noFile()), active), reads...)
+		}
+		taken := violation(blobfs.ConstraintUniqueFileDirectoryName, sqlate.ErrUniqueViolation)
+		for _, c := range []struct {
+			name      string
+			reads     []sqltest.Response
+			want      error // nil for success
+			directory bool
+			id        string
+			inserts   int
+		}{
+			{"a deleting holder", []sqltest.Response{deleting, active}, blobfs.ErrDeleting, false, "H", 1},
+			{"a holder its branch's mark reached", []sqltest.Response{deleting, directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusDeleting, 2)}, blobfs.ErrDeleting, true, "D", 1},
+			{"no holder, the rerun selected", append([]sqltest.Response{noFile()}, changedFile(f, fileIn("N", "D", "ok.txt", blobfs.StatusPending, 1))...), nil, false, "", 2},
+			{"an available holder, the rerun taken", []sqltest.Response{fileIn("H", "D", "ok.txt", blobfs.StatusAvailable, 1), taken}, blobfs.ErrNameTaken, false, "", 2},
+			{"no holder, then a deleting holder", append([]sqltest.Response{noFile()}, again(deleting, active)...), blobfs.ErrDeleting, false, "H", 2},
+			{"no holder twice", append([]sqltest.Response{noFile()}, again(noFile())...), errUnexplained, false, "", 2},
+			{"an available holder twice", append([]sqltest.Response{fileIn("H", "D", "ok.txt", blobfs.StatusAvailable, 1)}, again(fileIn("H", "D", "ok.txt", blobfs.StatusAvailable, 1))...), errUnexplained, false, "", 2},
+		} {
+			s, db, rec := openStore(t, f, append(append(unchangedFile(f, noFile()), active), c.reads...)...)
+			file, err := s.Files.Create(ctx, db, accepting{}, "D", "ok.txt", "text/plain")
+			switch c.want {
+			case nil:
+				if err != nil || file.ID != "N" {
+					t.Errorf("%s: Create under %s = %+v, %v, want the rerun's row", f.name, c.name, file, err)
+				}
+			case blobfs.ErrDeleting:
+				wantDeleting(t, f.name+": Create under "+c.name, err, c.directory, c.id)
+				if errors.Is(err, blobfs.ErrNameTaken) || !strings.Contains(err.Error(), "the file H holds the name: ") {
+					t.Errorf("%s: Create under %s = %v, want the holder marked and no ErrNameTaken", f.name, c.name, err)
+				}
+			case blobfs.ErrNameTaken:
+				if !errors.Is(err, blobfs.ErrNameTaken) || errors.Is(err, blobfs.ErrDeleting) {
+					t.Errorf("%s: Create under %s = %v, want ErrNameTaken", f.name, c.name, err)
+				}
+			default:
+				if err == nil || errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, blobfs.ErrNameTaken) || !strings.Contains(err.Error(), "no deleting row holds the name") {
+					t.Errorf("%s: Create under %s = %v, want the refusal unexplained", f.name, c.name, err)
+				}
+			}
+			if c.want != nil && c.want != blobfs.ErrNameTaken {
+				if reads := callsTo(rec, "SELECT f.id"); len(reads) == 0 || !slices.Equal(reads[len(reads)-1].Args, []any{"D", "ok.txt"}) {
+					t.Errorf("%s: the file reads are %v, want the last by the directory and the name", f.name, reads)
+				}
+			}
+			inserts := callsTo(rec, "INSERT INTO blobfs_file")
+			if len(inserts) != c.inserts || !strings.Contains(inserts[0].SQL, "h.status = 'deleting'") {
+				t.Errorf("%s: Create under %s ran the inserts %v, want %d with the deleting holder's predicate", f.name, c.name, inserts, c.inserts)
+			}
+			wantDone(t, rec)
+		}
+	}
 	// A caller-supplied id another row carries does not make an insert that
 	// selected nothing a success: the read found that row unchanged.
 	s, db, _ = openStore(t, fallback, sqltest.Response{Affected: 0}, fileResponse("F", "other.txt", blobfs.StatusAvailable, 1),
@@ -366,6 +434,50 @@ func TestEnsureFile(t *testing.T) {
 			}
 			if got := ops(rec); got != want {
 				t.Errorf("ops = %q, want %q: no lookup after the refused insert inside the transaction", got, want)
+			}
+
+			// A deleting row a writer committed between the lookup and the
+			// insert is found again, on the pool and inside a transaction
+			// alike, since the insert selected nothing and failed no
+			// statement: WritePresent, as the lookup would have found it. A
+			// holder gone again by the second lookup leaves its refusal.
+			root := directoryResponse(blobfs.RootID, "", "/", 1)
+			holder := fileResponse("H", "a.txt", blobfs.StatusDeleting, 2)
+			refused := append(append([]sqltest.Response{noFile()}, unchangedFile(f, noFile())...), root, holder, root)
+			for _, inTx := range []bool{false, true} {
+				for _, again := range []sqltest.Response{holder, noFile()} {
+					s, db, rec := openStore(t, f, append(slices.Clone(refused), again)...)
+					type ensured struct {
+						file    blobfs.File
+						outcome data.WriteOutcome
+					}
+					run := func(sess sqlate.Session) (ensured, error) {
+						file, outcome, err := s.Files.Ensure(ctx, sess, accepting{}, blobfs.RootID, "a.txt", "text/plain")
+						return ensured{file, outcome}, err
+					}
+					var e ensured
+					var err error
+					if inTx {
+						e, err = db.Transact(ctx, func(tx *sqlate.Tx) (ensured, error) { return run(tx) })
+					} else {
+						e, err = run(db)
+					}
+					if len(again.Rows) == 0 {
+						wantDeleting(t, "Ensure whose deleting holder is gone again", err, false, "H")
+					} else if err != nil || e.outcome != data.WritePresent || e.file.ID != "H" || e.file.Status != blobfs.StatusDeleting {
+						t.Errorf("Ensure under a concurrent deleting row, in a transaction %v = %+v, %v; want the row and WritePresent", inTx, e, err)
+					}
+					var byName int
+					for _, c := range callsTo(rec, "SELECT f.id") {
+						if slices.Equal(c.Args, []any{blobfs.RootID, "a.txt"}) {
+							byName++
+						}
+					}
+					if byName != 3 {
+						t.Errorf("Ensure under a concurrent deleting row read by the name %d times, want the lookup, the holder's read, and the lookup again", byName)
+					}
+					wantDone(t, rec)
+				}
 			}
 		})
 	}
@@ -559,19 +671,57 @@ func TestMoveFile(t *testing.T) {
 			for _, version := range []int64{1, 2} {
 				// Deleting outranks the stale version.
 				err = move(append(unchangedFile(f, fileResponse("F", "a", blobfs.StatusDeleting, version)), active[0])...)
-				if errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "the file F is deleting") {
-					t.Errorf("Move of a deleting row at version %d = %v, want ErrDeleting and not a version mismatch", version, err)
+				if errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "the file F is deleting") || strings.Contains(err.Error(), "holds the name") {
+					t.Errorf("Move of a deleting row at version %d = %v, want its own ErrDeleting, not a holder's, and not a version mismatch", version, err)
 				}
 				wantDeleting(t, "Move of a deleting row", err, false, "F")
 			}
 			err = move(append(unchangedFile(f, fileIn("F", "S", "a", blobfs.StatusDeleting, 2)), directoryIn("S", blobfs.RootID, "s", blobfs.DirectoryStatusDeleting, 2))...)
 			wantDeleting(t, "Move of a file its branch's mark reached", err, true, "S")
-			// An available row the update left unchanged is reported, not
-			// taken for success.
-			err = move(append(unchangedFile(f, fileResponse("F", "a", blobfs.StatusAvailable, 1)), active...)...)
-			if err == nil || errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "available at version 1") {
-				t.Errorf("Move refused over an available row = %v, want an error naming the row's state", err)
+			// A deleting file that holds the name in the new directory
+			// refuses the move by its own delete, not as the taken name, and
+			// is marked as the name's holder, apart from the moved row's own.
+			holder := append(append(unchangedFile(f, fileResponse("F", "b", blobfs.StatusAvailable, 1)), active...),
+				fileIn("H", "P", "a", blobfs.StatusDeleting, 2), directoryResponse("P", blobfs.RootID, "p", 1))
+			s, db, rec = openStore(t, f, holder...)
+			_, err = s.Files.Move(ctx, db, "F", "P", "a", 1)
+			if errors.Is(err, blobfs.ErrNameTaken) || !strings.Contains(err.Error(), "the file H holds the name: ") {
+				t.Errorf("Move onto a deleting holder's name = %v, want the holder marked and no ErrNameTaken", err)
 			}
+			wantDeleting(t, "Move onto a deleting holder's name", err, false, "H")
+			if reads := callsTo(rec, "SELECT f.id"); !slices.Equal(reads[len(reads)-1].Args, []any{"P", "a"}) {
+				t.Errorf("the last file read bound %v, want the new directory and the name", reads[len(reads)-1].Args)
+			}
+			if update := callsTo(rec, "UPDATE blobfs_file")[0]; !strings.Contains(update.SQL, "h.status = 'deleting'") {
+				t.Errorf("the update is %q, want the deleting holder's predicate", update.SQL)
+			}
+			wantDone(t, rec)
+			// An available row the update left unchanged, with no deleting
+			// holder, runs the update once more, and is reported, not taken
+			// for success, when the rerun is as unexplained.
+			unexplained := append(append(unchangedFile(f, fileResponse("F", "a", blobfs.StatusAvailable, 1)), active...), noFile())
+			err = move(append(slices.Clone(unexplained), unexplained...)...)
+			if err == nil || errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "available at version 1") {
+				t.Errorf("Move refused over an available row, twice = %v, want an error naming the row's state", err)
+			}
+			// The rerun, its holder purged or its name taken by a live row
+			// since the update's snapshot, moves the row, meets the
+			// constraint, or selects nothing again with a holder the read
+			// finds.
+			s, db, rec = openStore(t, f, append(slices.Clone(unexplained), changedFile(f, fileIn("F", "P", "a", blobfs.StatusAvailable, 2))...)...)
+			if file, err := s.Files.Move(ctx, db, "F", "P", "a", 1); err != nil || file.Version != 2 {
+				t.Errorf("Move whose rerun changed the row = %+v, %v, want the row", file, err)
+			}
+			if updates := callsTo(rec, "UPDATE blobfs_file"); len(updates) != 2 {
+				t.Errorf("Move ran %d updates, want the update and its rerun", len(updates))
+			}
+			wantDone(t, rec)
+			err = move(append(slices.Clone(unexplained), violation(blobfs.ConstraintUniqueFileDirectoryName, sqlate.ErrUniqueViolation))...)
+			if !errors.Is(err, blobfs.ErrNameTaken) || errors.Is(err, blobfs.ErrDeleting) {
+				t.Errorf("Move whose rerun met a live holder = %v, want ErrNameTaken", err)
+			}
+			err = move(append(slices.Clone(unexplained), holder...)...)
+			wantDeleting(t, "Move whose rerun met a deleting holder", err, false, "H")
 			for _, c := range []struct {
 				constraint string
 				class      error

@@ -24,9 +24,11 @@ func (s *suite) protocols(t *testing.T) {
 	t.Run("WriteRefusedCompletion", s.protocolWriteRefusedCompletion)
 	t.Run("WriteRefusedBegin", s.protocolWriteRefusedBegin)
 	t.Run("WriteRefusesAnAvailableRow", s.protocolWriteRefusesAvailable)
+	t.Run("WriteUnderADeletingName", s.protocolWriteUnderADeletingName)
 	t.Run("EnsureCreates", s.protocolEnsureCreates)
 	t.Run("EnsureResumes", s.protocolEnsureResumes)
 	t.Run("EnsureNameTaken", s.protocolEnsureNameTaken)
+	t.Run("EnsureNameHeldByADeletingRow", s.protocolEnsureNameHeldByADeletingRow)
 	t.Run("EnsureDeleting", s.protocolEnsureDeleting)
 	t.Run("EnsureSharesARow", s.protocolEnsureShares)
 	t.Run("EnsureLostInsert", s.protocolEnsureLostInsert)
@@ -242,6 +244,43 @@ func (s *suite) protocolWriteRefusesAvailable(t *testing.T) {
 	}
 }
 
+// protocolWriteUnderADeletingName checks Write under a name a deleting row
+// holds, as a write whose put and abandon both failed leaves it: the
+// holder's DeletingError, not ErrNameTaken, nothing put or deleted, and the
+// row untouched. The refusal fails no statement, so begin's transaction
+// still runs a read after it.
+func (s *suite) protocolWriteUnderADeletingName(t *testing.T) {
+	for _, tier := range s.storesUnder() {
+		t.Run(tier.name, func(t *testing.T) {
+			dir := s.mkdir(t, "write-deleting-name-"+t.Name())
+			holder := s.file(t, s.insertFile(t, dir.ID, "report.txt", blobfs.StatusDeleting))
+			objects := newObjectStore()
+			var after error
+			_, err := tier.store.Write(s.ctx, s.db, objects, strings.NewReader("report"), 6, func(tx *sqlate.Tx) (blobfs.File, error) {
+				f, err := tier.store.Files.Create(s.ctx, tx, acceptAll{}, dir.ID, "report.txt", "text/plain")
+				if err == nil {
+					return f, nil
+				}
+				_, after = tier.store.Files.FindByName(s.ctx, tx, dir.ID, "report.txt")
+				return blobfs.File{}, err
+			})
+			if errors.Is(err, blobfs.ErrNameTaken) {
+				t.Errorf("Write under a deleting row's name = %v, want no ErrNameTaken", err)
+			}
+			wantDeletingKind(t, err, false, holder.ID)
+			if after != nil {
+				t.Errorf("the read in begin after the refusal = %v, want the transaction still usable", after)
+			}
+			if objects.puts != 0 || objects.calls != 0 {
+				t.Errorf("the refused write put %d times and deleted %d, want nothing", objects.puts, objects.calls)
+			}
+			if row := s.file(t, holder.ID); !equalFile(holder, row) {
+				t.Errorf("the refused write changed the holder to\n%+v\nfrom\n%+v", row, holder)
+			}
+		})
+	}
+}
+
 // protocolEnsureCreates checks Ensure under a fixed id: the first call
 // creates, stores, and reports stored; a second finds the row available
 // and returns it as it stands, nothing put and stored false.
@@ -310,6 +349,30 @@ func (s *suite) protocolEnsureNameTaken(t *testing.T) {
 				if after := s.file(t, before.ID); !equalFile(before, after) {
 					t.Errorf("the refused Ensure changed the %s row to\n%+v\nfrom\n%+v", status, after, before)
 				}
+			}
+		})
+	}
+}
+
+// protocolEnsureNameHeldByADeletingRow checks Ensure where a deleting row
+// under another id holds the name: that row's DeletingError, not
+// ErrNameTaken, the row untouched, and nothing put or deleted.
+func (s *suite) protocolEnsureNameHeldByADeletingRow(t *testing.T) {
+	for _, tier := range s.storesUnder() {
+		t.Run(tier.name, func(t *testing.T) {
+			dir := s.mkdir(t, "ensure-deleting-name-"+t.Name())
+			before := s.file(t, s.insertFile(t, dir.ID, "seed.txt", blobfs.StatusDeleting))
+			objects := newObjectStore()
+			_, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", blobfs.NewID(), "seed")
+			if errors.Is(err, blobfs.ErrNameTaken) || stored {
+				t.Errorf("Ensure over a deleting row under another id = %v, %v, want its DeletingError", stored, err)
+			}
+			wantDeletingKind(t, err, false, before.ID)
+			if objects.puts != 0 || objects.calls != 0 {
+				t.Errorf("the refused Ensure put %d times and deleted %d, want nothing", objects.puts, objects.calls)
+			}
+			if after := s.file(t, before.ID); !equalFile(before, after) {
+				t.Errorf("the refused Ensure changed the row to\n%+v\nfrom\n%+v", after, before)
 			}
 		})
 	}

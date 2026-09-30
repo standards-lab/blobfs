@@ -106,13 +106,14 @@ func (s *suite) moveFile(t *testing.T) {
 // moveFileRefusals checks the file move's refusals against the baseline,
 // each leaving the row unchanged; a deleting row is ErrDeleting at its own
 // version and at the one read before a concurrent Delete, the file's own
-// DeletingError.
+// DeletingError; a name a deleting file holds is that file's
+// DeletingError and not ErrNameTaken.
 func (s *suite) moveFileRefusals(t *testing.T) {
 	src := s.mkdir(t, "refuse-src-"+t.Name())
 	dst := s.mkdir(t, "refuse-dst-"+t.Name())
 	mover := s.insertFile(t, src.ID, "mover.txt", blobfs.StatusAvailable)
 	s.insertFile(t, dst.ID, "held.txt", blobfs.StatusAvailable)
-	s.insertFile(t, dst.ID, "held-deleting.txt", blobfs.StatusDeleting)
+	holder := s.insertFile(t, dst.ID, "held-deleting.txt", blobfs.StatusDeleting)
 	deleting := s.insertFile(t, src.ID, "deleting.txt", blobfs.StatusDeleting)
 	// A row the mover read at version 1 before a concurrent Delete, which
 	// advanced it to version 2.
@@ -128,15 +129,19 @@ func (s *suite) moveFileRefusals(t *testing.T) {
 		want       error
 		constraint string
 		not        error
+		// deleting names the file whose DeletingError refuses the move,
+		// when it is not the moved file.
+		deleting string
 	}{
-		{"NameTaken", mover, dst.ID, "held.txt", 1, blobfs.ErrNameTaken, blobfs.ConstraintUniqueFileDirectoryName, nil},
-		{"NameTakenByADeletingRow", mover, dst.ID, "held-deleting.txt", 1, blobfs.ErrNameTaken, blobfs.ConstraintUniqueFileDirectoryName, nil},
-		{"MissingDirectory", mover, blobfs.NewID(), "mover.txt", 1, blobfs.ErrNotFound, "", nil},
-		{"StaleVersion", mover, dst.ID, "stale.txt", 2, query.ErrVersionMismatch, "", blobfs.ErrDeleting},
-		{"Deleting", deleting, dst.ID, "elsewhere.txt", 1, blobfs.ErrDeleting, "", query.ErrVersionMismatch},
-		{"DeletingAtThePreDeleteVersion", deleted, dst.ID, "elsewhere.txt", 1, blobfs.ErrDeleting, "", query.ErrVersionMismatch},
-		{"MissingFile", missing, dst.ID, "ghost.txt", 1, blobfs.ErrNotFound, "", nil},
-		{"RefusedName", mover, dst.ID, "a/b", 1, blobfs.ErrInvalidName, "", nil},
+		{"NameTaken", mover, dst.ID, "held.txt", 1, blobfs.ErrNameTaken, blobfs.ConstraintUniqueFileDirectoryName, nil, ""},
+		{"NameHeldByADeletingRow", mover, dst.ID, "held-deleting.txt", 1, blobfs.ErrDeleting, "", blobfs.ErrNameTaken, holder},
+		{"NameHeldByADeletingRowAtAStaleVersion", mover, dst.ID, "held-deleting.txt", 2, query.ErrVersionMismatch, "", blobfs.ErrDeleting, ""},
+		{"MissingDirectory", mover, blobfs.NewID(), "mover.txt", 1, blobfs.ErrNotFound, "", nil, ""},
+		{"StaleVersion", mover, dst.ID, "stale.txt", 2, query.ErrVersionMismatch, "", blobfs.ErrDeleting, ""},
+		{"Deleting", deleting, dst.ID, "elsewhere.txt", 1, blobfs.ErrDeleting, "", query.ErrVersionMismatch, ""},
+		{"DeletingAtThePreDeleteVersion", deleted, dst.ID, "elsewhere.txt", 1, blobfs.ErrDeleting, "", query.ErrVersionMismatch, ""},
+		{"MissingFile", missing, dst.ID, "ghost.txt", 1, blobfs.ErrNotFound, "", nil, ""},
+		{"RefusedName", mover, dst.ID, "a/b", 1, blobfs.ErrInvalidName, "", nil, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var before blobfs.File
@@ -150,7 +155,11 @@ func (s *suite) moveFileRefusals(t *testing.T) {
 				t.Errorf("Move = %v, want %v and not %v", err, c.want, c.not)
 			}
 			if c.want == blobfs.ErrDeleting {
-				wantDeletingKind(t, err, false, c.id)
+				id := c.id
+				if c.deleting != "" {
+					id = c.deleting
+				}
+				wantDeletingKind(t, err, false, id)
 			}
 			_, base := s.baseline.Files.Move(s.ctx, s.db, c.id, c.dir, c.file, c.version)
 			wantSameError(t, err, base)

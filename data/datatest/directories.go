@@ -109,10 +109,22 @@ func (s *suite) createDirectory(t *testing.T) {
 
 // createDirectoryRefusals checks Create's and Ensure's refusals against the
 // baseline, by sentinel and constraint or in the same text, and the
-// refusals before any SQL, which leave no row.
+// refusals before any SQL, which leave no row. A name a deleting directory
+// holds is that directory's DeletingError to both, not ErrNameTaken.
 func (s *suite) createDirectoryRefusals(t *testing.T) {
 	parent := s.mkdir(t, "refusals-"+t.Name())
 	taken := s.mkdirUnder(t, parent.ID, composed)
+	held := s.mkdirUnder(t, parent.ID, "held-deleting")
+	if _, err := s.mark(s.store, held.ID); err != nil {
+		t.Fatalf("MarkDeleting: %v", err)
+	}
+	// The marked branch is removed once the refusals ran, so no later
+	// group's sweep finds it.
+	t.Cleanup(func() {
+		if err := s.store.Directories.Delete(s.ctx, s.db, held.ID); err != nil {
+			t.Errorf("remove the deleting holder: %v", err)
+		}
+	})
 	for _, c := range []struct {
 		name       string
 		parent     string
@@ -123,12 +135,19 @@ func (s *suite) createDirectoryRefusals(t *testing.T) {
 	}{
 		{"NameTaken", parent.ID, composed, nil, blobfs.ErrNameTaken, blobfs.ConstraintUniqueDirectoryParentName},
 		{"NameTakenDecomposed", parent.ID, decomposed, nil, blobfs.ErrNameTaken, blobfs.ConstraintUniqueDirectoryParentName},
+		{"NameHeldByADeletingDirectory", parent.ID, "held-deleting", nil, blobfs.ErrDeleting, ""},
 		{"MissingParent", blobfs.NewID(), "orphan", nil, blobfs.ErrNotFound, ""},
 		{"IDTaken", parent.ID, "twin", []data.CreateOption{data.WithID(taken.ID)}, blobfs.ErrIDTaken, blobfs.ConstraintPrimaryKeyDirectory},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := s.store.Directories.Create(s.ctx, s.db, c.parent, c.dir, c.opts...)
 			wantRefusal(t, err, c.want, c.constraint)
+			if c.want == blobfs.ErrDeleting {
+				wantDeletingKind(t, err, true, held.ID)
+				if errors.Is(err, blobfs.ErrNameTaken) {
+					t.Errorf("Create = %v, want the holder's delete and not ErrNameTaken", err)
+				}
+			}
 			_, base := s.baseline.Directories.Create(s.ctx, s.db, c.parent, c.dir, c.opts...)
 			wantSameError(t, err, base)
 			found, created, err := s.store.Directories.Ensure(s.ctx, s.db, c.parent, c.dir, c.opts...)
@@ -141,6 +160,10 @@ func (s *suite) createDirectoryRefusals(t *testing.T) {
 				return
 			}
 			wantRefusal(t, err, c.want, c.constraint)
+			if c.want == blobfs.ErrDeleting {
+				// The lookup finds the deleting holder and refuses it alike.
+				wantDeletingKind(t, err, true, held.ID)
+			}
 			wantSameError(t, err, base)
 		})
 	}
@@ -165,8 +188,8 @@ func (s *suite) createDirectoryRefusals(t *testing.T) {
 				t.Errorf("Ensure(%q) = %v, want %v", c.dir, err, c.want)
 			}
 		}
-		if n := s.count(t, s.db, "SELECT COUNT(*) FROM blobfs_directory WHERE parent_id = "+s.db.Dialect().Placeholder(1), parent.ID); n != 1 {
-			t.Errorf("%d directories under the parent after the refusals, want the one taken", n)
+		if n := s.count(t, s.db, "SELECT COUNT(*) FROM blobfs_directory WHERE parent_id = "+s.db.Dialect().Placeholder(1), parent.ID); n != 2 {
+			t.Errorf("%d directories under the parent after the refusals, want the taken one and the deleting one", n)
 		}
 	})
 }

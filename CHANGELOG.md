@@ -7,6 +7,44 @@ the `postgres` sub-module keeps its own.
 
 ## [Unreleased]
 
+## [v0.4.0] - 2026-09-29
+
+### Changed
+
+- **Breaking:** a create or a move onto a name that a deleting row holds is refused with that
+  row's `*blobfs.DeletingError`, where it was `ErrNameTaken`. A deleting row is a file whose write
+  failed both its put and its object's delete in the abandon, a file whose delete stopped before
+  its purge, or a directory a mark reached. The listings hide it, so `ErrNameTaken`
+  named a row the caller could not see. The change applies to `Files.Create`, `Files.Move`,
+  `Directories.Create`, the insert in `Directories.Ensure`, and `Directories.Move`, and so to
+  `Store.Write`'s `begin`. A file holder is reported as the file's own `DeletingError`, or as its
+  directory's once the directory is deleting; a directory holder is reported with `Directory`
+  true. The error does not match `ErrNameTaken`, so a caller that checks `ErrNameTaken` first now
+  reaches its `ErrDeleting` branch, and `Store.Ensure` does not retry the error as a concurrent
+  writer's. `ErrNameTaken` remains the refusal of a name that a pending or available file, or an
+  active directory, holds, still as a `ViolationError` over the unique constraint. The store wraps
+  the holder's refusal in "the file `<id>` holds the name" or "the directory `<id>` holds the
+  name", so a move refused by the name's holder reads apart from one refused by the moved row's
+  own delete;
+  `errors.As` still reaches the `DeletingError`, whose `ID` names the holder.
+- `Store.Ensure` reports a deleting row found under another id as its `DeletingError`, where it
+  was `ErrNameTaken`. `Files.Ensure` returns a deleting row as `WritePresent`, inside a
+  transaction too, whether its lookup found the row or a writer committed the row after the
+  lookup and the row refused the insert. `Directories.Ensure` likewise looks such a directory up
+  again and refuses it as it refuses a found one.
+- `create_file`, `create_directory`, `move_file`, and `move_directory` select nothing when a
+  deleting row holds the name, rather than failing the unique constraint, so the refusal runs no
+  failing statement and leaves the caller's transaction usable. The store then reads the name's
+  holder to report it; the success path runs no extra statement. A row that turns deleting after
+  the statement ran is still refused by the constraint as `ErrNameTaken`. When the reads find no
+  cause, because the holder was purged or a live row took its name after the statement's
+  snapshot, the store runs the statement once more. The rerun succeeds, meets the constraint, or
+  selects nothing again with a holder the reads find; only a rerun that the reads still do not
+  explain returns an untyped error.
+- `data/datatest`: the create, move, sweep, and protocol groups assert the `DeletingError` for a
+  name a deleting row holds, and the Protocols group adds `WriteUnderADeletingName` and
+  `EnsureNameHeldByADeletingRow`.
+
 ## [v0.3.0] - 2026-09-29
 
 ### Added
@@ -137,7 +175,8 @@ library never calls.
 - `data/datatest`, the conformance suite: `Run` checks a store over any engine against the
   baseline on a live database, the hold's refusals and interleavings with a delete included.
 
-[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.4.0...HEAD
+[v0.4.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.4.0
 [v0.3.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.3.0
 [v0.2.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.2.0
 [v0.1.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.1.0

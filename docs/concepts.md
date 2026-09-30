@@ -111,11 +111,22 @@ file. `data.Store.Purge` runs the last two steps, for a consumer that began the 
 transaction of its own; see [the protocols](features.md#the-protocols).
 
 A deleting row keeps its name until it is purged, so a write of the same name in the window is
-refused as taken. Every mutation other than the delete steps refuses a deleting row with
+refused with the deleting row's `blobfs.DeletingError`, not `blobfs.ErrNameTaken` (see [errors
+and constraints](features.md#errors-and-constraints)). A directory a mark reached holds its name
+the same way. Every mutation other than the delete steps refuses a deleting row with
 `blobfs.ErrDeleting`, so no operation acts on a row whose object is gone or about to be. The
 refusal is a `blobfs.DeletingError`, which says whether the file's own delete or a directory's
 refused the mutation, so a consumer can report "the file is being deleted" apart from "the
 folder is being deleted" (see [errors and constraints](features.md#errors-and-constraints)).
+
+A move's `DeletingError` comes from one of two deletes: that of the moved row or of a directory
+it leaves or enters, or that of the row that holds the name the move asked for, whose refusal
+the store marks as the holder's (see [errors and
+constraints](features.md#errors-and-constraints)). A consumer tells the two apart by the
+`DeletingError`'s `ID`: one that names neither the moved row nor a directory it left or entered
+is the name's holder, and the caller waits out its delete or gives up the name. When a mark
+reaches a file holder's directory after the move read the directories, the refusal is that
+directory's, which is the directory the move entered.
 
 ### Deleting outranks the version
 
@@ -274,9 +285,10 @@ should hold:
 From the mark's commit the branch is hidden and closed. The listings hide its rows, and the
 listing of a directory in it is `blobfs.ErrDeleting`. A create or an ensure under a deleting
 directory, a move into one, and a move of a directory or file out of one are
-`blobfs.ErrDeleting`: nothing enters the branch and nothing leaves it. A read by id, name, or
-path still finds its rows, with their status. A mark is never undone, and the root cannot be
-marked.
+`blobfs.ErrDeleting`: nothing enters the branch and nothing leaves it. A create or a move onto a
+name the branch's root holds under its active parent is the root's `blobfs.DeletingError` until
+the sweep removes it. A read by id, name, or path still finds its rows, with their status. A mark
+is never undone, and the root cannot be marked.
 
 The mark is guarded like the other steps a caller takes on a row it read. `data.AtVersion` marks
 the branch only while its root is at the version the caller read, the directory its user saw and

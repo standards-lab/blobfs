@@ -55,33 +55,43 @@ func (s *suite) createFile(t *testing.T) {
 
 // createFileRefusals checks Create's and Ensure's refusals against the
 // baseline, by sentinel and constraint or in the same text, and the
-// refusals before any SQL, which leave no row.
+// refusals before any SQL, which leave no row. A name a deleting file
+// holds is that file's DeletingError to Create, not ErrNameTaken, and is
+// found by Ensure.
 func (s *suite) createFileRefusals(t *testing.T) {
 	dir := s.mkdir(t, "create-file-refusals-"+t.Name())
 	taken := s.insertFile(t, dir.ID, "taken.txt", blobfs.StatusAvailable)
-	s.insertFile(t, dir.ID, "deleting.txt", blobfs.StatusDeleting)
+	holder := s.insertFile(t, dir.ID, "deleting.txt", blobfs.StatusDeleting)
 	for _, c := range []struct {
 		name       string
 		dir, file  string
 		opts       []data.CreateOption
 		want       error
 		constraint string
+		// held names the row that holds the name, which Ensure finds.
+		held string
 	}{
-		{"NameTaken", dir.ID, "taken.txt", nil, blobfs.ErrNameTaken, blobfs.ConstraintUniqueFileDirectoryName},
-		{"NameTakenByADeletingRow", dir.ID, "deleting.txt", nil, blobfs.ErrNameTaken, blobfs.ConstraintUniqueFileDirectoryName},
-		{"MissingDirectory", blobfs.NewID(), "orphan.txt", nil, blobfs.ErrNotFound, ""},
-		{"IDTaken", dir.ID, "twin.txt", []data.CreateOption{data.WithID(taken)}, blobfs.ErrIDTaken, blobfs.ConstraintPrimaryKeyFile},
+		{"NameTaken", dir.ID, "taken.txt", nil, blobfs.ErrNameTaken, blobfs.ConstraintUniqueFileDirectoryName, taken},
+		{"NameHeldByADeletingRow", dir.ID, "deleting.txt", nil, blobfs.ErrDeleting, "", holder},
+		{"MissingDirectory", blobfs.NewID(), "orphan.txt", nil, blobfs.ErrNotFound, "", ""},
+		{"IDTaken", dir.ID, "twin.txt", []data.CreateOption{data.WithID(taken)}, blobfs.ErrIDTaken, blobfs.ConstraintPrimaryKeyFile, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, c.dir, c.file, "text/plain", c.opts...)
 			wantRefusal(t, err, c.want, c.constraint)
+			if c.want == blobfs.ErrDeleting {
+				wantDeletingKind(t, err, false, c.held)
+				if errors.Is(err, blobfs.ErrNameTaken) {
+					t.Errorf("Create = %v, want the holder's delete and not ErrNameTaken", err)
+				}
+			}
 			_, base := s.baseline.Files.Create(s.ctx, s.db, acceptAll{}, c.dir, c.file, "text/plain", c.opts...)
 			wantSameError(t, err, base)
 			found, outcome, err := s.store.Files.Ensure(s.ctx, s.db, acceptAll{}, c.dir, c.file, "text/plain", c.opts...)
 			_, _, base = s.baseline.Files.Ensure(s.ctx, s.db, acceptAll{}, c.dir, c.file, "text/plain", c.opts...)
-			if c.want == blobfs.ErrNameTaken {
-				// The lookup runs first, so the taken name is found.
-				if err != nil || base != nil || outcome != data.WritePresent || found.Name != c.file {
+			if c.held != "" {
+				// The lookup runs first, so the held name is found.
+				if err != nil || base != nil || outcome != data.WritePresent || found.ID != c.held {
 					t.Errorf("Ensure of a taken name = %+v, %s, %v and %v on the baseline, want the row present", found, outcome, err, base)
 				}
 				return
