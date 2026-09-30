@@ -7,17 +7,8 @@ import (
 )
 
 // KeyValidator is the one question a write asks of the object store:
-// whether it accepts a key. A consumer wires its store's key validation to
-// this interface at its composition root, so blobfs validates a key before
-// it stores the key in a pending row and never imports the store's
-// package.
-//
-// The interface carries no maximum key length. The store's own validation
-// enforces its limit, counted the way the store counts, so blobfs keeps no
-// second length check of its own. A key of the longest name is 292 runes,
-// within Azure Blob Storage's 1024 characters; S3 counts its 1024 in bytes
-// of UTF-8, and a key of 255 four-byte runes is 1057 bytes, which the
-// store's validation refuses as a KeyError before any row is written.
+// whether it accepts a key. It carries no maximum length; the store's own
+// validation enforces its limit, counted the way the store counts.
 type KeyValidator interface {
 	// ValidateKey returns a non-nil error that says why when the store
 	// refuses key.

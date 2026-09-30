@@ -204,13 +204,13 @@ func (s *suite) cursorAcrossAMark(t *testing.T) {
 }
 
 // deletingRoots is the plain query of the roots of the branches being
-// deleted, which Directories.Deleting must match.
+// deleted, which Directories.BranchRoots must match.
 const deletingRoots = "SELECT d.id FROM blobfs_directory d JOIN blobfs_directory p ON p.id = d.parent_id WHERE d.status = 'deleting' AND p.status = 'active' ORDER BY d.id"
 
-// deletingFindsTheRoots checks Directories.Deleting against the baseline
+// branchRootsFindsTheRoots checks Directories.BranchRoots against the baseline
 // and a plain query over branches marked at the top, the middle, and both,
 // and its limit.
-func (s *suite) deletingFindsTheRoots(t *testing.T) {
+func (s *suite) branchRootsFindsTheRoots(t *testing.T) {
 	top := s.newBranch(t, "roots-top-"+t.Name())
 	middle := s.newBranch(t, "roots-middle-"+t.Name())
 	twice := s.newBranch(t, "roots-twice-"+t.Name())
@@ -221,7 +221,7 @@ func (s *suite) deletingFindsTheRoots(t *testing.T) {
 	}
 	want := s.column(t, deletingRoots)
 	for _, store := range []*data.Store{s.store, s.baseline} {
-		roots, err := store.Directories.Deleting(s.ctx, s.db, len(want)+10)
+		roots, err := store.Directories.BranchRoots(s.ctx, s.db, len(want)+10)
 		if err != nil {
 			t.Fatalf("Deleting: %v", err)
 		}
@@ -246,32 +246,32 @@ func (s *suite) deletingFindsTheRoots(t *testing.T) {
 			}
 		}
 		for _, limit := range []int{1, 2} {
-			first, err := store.Directories.Deleting(s.ctx, s.db, limit)
+			first, err := store.Directories.BranchRoots(s.ctx, s.db, limit)
 			if err != nil || len(first) != limit || first[limit-1].ID != want[limit-1] || !equalDirectory(first[0], roots[0]) {
 				t.Errorf("Deleting(%d) = %+v, %v, want the first %d of %v", limit, first, err, limit, want)
 			}
 		}
 	}
-	_, err := s.store.Directories.Deleting(s.ctx, s.db, 0)
+	_, err := s.store.Directories.BranchRoots(s.ctx, s.db, 0)
 	if err == nil {
 		t.Errorf("Deleting(0) = nil, want a refusal")
 	}
-	_, base := s.baseline.Directories.Deleting(s.ctx, s.db, 0)
+	_, base := s.baseline.Directories.BranchRoots(s.ctx, s.db, 0)
 	wantSameError(t, err, base)
 }
 
-// deletingFindsNone checks that Directories.Deleting of a tree with no
+// branchRootsFindsNone checks that Directories.BranchRoots of a tree with no
 // branch being deleted returns no rows and no error, on both stores. The
 // suite's database holds marked branches by now, so the check runs in a
 // transaction that makes every directory active again and rolls back.
-func (s *suite) deletingFindsNone(t *testing.T) {
+func (s *suite) branchRootsFindsNone(t *testing.T) {
 	tx := s.beginTx(t)
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(s.ctx, "UPDATE blobfs_directory SET status = 'active' WHERE status = 'deleting'"); err != nil {
 		t.Fatalf("reactivate the marked directories: %v", err)
 	}
 	for _, store := range []*data.Store{s.store, s.baseline} {
-		if roots, err := store.Directories.Deleting(s.ctx, tx, 10); err != nil || len(roots) != 0 {
+		if roots, err := store.Directories.BranchRoots(s.ctx, tx, 10); err != nil || len(roots) != 0 {
 			t.Errorf("Deleting with no branch being deleted = %+v, %v, want none", roots, err)
 		}
 	}

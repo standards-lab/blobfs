@@ -33,3 +33,7 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 )
+
+// Temporary: points at the unreleased base until blobfs v0.5.0 is tagged;
+// the release removes it.
+replace github.com/standards-lab/blobfs => ../

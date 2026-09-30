@@ -18,6 +18,7 @@ func (s *suite) writes(t *testing.T) {
 	t.Run("CreateRefusals", s.createFileRefusals)
 	t.Run("Ensure", s.ensureFile)
 	t.Run("EnsureConcurrent", s.ensureFileConcurrent)
+	t.Run("EnsureConcurrentUnderOneID", s.ensureFileConcurrentUnderOneID)
 	t.Run("CompleteMakesTheRowAvailable", s.completeFile)
 	t.Run("CompleteRefusals", s.completeFileRefusals)
 	t.Run("InsideTheCallersTransaction", s.writeInTransaction)
@@ -173,6 +174,22 @@ func (s *suite) ensureFile(t *testing.T) {
 // ensureFileConcurrent checks the race on the pool, forced as the
 // directory's is: one caller creates, the other resumes the same row.
 func (s *suite) ensureFileConcurrent(t *testing.T) {
+	s.ensureFileRace(t)
+}
+
+// ensureFileConcurrentUnderOneID checks the race of two callers that
+// supply one id, whose loser may fail the primary key before the name's
+// constraint: one creates, the other resumes the row under the id.
+func (s *suite) ensureFileConcurrentUnderOneID(t *testing.T) {
+	id := blobfs.NewID()
+	if f := s.ensureFileRace(t, data.WithID(id)); f.ID != id {
+		t.Errorf("the row's id is %s, want %s", f.ID, id)
+	}
+}
+
+// ensureFileRace forces two Ensure calls under opts to race and returns
+// the row they share.
+func (s *suite) ensureFileRace(t *testing.T, opts ...data.CreateOption) blobfs.File {
 	dir := s.mkdir(t, "ensure-file-concurrent-"+t.Name())
 	pool := s.racingPool(t, "file_by_name")
 	var (
@@ -186,7 +203,7 @@ func (s *suite) ensureFileConcurrent(t *testing.T) {
 	for range 2 {
 		done.Go(func() {
 			start.Wait()
-			f, outcome, err := s.store.Files.Ensure(s.ctx, pool, acceptAll{}, dir.ID, "shared.txt", "text/plain")
+			f, outcome, err := s.store.Files.Ensure(s.ctx, pool, acceptAll{}, dir.ID, "shared.txt", "text/plain", opts...)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -216,6 +233,7 @@ func (s *suite) ensureFileConcurrent(t *testing.T) {
 		t.Errorf("%d callers created the row, want one", created)
 	}
 	pool.wantRecovered(t)
+	return results[0]
 }
 
 // completeFile checks Complete against the baseline: the row available at

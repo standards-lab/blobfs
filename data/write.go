@@ -41,16 +41,14 @@ func inTransaction(sess sqlate.Session) bool {
 }
 
 // insertOrFind runs find, then create only when find returned
-// sql.ErrNoRows, and reports whether it created the row. A
-// blobfs.ErrNameTaken from create is a concurrent creator: outside a
-// transaction the row is found again; inside one the error is returned,
-// since the failed insert may have aborted the transaction. A holderError
-// from create, the refusal by a deleting row that holds the name, means a
-// writer committed that row after the lookup. The insert selected nothing
-// and failed no statement, so find runs again inside a transaction too,
-// and the caller gets what the lookup would have returned. When the second
-// lookup finds no row, the refusal stands.
-func insertOrFind[T any](ctx context.Context, sess sqlate.Session, find, create func(context.Context, sqlate.Session) (T, error)) (T, bool, error) {
+// sql.ErrNoRows, and reports whether it created the row, whose id is id.
+// A create refused by a concurrent creator is looked up again: on the pool
+// for blobfs.ErrNameTaken, and for blobfs.ErrIDTaken when the row found
+// carries id, since PostgreSQL checks the primary key before the name's
+// constraint; in a transaction too for a holderError, whose insert failed
+// no statement. Inside a transaction a violation is returned, since it may
+// have aborted the transaction.
+func insertOrFind[T any](ctx context.Context, sess sqlate.Session, id string, idOf func(T) string, find, create func(context.Context, sqlate.Session) (T, error)) (T, bool, error) {
 	var zero T
 	row, err := find(ctx, sess)
 	switch {
@@ -65,11 +63,16 @@ func insertOrFind[T any](ctx context.Context, sess sqlate.Session, find, create 
 	case err == nil:
 		return row, true, nil
 	case errors.As(err, &held):
-	case !errors.Is(err, blobfs.ErrNameTaken) || inTransaction(sess):
+	case inTransaction(sess):
+		return zero, false, err
+	case errors.Is(err, blobfs.ErrIDTaken):
+		if found, ferr := find(ctx, sess); ferr == nil && idOf(found) == id {
+			return found, false, nil
+		}
+		return zero, false, err
+	case !errors.Is(err, blobfs.ErrNameTaken):
 		return zero, false, err
 	}
-	// A concurrent creator committed the name since the lookup. A holder
-	// gone again by the second lookup, purged, leaves its refusal standing.
 	found, ferr := find(ctx, sess)
 	switch {
 	case ferr == nil:
@@ -80,10 +83,8 @@ func insertOrFind[T any](ctx context.Context, sess sqlate.Session, find, create 
 	return zero, false, fmt.Errorf("after a concurrent create: %w", notFound(ferr))
 }
 
-// holderError is the refusal of a create or a move by the deleting row
-// that holds the name it asked for: the holder's refusal, which matches
-// blobfs.ErrDeleting and which errors.As reaches, marked with the kind and
-// the id of the holder, so a move's refusal by the target name's holder
+// holderError is the refusal by the deleting row that holds the name a
+// create or a move asked for, marked with the holder's kind and id so it
 // reads apart from the moved row's own.
 type holderError struct {
 	kind string
@@ -97,15 +98,10 @@ func (e *holderError) Error() string {
 
 func (e *holderError) Unwrap() error { return e.err }
 
-// rerunOnce runs attempt, a create or a move that selects no row under a
-// deleting holder, and runs it once more when it reports its refusal
-// unexplained: the statement selected nothing, yet the reads after it
-// found no cause. At read committed each statement reads its own
-// snapshot, so the holder the statement saw may be purged, or its name
-// taken by a live row, before the reads; the rerun then succeeds, fails
-// the unique constraint, or selects nothing again with a holder the reads
-// find. Nothing failed, so the rerun is safe inside a transaction. A rerun
-// that is unexplained too returns its untyped refusal.
+// rerunOnce runs attempt again when it reports its refusal unexplained. At
+// read committed the statement and the reads after it take separate
+// snapshots, so the holder the statement saw may be gone by the reads; the
+// statement failed nothing, so the rerun is safe inside a transaction.
 func rerunOnce[T any](attempt func() (T, bool, error)) (T, error) {
 	row, unexplained, err := attempt()
 	if unexplained {
@@ -149,14 +145,9 @@ func closed(dir blobfs.Directory) error {
 	return &blobfs.DeletingError{Directory: true, ID: dir.ID}
 }
 
-// deletingFile builds the refusal of a mutation of file, a deleting row,
-// by reading its directory: the file's own blobfs.DeletingError while the
-// directory is active, and the directory's once it is deleting or gone,
-// each wrapping cause when it is not nil. A directory gone since the file
-// was read, which its foreign key allows only once the file's row is gone
-// too, as the sweep of its branch leaves them, is the directory's refusal.
-// A read that fails otherwise leaves the refusal untyped,
-// blobfs.ErrDeleting beside the read's error.
+// deletingFile builds the refusal of a mutation of the deleting file,
+// wrapping cause: the file's own DeletingError while its directory is
+// active, and the directory's once it is deleting or gone.
 func (r directoryReads) deletingFile(ctx context.Context, sess sqlate.Session, file blobfs.File, cause error) error {
 	dir, err := r.byID.One(ctx, sess, query.Args{"id": file.DirectoryID})
 	switch {

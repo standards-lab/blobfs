@@ -213,8 +213,8 @@ func openDatabase(ctx context.Context, dsn string) (*sqlate.DB, error) {
 
 ## 5. Write the object-store adapter
 
-blobfs asks three things of the object store: a key check, through `blobfs.KeyValidator`, and
-a put and a delete, through `data.ObjectStore`, which the store's protocols call (see [the
+blobfs asks three things of the object store, a key check, a put, and a delete, through one
+interface, `data.ObjectStore`, which the store's protocols call (see [the
 protocols](features.md#the-protocols)). The adapter wires the three to `go-storage`'s own
 methods and is the only place the two libraries meet. `openObjects` builds the Azure Blob
 store from the environment and starts it, which ensures the container exists.
@@ -236,15 +236,12 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// objectStore is the adapter: it implements blobfs's object-store
-// interfaces over the started store's key rule, put, and delete. It is the
-// only place the two libraries meet.
+// objectStore is the adapter: it implements data.ObjectStore over the
+// started store's key rule, put, and delete. It is the only place the two
+// libraries meet.
 type objectStore struct{ store *storage.Store }
 
-var (
-	_ blobfs.KeyValidator = objectStore{}
-	_ data.ObjectStore    = objectStore{}
-)
+var _ data.ObjectStore = objectStore{}
 
 func (o objectStore) ValidateKey(key string) error {
 	return o.store.Capabilities().ValidateKey(key)
@@ -315,7 +312,7 @@ of the cursor predicate, `sqlatepg.Patterns()`, and blobfs's published patterns,
 PostgreSQL engine with `data.WithEngine`; the program's own statements compile against the same
 catalog. `Verify` prepares both against the migrated schema.
 
-`Upload` runs `Store.Write` and `Delete` runs `Store.Remove`, each with a callback of the
+`Upload` runs `Store.WriteFile` and `Delete` runs `Store.RemoveFile`, each with a callback of the
 program's inside the protocol's first transaction; [the protocols](features.md#the-protocols)
 states what each runs and refuses. Both callbacks first check the program's scope: the file's
 directory must lie within the area the caller may reach, which `Directories.IsWithin` answers.
@@ -353,13 +350,6 @@ var statements embed.FS
 
 // errOutOfScope refuses a directory outside the caller's area.
 var errOutOfScope = errors.New("outside the caller's area")
-
-// Objects is the object store as the program's writes reach it: the key
-// rule Files.Create checks, and the put and delete the protocols run.
-type Objects interface {
-	blobfs.KeyValidator
-	data.ObjectStore
-}
 
 // Stores is the program's persistence: blobfs's store and the program's
 // own statements, compiled against one catalog.
@@ -406,8 +396,8 @@ func (s *Stores) Verify(ctx context.Context, sess sqlate.Session) error {
 // Upload writes size bytes of body as the file name in dirID, which must
 // lie within areaID, and attaches the program's note to it once it is
 // available.
-func (s *Stores) Upload(ctx context.Context, db *sqlate.DB, objects Objects, areaID, dirID, name, contentType, note string, body io.Reader, size int64) (blobfs.File, error) {
-	file, err := s.Blobfs.Write(ctx, db, objects, body, size, func(tx *sqlate.Tx) (blobfs.File, error) {
+func (s *Stores) Upload(ctx context.Context, db *sqlate.DB, objects data.ObjectStore, areaID, dirID, name, contentType, note string, body io.Reader, size int64) (blobfs.File, error) {
+	file, err := s.Blobfs.WriteFile(ctx, db, objects, body, size, func(tx *sqlate.Tx) (blobfs.File, error) {
 		if err := s.within(ctx, tx, dirID, areaID); err != nil {
 			return blobfs.File{}, err
 		}
@@ -426,8 +416,7 @@ func (s *Stores) Upload(ctx context.Context, db *sqlate.DB, objects Objects, are
 	if err != nil {
 		// The attach rolled back, so nothing references the file: remove it
 		// rather than leave it stored with no note.
-		return blobfs.File{}, errors.Join(err, s.Blobfs.Remove(context.WithoutCancel(ctx), db, objects,
-			func(*sqlate.Tx) (string, error) { return file.ID, nil }))
+		return blobfs.File{}, errors.Join(err, s.Blobfs.RemoveFileID(context.WithoutCancel(ctx), db, objects, file.ID))
 	}
 	return file, nil
 }
@@ -435,7 +424,7 @@ func (s *Stores) Upload(ctx context.Context, db *sqlate.DB, objects Objects, are
 // Delete removes the file with id, which must lie within areaID: its note,
 // then the row marked deleting, then its object, then its row.
 func (s *Stores) Delete(ctx context.Context, db *sqlate.DB, objects data.ObjectDeleter, areaID, id string) error {
-	return s.Blobfs.Remove(ctx, db, objects, func(tx *sqlate.Tx) (string, error) {
+	return s.Blobfs.RemoveFile(ctx, db, objects, func(tx *sqlate.Tx) (string, error) {
 		file, err := s.Blobfs.Files.Find(ctx, tx, id)
 		if err != nil {
 			return "", err

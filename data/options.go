@@ -35,12 +35,8 @@ type createOptions struct {
 }
 
 // WithID supplies the id of the row the call inserts, in place of a minted
-// one, so a seeded row keeps its id across resets. The id is checked with
-// blobfs.ParseID before any SQL, and the row carries its canonical form. A
-// row an Ensure finds keeps its own id.
-//
-// Refusals: blobfs.ErrInvalidID for text that is not a UUID or is the nil
-// UUID; blobfs.ErrIDTaken for an id a row of the table already carries.
+// one, so a seeded row keeps its id across resets. It is checked with
+// blobfs.ParseID before any SQL; a row an Ensure finds keeps its own id.
 func WithID(id string) CreateOption {
 	return func(o *createOptions) {
 		o.id = id
@@ -135,22 +131,17 @@ func Batch(n int) SweepOption {
 }
 
 // OnRemoveDirectory runs fn in the transaction that removes each directory
-// of a branch, before the removal, with the directory as the pass read it:
-// where a consumer removes its own rows that reference the directory. An
-// error from fn rolls the removal back and leaves the branch for the next
-// pass, which runs fn again with nothing of the aborted attempt left. Of
-// two passes that race to one directory, the loser finds it gone and rolls
-// its transaction back, fn's work with it, so fn's effect commits once.
+// of a branch, before the removal: where a consumer removes its own rows
+// that reference the directory. An error from fn rolls the removal back
+// for the next pass.
 func OnRemoveDirectory(fn func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error) SweepOption {
 	return func(o *sweepOptions) { o.onRemove = fn }
 }
 
 // StaleOlderThan makes a pass of Store.Sweep also reclaim the pending and
-// deleting file rows whose updated_at is older than age, oldest first: a
-// pending row is moved to deleting at the version the pass read, then its
-// object is deleted and its row purged. age must exceed the longest write
-// the consumer lets run; see Stale rows and orphaned objects in
-// docs/concepts.md. An age that is not positive is refused before any SQL.
+// deleting file rows last written more than age ago, oldest first. age
+// must exceed the longest write the consumer lets run; see Stale rows and
+// orphaned objects in docs/concepts.md.
 func StaleOlderThan(age time.Duration) SweepOption {
 	return func(o *sweepOptions) {
 		o.staleAge = age

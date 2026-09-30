@@ -26,12 +26,13 @@ const (
 	protocolKey  = protocolFile + "/report.txt"
 )
 
-// objectStore is an ObjectStore over a map: it records its puts and
-// deletes, and the error of the context each delete ran under, and fails a
+// objectStore is an ObjectStore over a map: it accepts every key, records
+// its puts and deletes, and the error of the context each delete ran under, and fails a
 // put with putErr and a delete with deleteErr when they are set. With
 // cancel set, a put cancels the caller's context and fails with its error,
 // as a caller that hangs up mid-body.
 type objectStore struct {
+	accepting
 	objects    map[string]string
 	puts       int
 	lastType   string
@@ -130,7 +131,7 @@ func TestWrite(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2))
 	objects := newObjectStore()
-	got, err := s.Write(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow))
+	got, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow))
 	if err != nil || got.Status != blobfs.StatusAvailable || got.Version != 2 {
 		t.Fatalf("Write = %+v, %v, want the available row", got, err)
 	}
@@ -150,7 +151,7 @@ func TestWriteRefusedBegin(t *testing.T) {
 	s, db, rec := openStore(t, single)
 	objects := newObjectStore()
 	refused := errors.New("out of scope")
-	_, err := s.Write(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, func(*sqlate.Tx) error { return refused }))
+	_, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, func(*sqlate.Tx) error { return refused }))
 	if !errors.Is(err, refused) || strings.Contains(err.Error(), "data: ") {
 		t.Fatalf("Write = %v, want begin's error as it came", err)
 	}
@@ -169,7 +170,7 @@ func TestWriteUnderADeletingName(t *testing.T) {
 	s, db, rec := openStore(t, single, noFile(), noFile(), protocolDirectory(),
 		fileIn(holder, protocolDir, "report.txt", blobfs.StatusDeleting, 2), protocolDirectory())
 	objects := newObjectStore()
-	_, err := s.Write(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow))
+	_, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow))
 	if errors.Is(err, blobfs.ErrNameTaken) {
 		t.Errorf("Write = %v, want no ErrNameTaken", err)
 	}
@@ -189,7 +190,7 @@ func TestWriteFailedPut(t *testing.T) {
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1})
 	objects := newObjectStore()
 	objects.putErr = errors.New("put failed")
-	_, err := s.Write(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow))
+	_, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow))
 	if !errors.Is(err, objects.putErr) || !strings.HasPrefix(err.Error(), "data: write file "+protocolFile+": put the object: ") {
 		t.Fatalf("Write = %v, want the put's error, named", err)
 	}
@@ -207,7 +208,7 @@ func TestWriteFailedPut(t *testing.T) {
 	s, db, rec = openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusDeleting, 2))
 	objects = newObjectStore()
 	objects.putErr, objects.deleteErr = errors.New("the store is down"), errors.New("the store is still down")
-	_, err = s.Write(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow))
+	_, err = s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow))
 	if !errors.Is(err, objects.putErr) || !errors.Is(err, objects.deleteErr) || !strings.Contains(err.Error(), "abandon: delete the object: ") {
 		t.Fatalf("Write = %v, want the put's error and the abandon's", err)
 	}
@@ -234,7 +235,7 @@ func TestWriteRefusedCompletion(t *testing.T) {
 			ctx := context.Background()
 			s, db, rec := openStore(t, single, append([]sqltest.Response{protocolRow(blobfs.StatusPending, 1), noFile()}, c.read...)...)
 			objects := newObjectStore()
-			if _, err := s.Write(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow)); !errors.Is(err, c.want) {
+			if _, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow)); !errors.Is(err, c.want) {
 				t.Fatalf("Write = %v, want %v", err, c.want)
 			}
 			if objects.puts != 1 || objects.stored() || !slices.Equal(objects.deletes, []string{protocolKey}) {
@@ -258,7 +259,7 @@ func TestWriteFailedCompletion(t *testing.T) {
 		protocolRow(blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1},
 	)
 	objects := newObjectStore()
-	if _, err := s.Write(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow)); !errors.Is(err, sqlate.ErrConnectionFailed) {
+	if _, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow)); !errors.Is(err, sqlate.ErrConnectionFailed) {
 		t.Fatalf("Write = %v, want the completion's error", err)
 	}
 	if objects.stored() {
@@ -287,7 +288,7 @@ func TestWriteRefusesARowNotPending(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusAvailable, 2))
 	objects := newObjectStore()
-	_, err := s.Write(ctx, db, objects, strings.NewReader("report"), 6, found(ctx, s))
+	_, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, found(ctx, s))
 	var te *blobfs.TransitionError
 	if !errors.As(err, &te) || te.From != blobfs.StatusAvailable || te.To != blobfs.StatusAvailable || errors.Is(err, blobfs.ErrDeleting) ||
 		!strings.HasPrefix(err.Error(), "data: write file "+protocolFile+": ") {
@@ -299,7 +300,7 @@ func TestWriteRefusesARowNotPending(t *testing.T) {
 	wantDone(t, rec)
 
 	s, db, rec = openStore(t, single, protocolRow(blobfs.StatusDeleting, 3), protocolDirectory())
-	_, err = s.Write(ctx, db, objects, strings.NewReader("report"), 6, found(ctx, s))
+	_, err = s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, found(ctx, s))
 	wantDeleting(t, "Write of a deleting row", err, false, protocolFile)
 	if !errors.As(err, &te) || te.From != blobfs.StatusDeleting {
 		t.Errorf("Write of a deleting row = %v, want its TransitionError from deleting", err)
@@ -347,7 +348,7 @@ func TestWriteCleansUpAfterCancellation(t *testing.T) {
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1})
 	objects := newObjectStore()
 	objects.cancel = cancel
-	if _, err := s.Write(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow)); !errors.Is(err, context.Canceled) {
+	if _, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Write = %v, want the put's cancellation", err)
 	}
 	if want := "begin query commit begin query commit exec"; ops(rec) != want {
@@ -364,7 +365,7 @@ func TestWriteCleansUpAfterCancellation(t *testing.T) {
 	// The directory's read is the last statement, so the caller has hung
 	// up by the time the refusal is classified; a read the hang-up cuts
 	// short leaves the refusal untyped, still ErrDeleting.
-	if _, err := s.Write(caller, db, objects, strings.NewReader("report"), 6, create(caller, s, allow)); !errors.Is(err, blobfs.ErrDeleting) {
+	if _, err := s.WriteFile(caller, db, objects, strings.NewReader("report"), 6, create(caller, s, allow)); !errors.Is(err, blobfs.ErrDeleting) {
 		t.Fatalf("Write = %v, want ErrDeleting", err)
 	}
 	if caller.Err() == nil || !slices.Equal(objects.deletes, []string{protocolKey}) || !slices.Equal(objects.deleteCtxs, []error{nil}) || objects.stored() {
@@ -389,7 +390,7 @@ func TestEnsureWrite(t *testing.T) {
 	s, db, rec := openStore(t, single, noFile(), protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2))
 	objects := newObjectStore()
 	objects.objects[protocolKey] = "stale bytes"
-	got, stored, err := s.Ensure(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+	got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
 	if err != nil || !stored || got.Status != blobfs.StatusAvailable {
 		t.Fatalf("Ensure = %+v, %v, %v, want the file stored", got, stored, err)
 	}
@@ -406,7 +407,7 @@ func TestEnsureWrite(t *testing.T) {
 
 	s, db, rec = openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2))
 	objects = newObjectStore()
-	if _, stored, err := s.Ensure(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s)); err != nil || !stored || objects.puts != 1 {
+	if _, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s)); err != nil || !stored || objects.puts != 1 {
 		t.Fatalf("Ensure = %v, %v after %d puts, want the pending row put once and completed", stored, err, objects.puts)
 	}
 	if want := "begin query commit query"; ops(rec) != want {
@@ -422,13 +423,13 @@ func TestEnsureWritePresent(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusAvailable, 2))
 	objects := newObjectStore()
-	got, stored, err := s.Ensure(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+	got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
 	if err != nil || stored || got.ID != protocolFile || objects.puts != 0 || ops(rec) != "begin query commit" {
 		t.Errorf("Ensure of an available row = %+v, %v, %v after %d puts and %q, want the row as it stands", got, stored, err, objects.puts, ops(rec))
 	}
 
 	s, db, rec = openStore(t, single, protocolRow(blobfs.StatusDeleting, 3), protocolDirectory())
-	_, stored, err = s.Ensure(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+	_, stored, err = s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
 	wantDeleting(t, "Ensure of a deleting row", err, false, protocolFile)
 	if stored || objects.puts != 0 || ops(rec) != "begin query commit query" {
 		t.Errorf("Ensure of a deleting row stored %v after %d puts and %q, want nothing put", stored, objects.puts, ops(rec))
@@ -449,7 +450,7 @@ func TestEnsureWriteUnderAnotherID(t *testing.T) {
 			ctx := context.Background()
 			s, db, rec := openStore(t, single, fileIn(other, protocolDir, "report.txt", status, 2))
 			objects := newObjectStore()
-			got, stored, err := s.Ensure(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+			got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
 			if !errors.Is(err, blobfs.ErrNameTaken) || stored || got.ID != "" {
 				t.Fatalf("Ensure = %+v, %v, %v, want the other row reported as the taken name", got, stored, err)
 			}
@@ -465,7 +466,7 @@ func TestEnsureWriteUnderAnotherID(t *testing.T) {
 		ctx := context.Background()
 		s, db, rec := openStore(t, single, fileIn(other, protocolDir, "report.txt", blobfs.StatusDeleting, 2), protocolDirectory())
 		objects := newObjectStore()
-		got, stored, err := s.Ensure(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+		got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
 		if errors.Is(err, blobfs.ErrNameTaken) || stored || got.ID != "" {
 			t.Errorf("Ensure = %+v, %v, %v, want the deleting row's refusal", got, stored, err)
 		}
@@ -486,7 +487,7 @@ func TestEnsureWriteUnderAnotherID(t *testing.T) {
 		minted := func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
 			return s.Files.Ensure(ctx, tx, accepting{}, protocolDir, "report.txt", "text/plain")
 		}
-		got, stored, err := s.Ensure(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, minted)
+		got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, minted)
 		if err == nil || errors.Is(err, blobfs.ErrNameTaken) || stored || got.ID != "" ||
 			!strings.Contains(err.Error(), other) || !strings.Contains(err.Error(), protocolFile) {
 			t.Fatalf("Ensure = %+v, %v, %v, want a refusal naming both ids", got, stored, err)
@@ -513,7 +514,7 @@ func TestEnsureWriteRaces(t *testing.T) {
 		protocolRow(blobfs.StatusAvailable, 2), // the row read back
 	)
 	objects := newObjectStore()
-	got, stored, err := s.Ensure(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+	got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
 	if err != nil || stored || got.Status != blobfs.StatusAvailable || got.Version != 2 {
 		t.Fatalf("Ensure = %+v, %v, %v, want the other writer's row, found", got, stored, err)
 	}
@@ -527,7 +528,7 @@ func TestEnsureWriteRaces(t *testing.T) {
 		protocolRow(blobfs.StatusPending, 1),   // the retry finds the other's pending row
 		protocolRow(blobfs.StatusAvailable, 2), // and completes it
 	)
-	if _, stored, err := s.Ensure(ctx, db, newObjectStore(), protocolFile, strings.NewReader("report"), 6, ensure(ctx, s)); err != nil || !stored {
+	if _, stored, err := s.EnsureFile(ctx, db, newObjectStore(), protocolFile, strings.NewReader("report"), 6, ensure(ctx, s)); err != nil || !stored {
 		t.Fatalf("Ensure = %v, %v, want the resumed row stored", stored, err)
 	}
 	if want := "begin query query rollback begin query commit query"; ops(rec) != want {
@@ -546,7 +547,7 @@ func TestEnsureWriteFailedPut(t *testing.T) {
 	)
 	objects := newObjectStore()
 	objects.putErr = errors.New("put failed")
-	if _, stored, err := s.Ensure(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s)); !errors.Is(err, objects.putErr) || stored {
+	if _, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s)); !errors.Is(err, objects.putErr) || stored {
 		t.Fatalf("Ensure = %v, %v, want the put's error", stored, err)
 	}
 	if want := "begin query query commit begin query commit exec"; ops(rec) != want {
@@ -570,7 +571,7 @@ func TestEnsureWriteAbandonAfterTheOtherWriter(t *testing.T) {
 	)...)
 	objects := newObjectStore()
 	objects.putErr = errors.New("put failed")
-	got, stored, err := s.Ensure(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+	got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
 	if err != nil || stored || got.Status != blobfs.StatusAvailable || got.Version != 2 {
 		t.Fatalf("Ensure = %+v, %v, %v, want the other writer's row, found", got, stored, err)
 	}
@@ -597,7 +598,7 @@ func TestEnsureWriteRefusedCompletion(t *testing.T) {
 			ctx := context.Background()
 			s, db, rec := openStore(t, single, append([]sqltest.Response{protocolRow(blobfs.StatusPending, 1), noFile()}, c.read...)...)
 			objects := newObjectStore()
-			_, stored, err := s.Ensure(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+			_, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
 			if !errors.Is(err, c.want) || stored {
 				t.Fatalf("Ensure = %v, %v, want %v", stored, err, c.want)
 			}
@@ -620,7 +621,7 @@ func TestEnsureWriteRefusedCompletion(t *testing.T) {
 func TestEnsureWriteRefusesAnID(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single)
-	if _, _, err := s.Ensure(ctx, db, newObjectStore(), "seed", strings.NewReader("report"), 6, ensure(ctx, s)); !errors.Is(err, blobfs.ErrInvalidID) {
+	if _, _, err := s.EnsureFile(ctx, db, newObjectStore(), "seed", strings.NewReader("report"), 6, ensure(ctx, s)); !errors.Is(err, blobfs.ErrInvalidID) {
 		t.Errorf("Ensure under a malformed id = %v, want ErrInvalidID", err)
 	}
 	if len(rec.Calls()) != 0 {
@@ -636,7 +637,7 @@ func TestRemove(t *testing.T) {
 	s, db, rec := openStore(t, single, sqltest.Response{Affected: 1}, protocolRow(blobfs.StatusDeleting, 3), sqltest.Response{Affected: 1})
 	objects := newObjectStore()
 	objects.objects[protocolKey] = "report"
-	err := s.Remove(ctx, db, objects, func(tx *sqlate.Tx) (string, error) {
+	err := s.RemoveFile(ctx, db, objects, func(tx *sqlate.Tx) (string, error) {
 		_, err := tx.ExecContext(ctx, "DELETE FROM owner WHERE file_id = $1", protocolFile)
 		return protocolFile, err
 	}, data.AtVersion(2))
@@ -656,7 +657,7 @@ func TestRemove(t *testing.T) {
 
 	s, db, rec = openStore(t, single)
 	refused := errors.New("out of scope")
-	if err := s.Remove(ctx, db, objects, func(*sqlate.Tx) (string, error) { return "", refused }); !errors.Is(err, refused) || strings.Contains(err.Error(), "data: ") {
+	if err := s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return "", refused }); !errors.Is(err, refused) || strings.Contains(err.Error(), "data: ") {
 		t.Fatalf("Remove = %v, want pick's error as it came", err)
 	}
 	if ops(rec) != "begin rollback" || len(objects.deletes) != 1 {
@@ -664,10 +665,37 @@ func TestRemove(t *testing.T) {
 	}
 
 	s, db, _ = openStore(t, single, unchangedFile(single, fileIn(protocolFile, protocolDir, "report.txt", blobfs.StatusAvailable, 3))...)
-	err = s.Remove(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, data.AtVersion(2))
+	err = s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, data.AtVersion(2))
 	if !errors.Is(err, query.ErrVersionMismatch) || !strings.HasPrefix(err.Error(), "data: remove file "+protocolFile+": ") {
 		t.Errorf("Remove at a stale version = %v, want ErrVersionMismatch, named", err)
 	}
+}
+
+// TestRemoveFileID checks the delete of a file by id: the delete under the
+// version guard in a transaction of its own, then the object, then the
+// purge; a retry after it finished finds no row, ErrNotFound.
+func TestRemoveFileID(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusDeleting, 3), sqltest.Response{Affected: 1}, noFile(), noFile())
+	objects := newObjectStore()
+	objects.objects[protocolKey] = "report"
+	if err := s.RemoveFileID(ctx, db, objects, protocolFile, data.AtVersion(2)); err != nil {
+		t.Fatalf("RemoveFileID = %v", err)
+	}
+	if objects.stored() {
+		t.Error("the object outlived its remove")
+	}
+	if want := "begin query commit exec"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q", ops(rec), want)
+	}
+	if del := rec.Calls()[1]; !slices.Equal(del.Args, []any{protocolFile, int64(2)}) {
+		t.Errorf("the delete bound %v, want the file at the guarded version", del.Args)
+	}
+	err := s.RemoveFileID(ctx, db, objects, protocolFile)
+	if !errors.Is(err, blobfs.ErrNotFound) || !strings.HasPrefix(err.Error(), "data: remove file "+protocolFile+": ") {
+		t.Errorf("RemoveFileID retried after it finished = %v, want ErrNotFound, named", err)
+	}
+	wantDone(t, rec)
 }
 
 // TestPurge checks the delete's tail: the object, then the row; an object
@@ -678,13 +706,13 @@ func TestPurge(t *testing.T) {
 	s, db, rec := openStore(t, single, sqltest.Response{Affected: 1})
 	objects := newObjectStore()
 	objects.objects[protocolKey] = "report"
-	if err := s.Purge(ctx, db, objects, file); err != nil || objects.stored() || ops(rec) != "exec" {
+	if err := s.PurgeFile(ctx, db, objects, file); err != nil || objects.stored() || ops(rec) != "exec" {
 		t.Errorf("Purge = %v, stored = %v, ops = %q, want the object and the row gone", err, objects.stored(), ops(rec))
 	}
 
 	s, db, rec = openStore(t, single)
 	objects.deleteErr = errors.New("the store is down")
-	err := s.Purge(ctx, db, objects, file)
+	err := s.PurgeFile(ctx, db, objects, file)
 	if !errors.Is(err, objects.deleteErr) || !strings.HasPrefix(err.Error(), "data: purge file "+protocolFile+": delete the object: ") || len(rec.Calls()) != 0 {
 		t.Errorf("Purge over a failing store = %v after %q, want the store's error and no purge", err, ops(rec))
 	}

@@ -3,9 +3,9 @@
 // azureblob provider for the bytes. It is the proof that the two libraries
 // compose through one small adapter, with no change to either, and it is
 // never imported. It runs one file's whole life through the store's
-// protocols: a directory, Store.Write, a listing, Store.Remove, the
-// provider's key rule reaching blobfs through the adapter, and a branch
-// marked for removal and drained by data.SweepUntilDone.
+// protocols: a directory, Store.WriteFile, a listing, Store.RemoveFileID,
+// the provider's key rule reaching blobfs through the adapter, and a
+// branch marked for removal and drained by data.SweepUntilDone.
 //
 // It reads BLOBFS_DSN and the BLOBFS_STORAGE_* settings go-storage
 // documents; mise.toml sets both for the compose stack, so from the
@@ -87,7 +87,7 @@ func run(ctx context.Context) error {
 	// The write, which the store runs end to end through the adapter: the
 	// pending row, then the object, then the row available.
 	body := "quarterly numbers\n"
-	file, err := store.Write(ctx, db, objs, strings.NewReader(body), int64(len(body)), func(tx *sqlate.Tx) (blobfs.File, error) {
+	file, err := store.WriteFile(ctx, db, objs, strings.NewReader(body), int64(len(body)), func(tx *sqlate.Tx) (blobfs.File, error) {
 		return store.Files.Create(ctx, tx, objs, dir.ID, "Q3 summary.txt", "text/plain")
 	})
 	if err != nil {
@@ -105,7 +105,7 @@ func run(ctx context.Context) error {
 	}
 
 	// The delete: the row marked deleting, then the object, then the row.
-	if err := store.Remove(ctx, db, objs, func(*sqlate.Tx) (string, error) { return file.ID, nil }); err != nil {
+	if err := store.RemoveFileID(ctx, db, objs, file.ID); err != nil {
 		return err
 	}
 	if _, err := objects.Stat(ctx, file.Key); !isNotFound(err) {
@@ -129,7 +129,7 @@ func run(ctx context.Context) error {
 	}
 	// A pending row whose object was never stored is removed the same way:
 	// deleting a missing object is success.
-	if err := store.Remove(ctx, db, objs, func(*sqlate.Tx) (string, error) { return hostile.ID, nil }); err != nil {
+	if err := store.RemoveFileID(ctx, db, objs, hostile.ID); err != nil {
 		return err
 	}
 
@@ -157,7 +157,7 @@ func sweepBranch(ctx context.Context, db *sqlate.DB, store *data.Store, objs obj
 	}
 	for _, name := range []string{"jan.txt", "feb.txt", "mar.txt"} {
 		body := "month " + name + "\n"
-		if _, err := store.Write(ctx, db, objs, strings.NewReader(body), int64(len(body)), func(tx *sqlate.Tx) (blobfs.File, error) {
+		if _, err := store.WriteFile(ctx, db, objs, strings.NewReader(body), int64(len(body)), func(tx *sqlate.Tx) (blobfs.File, error) {
 			return store.Files.Create(ctx, tx, objs, branch.ID, name, "text/plain")
 		}); err != nil {
 			return err
@@ -189,15 +189,12 @@ func sweepBranch(ctx context.Context, db *sqlate.DB, store *data.Store, objs obj
 	return nil
 }
 
-// objectStore is the adapter: it implements blobfs's object-store
-// interfaces over the started store's key rule, put, and delete. It is the
-// only place the two libraries meet.
+// objectStore is the adapter: it implements data.ObjectStore over the
+// started store's key rule, put, and delete. It is the only place the two
+// libraries meet.
 type objectStore struct{ store *storage.Store }
 
-var (
-	_ blobfs.KeyValidator = objectStore{}
-	_ data.ObjectStore    = objectStore{}
-)
+var _ data.ObjectStore = objectStore{}
 
 func (o objectStore) ValidateKey(key string) error {
 	return o.store.Capabilities().ValidateKey(key)

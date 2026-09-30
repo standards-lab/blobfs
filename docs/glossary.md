@@ -20,8 +20,8 @@ full.
 - **Branch**: a directory with every directory beneath it and every file in them: what a mark
   and a sweep delete together.
 - **Branch root**: the directory a mark named: a deleting directory under an active parent.
-  `Directories.Deleting` returns the branch roots, and the rest of a branch is reached from its
-  root.
+  `Directories.BranchRoots` returns the branch roots, and the rest of a branch is reached from
+  its root.
 - **Name space**: the names one parent holds for one kind of row. Directories and files have
   separate name spaces, so a directory and a file may share a name under one parent.
 - **Name**: a directory's or file's display name, normalized to Unicode NFC and validated before
@@ -34,13 +34,14 @@ full.
   it says nothing about where the file sits.
 - **Sanitized name**: the key's name segment, the display name at upload with the characters an
   object store refuses replaced, frozen so an operator browsing the container can read it.
-- **Key validator**: the consumer's adapter over its store's key rule, `blobfs.KeyValidator`:
-  the one thing `Files.Create` and `Files.Ensure` ask of an object store.
-- **Object deleter**: the consumer's adapter over its store's delete, `data.ObjectDeleter`: the
-  one call a sweep makes to an object store, idempotent over a missing object.
-- **Object putter**: the consumer's adapter over its store's put, `data.ObjectPutter`: the call
-  `Store.Write` makes between the first step and the last. `data.ObjectStore` combines the
-  putter and the deleter.
+- **Object store adapter**: the consumer's one adapter over its object store,
+  `data.ObjectStore`, which embeds the key validator, the object putter, and the object deleter.
+- **Key validator**: the adapter's key rule, `blobfs.KeyValidator`: the one thing `Files.Create`
+  and `Files.Ensure` ask of an object store.
+- **Object putter**: the adapter's put, `data.ObjectPutter`: the call `Store.WriteFile` makes
+  between the first step and the last.
+- **Object deleter**: the adapter's delete, `data.ObjectDeleter`: the call the delete protocols
+  and a sweep make, idempotent over a missing object.
 
 ## The protocols
 
@@ -57,10 +58,11 @@ full.
 - **Transition**: a change of status the table in the root package allows. No transition leaves
   `deleting` except the row's removal.
 - **Two-phase write**: `Create` (or `Ensure`) inserts the pending row, the consumer puts the
-  object under its key, and `Complete` makes the row available. `Store.Write` runs the three.
+  object under its key, and `Complete` makes the row available. `Store.WriteFile` runs the
+  three.
 - **Two-phase delete**: `Delete` marks the row deleting and returns its key, the consumer
   deletes the object, and `Purge` removes the row. Every step is safe to repeat.
-  `Store.Remove` runs the three.
+  `Store.RemoveFile` runs the three.
 - **Deleting error**: `blobfs.DeletingError`, the type in which the store reports
   `ErrDeleting`, which says whether the file's own delete or a directory's refused the mutation.
 - **Mark**: `Directories.MarkDeleting`, the first step of a branch's delete, which moves every

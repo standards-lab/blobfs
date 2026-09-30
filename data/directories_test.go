@@ -323,13 +323,38 @@ func TestEnsure(t *testing.T) {
 				t.Errorf("ops = %q, want %q: no lookup after the refused insert inside the transaction", got, want)
 			}
 
-			s, db, rec = openStore(t, f, noDirectory(), violation(blobfs.ConstraintPrimaryKeyDirectory, sqlate.ErrUniqueViolation))
-			_, _, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.WithID(blobfs.NewID()))
-			if !errors.Is(err, blobfs.ErrIDTaken) || errors.Is(err, blobfs.ErrNameTaken) {
-				t.Errorf("Ensure under a taken id = %v, want ErrIDTaken", err)
+			// A concurrent creator under the same id fails the primary key
+			// first: on the pool the name is looked up again, and the row is
+			// found when it carries the id; otherwise the id stays taken.
+			id := blobfs.NewID()
+			s, db, rec = openStore(t, f, noDirectory(), violation(blobfs.ConstraintPrimaryKeyDirectory, sqlate.ErrUniqueViolation), childResponse(id, "docs"))
+			d, created, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.WithID(strings.ToUpper(id)))
+			if err != nil || created || d.ID != id {
+				t.Errorf("Ensure under a concurrent creator of the same id = %+v, %v, %v; want the creator's row found", d, created, err)
 			}
-			if got, want := ops(rec), "query "+refusedOps; got != want {
-				t.Errorf("ops = %q, want %q: no recovery lookup after a violation that is not the name's", got, want)
+			if got, want := ops(rec), "query "+refusedOps+" query"; got != want {
+				t.Errorf("ops = %q, want %q", got, want)
+			}
+			for _, again := range []sqltest.Response{childResponse(blobfs.NewID(), "docs"), noDirectory()} {
+				s, db, rec = openStore(t, f, noDirectory(), violation(blobfs.ConstraintPrimaryKeyDirectory, sqlate.ErrUniqueViolation), again)
+				_, _, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.WithID(id))
+				if !errors.Is(err, blobfs.ErrIDTaken) || errors.Is(err, blobfs.ErrNameTaken) {
+					t.Errorf("Ensure under an id taken by a row elsewhere = %v, want ErrIDTaken", err)
+				}
+				if got, want := ops(rec), "query "+refusedOps+" query"; got != want {
+					t.Errorf("ops = %q, want %q", got, want)
+				}
+			}
+			s, db, rec = openStore(t, f, noDirectory(), violation(blobfs.ConstraintPrimaryKeyDirectory, sqlate.ErrUniqueViolation))
+			_, err = db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
+				d, _, err := s.Directories.Ensure(ctx, tx, blobfs.RootID, "docs", data.WithID(id))
+				return d, err
+			})
+			if !errors.Is(err, blobfs.ErrIDTaken) {
+				t.Errorf("Ensure under a taken id inside a transaction = %v, want ErrIDTaken", err)
+			}
+			if got := ops(rec); got != want {
+				t.Errorf("ops = %q, want %q: no lookup after the refused insert inside the transaction", got, want)
 			}
 		})
 	}
@@ -386,15 +411,17 @@ func TestEnsureRefusals(t *testing.T) {
 // TestDelete checks the directory removal and its refusals.
 func TestDelete(t *testing.T) {
 	ctx := context.Background()
-	s, db, rec := openStore(t, fallback)
-	if err := s.Directories.Delete(ctx, db, blobfs.RootID); !errors.Is(err, blobfs.ErrRootDirectory) {
-		t.Errorf("Delete(root) = %v, want ErrRootDirectory", err)
-	}
-	if calls := rec.Calls(); len(calls) != 0 {
-		t.Errorf("the root's refusal reached the driver: %+v", calls)
+	for _, root := range rootSpellings {
+		s, db, rec := openStore(t, fallback)
+		if err := s.Directories.Delete(ctx, db, root); !errors.Is(err, blobfs.ErrRootDirectory) {
+			t.Errorf("Delete(%s) = %v, want ErrRootDirectory", root, err)
+		}
+		if calls := rec.Calls(); len(calls) != 0 {
+			t.Errorf("the refusal of %s reached the driver: %+v", root, calls)
+		}
 	}
 
-	s, db, rec = openStore(t, fallback, sqltest.Response{Affected: 1}, sqltest.Response{Affected: 0})
+	s, db, rec := openStore(t, fallback, sqltest.Response{Affected: 1}, sqltest.Response{Affected: 0})
 	if err := s.Directories.Delete(ctx, db, "D"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -426,6 +453,16 @@ func TestDelete(t *testing.T) {
 			t.Errorf("Delete under %s = %q, want %q", c.constraint, err, want)
 		}
 	}
+}
+
+// rootSpellings are spellings of blobfs.RootID PostgreSQL reads as the
+// nil UUID, each of which the root's guards refuse before any SQL.
+var rootSpellings = []string{
+	blobfs.RootID,
+	"{00000000-0000-0000-0000-000000000000}",
+	"00000000000000000000000000000000",
+	"{00000000000000000000000000000000}",
+	"0000-0000-0000-0000-0000-0000-0000-0000",
 }
 
 // TestCreateOnASessionThatCannotBegin checks the fallback needs a session

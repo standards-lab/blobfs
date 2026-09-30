@@ -38,12 +38,11 @@ that is not a UUID, and the nil UUID, which is the root's, are an `IDError`.
 ### Statuses and transitions
 
 `Status` is a string type with three values, `StatusPending`, `StatusAvailable`, and
-`StatusDeleting`, and binds and scans as text without a `Valuer`. `Valid` reports whether a
-value is one of the three, and `Mutable` whether a row in that status accepts a move or a
-rename, which only `deleting` does not.
+`StatusDeleting`, and binds and scans as text without a `Valuer`. `Mutable` reports whether a
+row in that status accepts a move or a rename, which only `deleting` does not.
 
-`CanTransition(from, to)` reports whether the table allows a change, and `Transition(from, to)`
-returns nil or a `TransitionError`:
+`Transition(from, to)` returns nil when the table allows the change and a `TransitionError`
+otherwise:
 
 | From | Allowed to |
 |---|---|
@@ -57,15 +56,16 @@ always, and `ErrDeleting` as well when `From` is `deleting`.
 `DirectoryStatus` is a directory row's status, a string type with two values,
 `DirectoryStatusActive` and `DirectoryStatusDeleting`, which binds and scans as text as `Status`
 does. Every directory is active until `Directories.MarkDeleting` marks its branch, and no change
-leaves `deleting`, so the type has no transition table. `Valid` reports whether a value is one
-of the two. `Mutable` reports whether a directory in that status accepts a create beneath it and
-a move into it, out of it, or of itself; only a deleting directory refuses them.
+leaves `deleting`, so the type has no transition table. `Mutable` reports whether a directory in
+that status accepts a create beneath it and a move into it, out of it, or of itself; only a
+deleting directory refuses them.
 
 ### Keys
 
 `KeyValidator` is the one method a write asks of an object store:
 `ValidateKey(key string) error`, non-nil with the reason when the store refuses the key. A
-consumer wires its store's own rule to it at the composition root; the [quick
+consumer wires its store's own rule to it at the composition root, in the same adapter as its
+put and delete, since `data.ObjectStore` embeds it; the [quick
 start](quick-start.md#5-write-the-object-store-adapter) shows the adapter over `go-storage`. The
 interface carries no maximum length: the store's own validation enforces its limit, counted the
 way the store counts.
@@ -130,11 +130,14 @@ directory, holds.
 The statement itself refuses a deleting holder: it selects nothing rather than failing the unique
 constraint, and the store then reads the name's holder to report it. The refusal therefore runs no
 failing statement and leaves the caller's transaction usable. The store wraps the holder's
-`DeletingError` in the message "the file `<id>` holds the name" or "the directory `<id>` holds the name",
-so a move refused by the name's holder reads apart from one refused by the moved row's own delete
-(see [the two-phase delete](concepts.md#the-two-phase-delete)). A row that turns deleting after
-the statement ran, because its mark or delete committed in between, is still refused by the
-constraint as `ErrNameTaken`.
+`DeletingError` in the message "the file `<id>` holds the name" or "the directory `<id>` holds the
+name". A move's `DeletingError` therefore comes from one of two deletes: that of the moved row or
+of a directory it leaves or enters, or that of the name's holder. A consumer tells them apart by
+the `ID`: one that names neither the moved row nor a directory it left or entered is the holder,
+and the caller waits out its delete or gives up the name. When a mark reaches a file holder's
+directory after the move read the directories, the refusal is that directory's, the directory
+the move entered. A row that turns deleting after the statement ran, because its mark or delete
+committed in between, is still refused by the constraint as `ErrNameTaken`.
 
 At read committed each statement reads its own snapshot, so between the statement and the store's
 reads the sweep or the stale reclaim may purge the holder, or a live row may take its name. When
@@ -194,8 +197,9 @@ An engine's error is returned as `data: new store: engine: ...`.
   page past a cursor. A variant that compiled statements of its own is verified in the same
   pass. A program calls it at startup, after its migrations, so a statement the schema no longer
   satisfies fails there and not at first use.
-- `Write`, `Ensure`, `Remove`, and `Purge` run the two-phase write and delete end to end over
-  the consumer's object store; see [the protocols](#the-protocols).
+- `WriteFile`, `EnsureFile`, `RemoveFile`, `RemoveFileID`, and `PurgeFile` run the two-phase
+  write and delete end to end over the consumer's object store; see [the
+  protocols](#the-protocols).
 - `Sweep(ctx, db, objects, opts...)` runs one bounded pass that finishes the deletes callers
   began, and the package's `SweepUntilDone` runs passes until the work is done; see [the
   sweep](#the-sweep).
@@ -242,7 +246,7 @@ directory from the module's own `[export]`.
 | `Move(ctx, tx, id, parentID, name, version)` | Moves or renames a directory under the tree lock, after the cycle check, guarded by `version`. | `ErrRootDirectory`, `NameError`, `ErrCycle`, `ErrNotFound` for the directory or the new parent, `ErrNameTaken` (by an active directory), `ErrDeleting` when the directory or either parent is deleting, `query.ErrVersionMismatch`, a deleting directory's `DeletingError` for a name it holds; at repeatable read or serializable, `sqlate.ErrSerializationFailure` |
 | `Delete(ctx, sess, id, opts...)` | Removes one empty directory, only at the version `AtVersion` names when it is given. | `ErrRootDirectory`, `ErrNotEmpty`, `ErrReferenced`, `ErrNotFound`, and with `AtVersion`, `query.ErrVersionMismatch` |
 | `MarkDeleting(ctx, tx, id, opts...)` | The first step of [a branch's delete](#deleting-a-branch): marks the directory, every directory beneath it, and every file in them deleting, and returns the counts it changed as `Marked`. | `ErrRootDirectory`, `ErrNotFound`, and with `AtVersion`, `query.ErrVersionMismatch` |
-| `Deleting(ctx, sess, limit)` | Returns at most `limit` roots of the branches being deleted, in id order. | a `limit` below 1 |
+| `BranchRoots(ctx, sess, limit)` | Returns at most `limit` roots of the branches being deleted, in id order. | a `limit` below 1 |
 | `IsWithin(ctx, sess, id, ancestorID)` | Reports whether `id` lies in the subtree of `ancestorID`, that directory included; a directory that does not exist is within nothing. On a loop in the tree, `id` is within every directory on its chain and none off it. | none of its own |
 | `LockTree(ctx, tx)` | Takes the variant's tree lock in `tx`, held until it ends, for a tree-shape change of the caller's own; `Move` and `MarkDeleting` take it themselves. | the engine's error |
 | `Serializes()` | Reports whether `LockTree` serializes across transactions. | none |
@@ -252,12 +256,15 @@ directory from the module's own `[export]`.
 
 `Ensure` looks the name up first and inserts only when it finds no row, so the common case runs
 no failing statement and composes into a caller's transaction. A creator that commits the name
-between the lookup and the insert makes the insert fail as `ErrNameTaken`. On the pool the row
-is then looked up again and returned as found; inside a transaction the error is returned,
-because on PostgreSQL the failed insert has aborted the transaction, and the caller retries the
-transaction. A deleting directory committed in that window fails no statement, because the
-insert selects nothing under it, so `Ensure` looks it up again inside a transaction too and
-refuses it as it refuses a found one. A found row keeps its own id whatever `WithID` supplied.
+between the lookup and the insert makes the insert fail: as `ErrNameTaken`, or as `ErrIDTaken`
+when both callers supplied one id through `WithID`, since PostgreSQL checks the primary key
+before the name's constraint. On the pool the name is then looked up again, and the row found is
+returned, for `ErrIDTaken` only when it carries the id supplied; otherwise `ErrIDTaken` stands.
+Inside a transaction the error is returned, because on PostgreSQL the failed insert has aborted
+the transaction, and the caller retries the transaction. A deleting directory committed in that
+window fails no statement, because the insert selects nothing under it, so `Ensure` looks it up
+again inside a transaction too and refuses it as it refuses a found one. A found row keeps its
+own id whatever `WithID` supplied.
 
 `Move` runs `LockTree`, then `IsWithin(parentID, id)`, then the guarded update, in `tx`. The
 caller reads the directory in the same transaction and passes its `Version`. The directory's
@@ -291,7 +298,7 @@ make directory moves safe.
 | `FindByName(ctx, sess, directoryID, name)` | Reads the file named `name` in a directory, whatever its status: the last step of resolving a file's path. A directory of the same name is not found. | `NameError`, `ErrNotFound` |
 | `Create(ctx, sess, keys, directoryID, name, contentType, opts...)` | The write's first step: inserts the row as `pending` with its key and the declared content type, and returns it. | `NameError`, `IDError`, `KeyError`, all before any SQL; `ErrNameTaken` (by a pending or available row), `ErrIDTaken`, `ErrNotFound` for the directory, `ErrDeleting` for a deleting directory, and a deleting row's `DeletingError` for a name it holds |
 | `Ensure(ctx, sess, keys, directoryID, name, contentType, opts...)` | The retry-safe first step: returns the row that holds the name and a `WriteOutcome`. | as `Create`; a name already held is found, not refused, except in the race `Directories.Ensure` describes |
-| `Complete(ctx, sess, id, version, obj)` | The write's last step: moves the pending row to `available`, records `obj`, and returns the row. | `ErrNotFound`; a `DeletingError` wrapping the `TransitionError` when a delete began; `query.ErrVersionMismatch`; or a `TransitionError` matching `ErrInvalidTransition` when the write was already completed |
+| `Complete(ctx, sess, id, version, obj)` | The write's last step: moves the pending row to `available`, records `obj`, and returns the row. | `ErrNotFound`; a `DeletingError` wrapping the `TransitionError` when a delete began; `query.ErrVersionMismatch`, which a retry at the pending version meets once a completion committed, since the completion advanced the version; a `TransitionError` matching `ErrInvalidTransition` for a row available at the version named |
 | `Move(ctx, sess, id, directoryID, name, version)` | Moves or renames a file, guarded by `version`. The key is untouched. | `NameError`, `ErrNotFound` for the file or the directory, `ErrNameTaken` (by a pending or available row), a `DeletingError` when the file, its directory, or the new directory is deleting, `query.ErrVersionMismatch`, a deleting row's `DeletingError` for a name it holds |
 | `Hold(ctx, tx, id, opts...)` | Locks the row for the rest of `tx` without changing it. | `ErrNotFound`, a `DeletingError`, and with `AtVersion`, `query.ErrVersionMismatch` |
 | `Delete(ctx, tx, id, opts...)` | The delete's first step: moves the row to `deleting`, advancing its version once, and returns it with its key. | `ErrNotFound`, and with `AtVersion`, `query.ErrVersionMismatch` |
@@ -306,11 +313,10 @@ make directory moves safe.
 | `WriteResumed` | a pending row an earlier write left | the same, under the row's own `Key` |
 | `WritePresent` | an available or deleting row, returned unchanged | the caller's decision: a put refuses the name, a copy skips or replaces it, a seeder skips it |
 
-The lookup-first behavior inside and outside a transaction is `Directories.Ensure`'s. A found
-row keeps its own id and key whatever `WithID` supplied. `Ensure` returns a deleting row as
-`WritePresent`, not refused, whether the lookup finds it or a writer commits it between the
-lookup and the insert. In the second case the insert selects nothing and fails no statement, so
-`Ensure` runs the lookup again, inside a transaction too. In a deleting directory, `Ensure`
+The lookup-first behavior and its race are `Directories.Ensure`'s. A found row keeps its own id
+and key whatever `WithID` supplied. `Ensure` returns a deleting row as `WritePresent`, not
+refused, whether the lookup finds it or a writer commits it after the lookup. In a deleting
+directory, `Ensure`
 reports a file the mark reached as `WritePresent`, its row deleting, and refuses a name no row
 holds with `Create`'s `ErrDeleting`. A found row that is not deleting is returned without a read
 of its directory, so a straggler, a row a create left active in a branch being deleted, is
@@ -341,70 +347,77 @@ own.
 ### The protocols
 
 The `Store` runs the two-phase write and delete end to end over the consumer's object store,
-which it reaches only through two interfaces the consumer's adapter satisfies:
+which it reaches only through `ObjectStore`, the one interface the consumer's adapter
+satisfies. It embeds three:
 
+- `blobfs.KeyValidator`: `ValidateKey(key) error`, the key check `Files.Create` and
+  `Files.Ensure` run; a write's `begin` passes the same adapter to them.
 - `ObjectPutter`: `PutObject(ctx, key, body, contentType, size) (blobfs.Object, error)` stores
   `size` bytes of `body` under `key` in `contentType`, all or nothing, replacing whatever the key
   held, and reports the stored object as `Complete` records it.
-- `ObjectDeleter`: `DeleteObject(ctx, key) error`, as [the sweep](#the-sweep) calls it.
+- `ObjectDeleter`: `DeleteObject(ctx, key) error`, idempotent over a missing object, which the
+  delete protocols and [the sweep](#the-sweep) take alone.
 
-`ObjectStore` combines the two. Each protocol takes the `*sqlate.DB` and runs its first
-transaction around a callback of the consumer's, in which the consumer checks its own scope and
-writes or removes its own rows. The protocol returns the callback's error, or its transaction's,
-as it came, and names every other error once as `data: <op> file <id>: ...`.
+Each protocol takes the `*sqlate.DB` and runs its first transaction around a callback of the
+consumer's, in which the consumer checks its own scope and writes or removes its own rows. The
+protocol returns the callback's error, or its transaction's, as it came, and names every other
+error once as `data: <op> file <id>: ...`.
 
 | Method | What it does | Refusals |
 |---|---|---|
-| `Write(ctx, db, objects, body, size, begin)` | Runs `begin`, which calls `Files.Create`, in one transaction, so the pending row commits before any byte; puts `body` under the row's `Key` outside any transaction, in the type the row declares; completes the row on the pool and returns it available. | `begin`'s; before any put, a `TransitionError` for a row that is not pending, wrapped in its `DeletingError` for a deleting one; the put's; `Complete`'s |
-| `Ensure(ctx, db, objects, id, body, size, begin)` | The retry-safe `Write` of the file under the fixed `id`, such as a seed's: `begin` calls `Files.Ensure` with `WithID(id)`. Returns the row and whether this call stored its object. | `IDError` before any SQL; `begin`'s; `ErrNameTaken` for a pending or available row found under another id; an error naming both ids for a row `begin` created under another id; a `DeletingError` for a deleting row found, under `id` or another; `Write`'s |
-| `Remove(ctx, db, objects, pick, opts...)` | Runs `pick`, which returns the file's id, and `Files.Delete` under `opts` in one transaction, then `Purge`. | `pick`'s; `Files.Delete`'s; `Purge`'s |
-| `Purge(ctx, db, objects, file)` | The delete's last two steps, for a file whose `Files.Delete` the consumer ran itself: deletes the object under its `Key`, then purges the row. | the object delete's, which leaves the row deleting; `Files.Purge`'s |
+| `WriteFile(ctx, db, objects, body, size, begin)` | Runs `begin`, which calls `Files.Create`, in one transaction, so the pending row commits before any byte; puts `body` under the row's `Key` outside any transaction, in the type the row declares; completes the row on the pool and returns it available. | `begin`'s; before any put, a `TransitionError` for a row that is not pending, wrapped in its `DeletingError` for a deleting one; the put's; `Complete`'s |
+| `EnsureFile(ctx, db, objects, id, body, size, begin)` | The retry-safe `WriteFile` of the file under the fixed `id`, such as a seed's: `begin` calls `Files.Ensure` with `WithID(id)`. Returns the row and whether this call stored its object. | `IDError` before any SQL; `begin`'s; `ErrNameTaken` for a pending or available row found under another id; an error naming both ids for a row `begin` created under another id; a `DeletingError` for a deleting row found, under `id` or another; `WriteFile`'s |
+| `RemoveFile(ctx, db, objects, pick, opts...)` | Runs `pick`, which returns the file's id, and `Files.Delete` under `opts` in one transaction, then deletes the object and purges the row. | `pick`'s; `Files.Delete`'s; `PurgeFile`'s |
+| `RemoveFileID(ctx, db, objects, id, opts...)` | `RemoveFile` of the file with `id`, for a caller with no scope to check and no reference to remove in the delete's transaction. | `Files.Delete`'s; `PurgeFile`'s |
+| `PurgeFile(ctx, db, objects, file)` | The delete's last two steps, for a file whose `Files.Delete` the consumer ran itself: deletes the object under its `Key`, then purges the row. | the object delete's, which leaves the row deleting; `Files.Purge`'s |
 
-`Write` writes only a pending row. A row `begin` returns in any other status, such as an
+`WriteFile` writes only a pending row. A row `begin` returns in any other status, such as an
 available row that `Files.Ensure` found, is refused before any put, and nothing is removed; a
-write that may find its row already there is `Ensure`'s.
+write that may find its row already there is `EnsureFile`'s.
 
-`Write` never leaves a row behind a failure it can undo. A put or a completion that fails
-abandons the write through `Remove`'s steps, at the row's pending version, so the name is free
-for a retry and a row another writer moved or completed meanwhile is left as it stands. The
+`WriteFile` never leaves a row behind a failure it can undo. A put or a completion that fails
+abandons the write through `RemoveFileID`'s steps, at the row's pending version, so the name is
+free for a retry and a row another writer moved or completed meanwhile is left as it stands. The
 abandon, and the object delete described below, run under `ctx` without its cancellation, so a
 caller that hangs up mid-body still cleans up. That context carries no deadline of its own, so
 the consumer's object store adapter and its pool bound their own calls. If the abandon fails
 too, the row stays pending or deleting, a stale row the sweep reclaims. For that reason `begin`
 inserts no row that references the file: a reference would refuse the reclaim's purge. A
 completion refused with `ErrDeleting` or `ErrNotFound` means a sweep reached the row before the
-put landed; `Write` deletes the object it put, which that sweep could not have deleted, and
+put landed; `WriteFile` deletes the object it put, which that sweep could not have deleted, and
 leaves the row to the sweep.
 
-`Ensure` differs from `Write` in what it finds:
+`EnsureFile` differs from `WriteFile` in what it finds:
 
 - A row `Files.Ensure` created, or a pending row an earlier write under `id` left, is written as
-  `Write` writes it, and `stored` is true.
+  `WriteFile` writes it, and `stored` is true.
 - An available row under `id` is returned as it stands, nothing put, and `stored` is false.
-- `Ensure` checks the id of the row `begin` returns, whatever it did, before any put. A row found
-  under another id is not the caller's, such as a client's upload of the same name; it is left
-  as it stands, nothing put and nothing removed. It is reported as `ErrNameTaken`, or, when it
-  is deleting, as its `DeletingError`, which `Ensure` does not retry. A row `begin` created
-  under another id, because it ran `Files.Ensure` without `WithID(id)`, is abandoned at
+- `EnsureFile` checks the id of the row `begin` returns, whatever it did, before any put. A row
+  found under another id is not the caller's, such as a client's upload of the same name; it is
+  left as it stands, nothing put and nothing removed. It is reported as `ErrNameTaken`, or, when
+  it is deleting, as its `DeletingError`, which `EnsureFile` does not retry. A row `begin`
+  created under another id, because it ran `Files.Ensure` without `WithID(id)`, is abandoned at
   its version, nothing put, and reported with both ids named.
-- When the first transaction is refused with `ErrNameTaken` or `ErrIDTaken`, because a
-  concurrent writer's insert won the race, `Ensure` runs `begin` once more in a fresh
-  transaction, which finds the winner's row.
-- Two writers may then share a pending row. `Ensure` abandons only at the pending version it
-  holds, so it never removes a row the other writer completed. When the other writer completed
-  the row first, `Ensure`'s completion, or its abandon, finds a stale version or a row already
-  available; it then reads the row back and returns it as found, with `stored` false. A
-  completion refused as deleting or not found is no such race and is returned as it came. Both
-  puts store the same bytes under the same key, so the object is whole whichever lands last.
+- `begin` runs inside a transaction, where `Files.Ensure` returns the violation of an insert
+  that lost [the race](#directories) rather than look the name up in an aborted transaction.
+  When the first transaction is refused with `ErrNameTaken` or `ErrIDTaken`, `EnsureFile`
+  therefore runs `begin` once more in a fresh transaction, which finds the winner's row.
+- Two writers may then share a pending row. `EnsureFile` abandons only at the pending version
+  it holds, so it never removes a row the other writer completed. When the other writer
+  completed the row first, `EnsureFile`'s completion, or its abandon, finds a stale version or a
+  row already available; it then reads the row back and returns it as found, with `stored`
+  false. A completion refused as deleting or not found is no such race and is returned as it
+  came. Both puts store the same bytes under the same key, so the object is whole whichever
+  lands last.
 
-The key is the row's id and name, so an `Ensure` under its fixed id after a reset of the tables
-but not of the store puts over the object the earlier write left, and completes.
+The key is the row's id and name, so an `EnsureFile` under its fixed id after a reset of the
+tables but not of the store puts over the object the earlier write left, and completes.
 
-`Remove` begins the delete at any version when `opts` carries none, and a delete begun at any
-version is the retry of one already begun. Every step of `Remove` and `Purge` converges on a
-retry: a retry of an interrupted `Remove` finishes it, while a retry of a `Remove` that already
-finished finds no row and returns `ErrNotFound`. A `Purge` that never runs leaves a deleting row
-the sweep's stale reclaim finishes.
+`RemoveFile` begins the delete at any version when `opts` carries none, and a delete begun at
+any version is the retry of one already begun. A retry of an interrupted `RemoveFile` or
+`PurgeFile` finishes it, while a retry of a `RemoveFile` that already finished finds no row and
+returns `ErrNotFound`. A `PurgeFile` that never runs leaves a deleting row the sweep's stale
+reclaim finishes.
 
 ### Listings
 
@@ -473,25 +486,25 @@ one row past the page's size.
 A branch is a directory with everything beneath it. [Concepts](concepts.md#deleting-a-branch)
 explains the two stages; this section states their rules.
 
-`MarkDeleting(ctx, tx, id, opts...)` runs in `tx` under the tree lock, `LockTree`. One recursive
-update marks the directory and every directory beneath it `DirectoryStatusDeleting`, and a
-second, over the same walk, marks every file in them `StatusDeleting`. Where `Serializes`
-reports true the two walk one branch; on the baseline a concurrent move can reshape it between
-them, or while the first waits on a row, and [moves](concepts.md#moves) gives the courses that
-prevent it. Each row it changes
-advances its version once and has its `updated_at` stamped; a row already deleting is left as it
-is. It returns `Marked`, whose `Directories` and `Files` count the rows this call moved to
-deleting, so a repeated mark reports only what it reached anew. The walk descends through
-directories already deleting, so a repeated mark reaches a straggler: an active row left in the
-branch by a create that read its parent before the first mark committed. The file update takes
-each row's lock, so it waits on a `Hold` another transaction took. The root is
-`ErrRootDirectory` before any SQL, and a directory that does not exist is `ErrNotFound`. With
-`AtVersion`, the version guards the first update in the same statement, in its walk's anchor:
-an active directory at another version starts no walk and marks nothing, and a directory already
-deleting is the mark's retry at any version. When the update changes no row, one read tells a
-missing directory, `ErrNotFound`, from one at another version, `query.ErrVersionMismatch`, and
-from a retry, after which the files' update runs. The walk costs the size of the branch, never
-of the tree, and terminates on a loop in the tree.
+`MarkDeleting(ctx, tx, id, opts...)` runs two statements in `tx` under the tree lock,
+`LockTree`: one recursive update marks the directory and every directory beneath it
+`DirectoryStatusDeleting`, and a second, over the same walk, marks every file in them
+`StatusDeleting`. The walk costs the size of the branch, never of the tree, and terminates on a
+loop in the tree. Where `Serializes` reports true the two statements walk one branch; on the
+baseline a concurrent move can reshape it between them, and [moves](concepts.md#moves) gives the
+courses that prevent it. The file update takes each row's lock, so it waits on a `Hold` another
+transaction took, and on a file move that has not committed, which it then finds outside the
+branch.
+
+Each row the mark changes advances its version once and has its `updated_at` stamped; a row
+already deleting is left as it is. `Marked`'s `Directories` and `Files` count the rows this call
+moved to deleting, so a repeated mark reports only what it reached anew. The walk descends
+through directories already deleting, so a repeated mark reaches a straggler.
+
+The root is `ErrRootDirectory` before any SQL, and a directory that does not exist is
+`ErrNotFound`. With `AtVersion`, the version guards the walk's anchor: an active directory at
+another version marks nothing and is `query.ErrVersionMismatch`, and a directory already
+deleting is the mark's retry at any version, after which the files' update runs.
 
 After the mark, a deleting directory refuses every operation that would add to the branch or
 take from it, with `ErrDeleting`:
@@ -507,7 +520,7 @@ take from it, with `ErrDeleting`:
 `Find`, `FindByName`, `FindByPath`, and `Path` read a deleting directory as any other, and its
 `Status` says so. `Complete` and `Hold` of a marked file are refused as for any deleting file.
 
-`Deleting(ctx, sess, limit)` returns the roots of the branches being deleted: each deleting
+`BranchRoots(ctx, sess, limit)` returns the roots of the branches being deleted: each deleting
 directory under an active parent, which is the directory a mark named, and none beneath it. The
 rest of each branch is reached from its root through the listings with `IncludeDeleting`. It is
 the sweep's read, and a consumer's own tool can run it. The PostgreSQL migration indexes the
@@ -526,7 +539,7 @@ key) error`. It must be idempotent, treating a missing object as success, since 
 delete an object a stopped pass deleted already, and a pending row's object may never have been
 stored. An error leaves that file's row deleting for the next pass.
 
-For each branch root `Deleting` returns, in id order, the pass walks the branch depth first
+For each branch root `BranchRoots` returns, in id order, the pass walks the branch depth first
 through the listings with `IncludeDeleting`, each directory's files and then its child
 directories a page at a time in name order. In each directory it deletes every file's object and
 purges the file's row, empties and removes each child directory the same way, and then removes
@@ -672,7 +685,7 @@ another migration tool authors the same DDL from this section.
 | `blobfs_cc_directory_root_name` | check | `(parent_id IS NULL) = (name = '/')` |
 | `blobfs_uq_directory_root` | partial unique index | `((parent_id IS NULL)) WHERE parent_id IS NULL`: one root |
 | `blobfs_cc_directory_status` | check | `status IN ('active', 'deleting')` |
-| `blobfs_ix_directory_deleting` | partial index | `(id) WHERE status = 'deleting'`: the deleting directories alone, which `Deleting` reads |
+| `blobfs_ix_directory_deleting` | partial index | `(id) WHERE status = 'deleting'`: the deleting directories alone, which `BranchRoots` reads |
 
 The migration seeds the root: id `00000000-0000-0000-0000-000000000000`, no parent, name `/`.
 The status column, its check, and its index are added by the third migration, which leaves every
@@ -844,8 +857,9 @@ refusals, in text, for the same inputs. The concurrency checks assert what `Seri
 that the lock blocks a second mover, or that two opposing moves on a variant without a lock form
 the cycle, that `IsWithin` and `Path` terminate on it with their defined answers and a `Move`
 repairs it, and that serializable isolation refuses one of them on every variant. The concurrent
-`Ensure` checks force the race they test: the suite holds each caller's lookup until both have
-looked, so both insert and one recovers from the refused insert. It creates two
+`Ensure` checks force the race they test, with and without one id supplied to both callers:
+the suite holds each caller's lookup until both have looked, so both insert and one recovers
+from the refused insert. It creates two
 tables of its own, `datatest_reference` and `datatest_owner`, with foreign keys into blobfs's
 tables, to stand in for a consumer's references, and an index on
 `blobfs_file (directory_id, created_at)`, which it drops again.
@@ -856,27 +870,29 @@ Verify, Directories, Paths, Files, Writes, Deletes, Protocols, Holds, Moves, Lis
 Branches, and Sweeps.
 
 Protocols runs the protocols end to end over an in-memory object store. It checks
-`Store.Write`'s success; a failed put, which frees the name; a completion refused by a mark made
-during the put, after which the write deletes the object it put and leaves the row to the sweep;
-a refusing begin; and the refusal of an available row. It checks `Store.Ensure` creating,
-returning an available row, resuming a pending one, and refusing a name held under another id
-or a deleting row; a second `Ensure` completing the shared row during the first one's put; and
-an insert lost to a row a competing writer committed, which `Ensure` resumes. It checks
-`Store.Remove`, its failed object delete and retry, and a refusing pick; `Store.Purge` after the
-caller's own `Files.Delete`; and `SweepUntilDone` draining a backlog larger than one batch in
-counted passes, and running no pass once stopped. Protocols runs before any group marks a
-branch, and it sweeps the branches it marks itself.
+`Store.WriteFile`'s success; a failed put, which frees the name; a completion refused by a mark
+made during the put, after which the write deletes the object it put and leaves the row to the
+sweep; a refusing begin; and the refusal of an available row. It checks `Store.EnsureFile`
+creating, returning an available row, resuming a pending one, and refusing a name held under
+another id or a deleting row; a second `EnsureFile` completing the shared row during the first
+one's put; and an insert lost to a row a competing writer committed, which `EnsureFile` resumes.
+It checks `Store.RemoveFile`, its retry once finished, and a refusing pick;
+`Store.RemoveFileID`'s failed object delete and retry; `Store.PurgeFile` after the caller's own
+`Files.Delete`; and `SweepUntilDone` draining a backlog larger than one batch in counted passes,
+and running no pass once stopped. Protocols runs before any group marks a branch, and it sweeps
+the branches it marks itself.
 
 Branches checks the mark's counts, its convergence and stragglers, its version guard and its
-retry at any version, its wait on a hold, every refusal a deleting directory makes, the
-listings' hiding, and `Deleting`'s roots; it runs after the other groups because the branches it
-marks stay in the tree. Sweeps runs last because its first pass removes them; it then checks a
-full sweep with its hook, a pass stopped between an object's delete and its row's purge,
-stragglers, the batch bound, a hook that aborts a removal, a refused branch and a refused stale
-row that hold back nothing behind them, at the default batch and at `Batch(1)`, the stale
-reclaim's age, and concurrent passes converging. Every check of a refusal of a deleting row also
-checks the `DeletingError`'s kind: the file's own for a file whose delete began, and the
-directory's for everything a mark refuses.
+retry at any version, its wait on a hold, a file move out of the branch racing the mark in both
+orders, every refusal a deleting directory makes, the listings' hiding, and `BranchRoots`'s
+roots; it runs after the other groups because the branches it marks stay in the tree. Sweeps
+runs last because its first pass removes them; it then checks a full sweep with its hook, a pass
+stopped between an object's delete and its row's purge, stragglers, the batch bound, a hook that
+aborts a removal, a refused branch and a refused stale row that hold back nothing behind them,
+at the default batch and at `Batch(1)`, the stale reclaim's age, and concurrent passes
+converging. Every check of a refusal of a deleting row also checks the `DeletingError`'s
+kind: the file's own for a file whose delete began, and the directory's for everything a mark
+refuses.
 
 Beside the suite, `FileRows(files...)` and `DirectoryRows(dirs...)` build the `sqltest.Response`
 of a read of blobfs's rows, in the columns the store's statements scan, for a consumer's unit
@@ -899,7 +915,7 @@ library that a step returns are listed after them.
 | `ErrInvalidID` | An id supplied through `WithID` that is not a UUID, or is the nil UUID. |
 | `ErrIDTaken` | An id supplied through `WithID` that a row of the same table already carries. |
 | `ErrNotEmpty` | A directory delete while the directory has child directories or files, deleting ones included. |
-| `ErrInvalidTransition` | A status change the table does not allow, such as `Complete` of a row already available; a `TransitionError` carries the statuses. |
+| `ErrInvalidTransition` | A status change the table does not allow, such as `Complete` of a row available at the version named; a `TransitionError` carries the statuses. A retried `Complete` at the pending version, after its completion committed, is `query.ErrVersionMismatch` instead, since the completion advanced the version. |
 | `ErrDeleting` | `Complete`, `Move`, or `Hold` of a deleting row, whatever version the caller holds; a create or an ensure under a deleting directory, a move into one or out of one, and the move of a deleting directory; a create or a move onto a name a deleting row holds; a listing of a deleting directory without `IncludeDeleting`. Each is a `DeletingError` naming whose delete refused. |
 | `ErrNotDeleting` | `Purge` of a row whose delete has not begun. |
 | `ErrReferenced` | A directory `Delete` or a file `Purge`, or the sweep's removal or purge, refused by a foreign key blobfs does not own: a consumer's row references the row. |

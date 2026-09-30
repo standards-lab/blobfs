@@ -21,12 +21,13 @@ func (s *suite) branches(t *testing.T) {
 	t.Run("MarkAgainConverges", s.markAgain)
 	t.Run("MarkAtVersion", s.markAtVersion)
 	t.Run("MarkWaitsOnAHold", s.markWaitsOnHold)
+	t.Run("MarkRacesAFileMove", s.markRacesAFileMove)
 	t.Run("DeletingRefuses", s.deletingRefuses)
 	t.Run("ListingsHideTheBranch", s.listingsHideTheBranch)
 	t.Run("ListingADeletingDirectory", s.listingADeletingDirectory)
 	t.Run("CursorAcrossAMark", s.cursorAcrossAMark)
-	t.Run("DeletingFindsTheRoots", s.deletingFindsTheRoots)
-	t.Run("DeletingFindsNone", s.deletingFindsNone)
+	t.Run("BranchRootsFindsTheRoots", s.branchRootsFindsTheRoots)
+	t.Run("BranchRootsFindsNone", s.branchRootsFindsNone)
 }
 
 // branch is a three-level branch the group marks: top under the root, mid
@@ -267,6 +268,66 @@ func (s *suite) markWaitsOnHold(t *testing.T) {
 		}
 		if f := s.file(t, held); f.Status != blobfs.StatusDeleting {
 			t.Errorf("the held file is %s after the mark, want deleting", f.Status)
+		}
+	}
+}
+
+// markRacesAFileMove checks a file moved out of a branch while the
+// branch's mark runs, in both orders, over the store under test and the
+// baseline. A move that commits first leaves the file active in its new
+// directory: the mark's file update waits on the moved row and then finds
+// it outside the branch. A mark that commits first refuses the move, which
+// waits on the marked row, with the directory's DeletingError. The file
+// never ends deleting in an active directory.
+func (s *suite) markRacesAFileMove(t *testing.T) {
+	for i, store := range []*data.Store{s.store, s.baseline} {
+		b := s.newBranch(t, fmt.Sprintf("move-then-mark-%d-%s", i, t.Name()))
+		outside := s.mkdir(t, fmt.Sprintf("moved-out-%d-%s", i, t.Name()))
+		moved := s.file(t, b.files[0])
+		mover := s.beginTx(t)
+		if _, err := store.Files.Move(s.ctx, mover, moved.ID, outside.ID, moved.Name, moved.Version); err != nil {
+			_ = mover.Rollback()
+			t.Fatalf("Files.Move: %v", err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := s.mark(store, b.top.ID)
+			done <- err
+		}()
+		wantBlocked(t, done, "the mark returned while the move's transaction was open")
+		if err := mover.Commit(); err != nil {
+			t.Fatalf("Commit: %v", err)
+		}
+		if err := awaitOrFail(t, done, "the mark still blocks after the move committed"); err != nil {
+			t.Fatalf("MarkDeleting after the move committed: %v", err)
+		}
+		if f := s.file(t, moved.ID); f.DirectoryID != outside.ID || f.Status != moved.Status {
+			t.Errorf("the file moved before the mark reads %+v, want it %s in %s", f, moved.Status, outside.ID)
+		}
+
+		b = s.newBranch(t, fmt.Sprintf("mark-then-move-%d-%s", i, t.Name()))
+		outside = s.mkdir(t, fmt.Sprintf("kept-in-%d-%s", i, t.Name()))
+		kept := s.file(t, b.files[0])
+		marker := s.beginTx(t)
+		if _, err := store.Directories.MarkDeleting(s.ctx, marker, b.top.ID); err != nil {
+			_ = marker.Rollback()
+			t.Fatalf("MarkDeleting: %v", err)
+		}
+		go func() {
+			_, err := store.Files.Move(s.ctx, s.db, kept.ID, outside.ID, kept.Name, kept.Version)
+			done <- err
+		}()
+		wantBlocked(t, done, "the move returned while the mark's transaction was open")
+		if err := marker.Commit(); err != nil {
+			t.Fatalf("Commit: %v", err)
+		}
+		err := awaitOrFail(t, done, "the move still blocks after the mark committed")
+		if !errors.Is(err, blobfs.ErrDeleting) {
+			t.Errorf("Files.Move after the mark committed = %v, want ErrDeleting", err)
+		}
+		wantDeletingKind(t, err, true, b.top.ID)
+		if f := s.file(t, kept.ID); f.DirectoryID != b.top.ID || f.Status != blobfs.StatusDeleting {
+			t.Errorf("the file marked before the move reads %+v, want it deleting in %s", f, b.top.ID)
 		}
 	}
 }

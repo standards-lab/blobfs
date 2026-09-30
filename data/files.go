@@ -86,20 +86,12 @@ func (f *Files) findByName(ctx context.Context, sess sqlate.Session, directoryID
 	return f.byName.One(ctx, sess, query.Args{"directory_id": directoryID, "name": name})
 }
 
-// Create is the first step of a file write: it inserts the row as
-// blobfs.StatusPending with the declared contentType and returns it; the
-// caller stores the object under the row's Key and then calls Complete.
-// The name is normalized and validated, the id minted or taken from
-// WithID, and the key built by blobfs.NewKey and validated against keys,
-// all before any SQL.
-//
-// Refusals: blobfs.NameError, blobfs.IDError, and blobfs.KeyError before
-// any SQL; blobfs.ErrNameTaken for a name a pending or available file
-// holds in the directory; for a name a deleting file holds, that file's
-// blobfs.DeletingError, or its directory's once the directory is
-// deleting, which does not match ErrNameTaken; blobfs.ErrIDTaken;
-// blobfs.ErrNotFound for a missing directory; blobfs.ErrDeleting for a
-// deleting directory.
+// Create is the write's first step: it inserts the row pending with the
+// declared contentType and a key built by blobfs.NewKey and checked by
+// keys, and returns it. The name, the id, and the key are checked before
+// any SQL. A name a deleting file holds is refused with that file's
+// blobfs.DeletingError, not blobfs.ErrNameTaken. See Files in
+// docs/features.md.
 func (f *Files) Create(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts ...CreateOption) (_ blobfs.File, err error) {
 	defer wrap(&err, "create file %q in %s", name, directoryID)
 	name, id, key, err := newFile(keys, name, opts)
@@ -126,29 +118,19 @@ const (
 	WritePresent WriteOutcome = "present"
 )
 
-// Ensure is the retry-safe first step of a file write: it returns the row
-// that holds name in directoryID and the WriteOutcome that says how. It
-// looks the name up first and runs Create only when no row holds it; a
-// found row keeps its own id and key whatever WithID supplied, and is
-// returned without a read of its directory, a straggler in a deleting
-// directory included. See Files in docs/features.md.
-//
-// A deleting row that holds the name is WritePresent, not refused, whether
-// the lookup found it or a writer committed it after the lookup and the
-// row refused the insert. That insert fails no statement, so Ensure looks the
-// row up again inside a transaction too.
-//
-// Refusals: Create's, except a deleting row's for the name; and, inside a
-// transaction only, blobfs.ErrNameTaken when a writer commits a pending or
-// available row under the name between the lookup and the insert, as in
-// Directories.Ensure.
+// Ensure is the retry-safe first step: it returns the row that holds name
+// in directoryID, creating it pending when none does, and the WriteOutcome
+// that says which. A found row, a deleting one included, keeps its own id
+// and key. Its refusals are Create's, and blobfs.ErrNameTaken inside a
+// transaction for a writer that commits the name after the lookup. See
+// Files in docs/features.md.
 func (f *Files) Ensure(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts ...CreateOption) (_ blobfs.File, _ WriteOutcome, err error) {
 	defer wrap(&err, "ensure file %q in %s", name, directoryID)
 	name, id, key, err := newFile(keys, name, opts)
 	if err != nil {
 		return blobfs.File{}, "", err
 	}
-	file, created, err := insertOrFind(ctx, sess,
+	file, created, err := insertOrFind(ctx, sess, id, func(f blobfs.File) string { return f.ID },
 		func(ctx context.Context, sess sqlate.Session) (blobfs.File, error) {
 			return f.findByName(ctx, sess, directoryID, name)
 		},
@@ -184,10 +166,8 @@ func newFile(keys blobfs.KeyValidator, name string, opts []CreateOption) (string
 	return name, id, key, nil
 }
 
-// insert runs create_file and classifies its refusal bare: a violation
-// through the write mapping, and an insert that selected no row by a read
-// of the directory and then of the deleting file that holds the name. An
-// insert those reads do not explain runs once more, as rerunOnce says.
+// insert runs create_file and classifies its refusal bare, rerunning an
+// unexplained one once.
 func (f *Files) insert(ctx context.Context, sess sqlate.Session, id, directoryID, name, key, contentType string) (blobfs.File, error) {
 	args := query.Args{"id": id, "directory_id": directoryID, "name": name, "key": key, "content_type": contentType}
 	return rerunOnce(func() (blobfs.File, bool, error) {
@@ -205,14 +185,9 @@ func (f *Files) insert(ctx context.Context, sess sqlate.Session, id, directoryID
 	})
 }
 
-// refusedName classifies a create or a move whose statement selected no
-// row, once the directories explain nothing, by reading the file that
-// holds name, already normalized, in directoryID. The statement refuses a
-// name a deleting file holds without failing the unique constraint, so a
-// deleting holder is refused as deletingFile builds it: the holder's
-// blobfs.DeletingError, or its directory's, in a holderError naming the
-// holder. nil means no deleting file holds the name; a read that fails is
-// returned unclassified.
+// refusedName reads the file that holds name in directoryID after a create
+// or a move selected no row: a deleting holder is refused, in a
+// holderError; nil means none explains the refusal.
 func (f *Files) refusedName(ctx context.Context, sess sqlate.Session, directoryID, name string) error {
 	holder, err := f.findByName(ctx, sess, directoryID, name)
 	switch {
@@ -226,21 +201,18 @@ func (f *Files) refusedName(ctx context.Context, sess sqlate.Session, directoryI
 	return &holderError{kind: "file", id: holder.ID, err: f.dirs.deletingFile(ctx, sess, holder, nil)}
 }
 
-// Complete is the last step of a file write: it moves the pending row with
-// id, at version, to blobfs.StatusAvailable with what the store reported
-// in obj, and returns the row as the database holds it.
-//
-// Refusals: blobfs.ErrNotFound; for a deleting row, a
-// blobfs.DeletingError, the file's or its directory's as a read of the
-// directory tells, wrapping the blobfs.TransitionError;
-// query.ErrVersionMismatch; a blobfs.TransitionError matching
-// blobfs.ErrInvalidTransition for a row completed already.
+// Complete is the write's last step: it moves the pending row with id, at
+// version, to available with what the store reported in obj, and returns
+// it. Refusals: blobfs.ErrNotFound; a blobfs.DeletingError for a deleting
+// row; query.ErrVersionMismatch, which a retry after a completion that
+// committed meets too; a blobfs.TransitionError for a row available at
+// version. See Files in docs/features.md.
 func (f *Files) Complete(ctx context.Context, sess sqlate.Session, id string, version int64, obj blobfs.Object) (_ blobfs.File, err error) {
 	defer wrap(&err, "complete file %s", id)
 	return f.completeFile(ctx, sess, id, version, obj)
 }
 
-// completeFile is Complete's body, with its errors bare for Store.Write.
+// completeFile is Complete's body, with its errors bare for Store.WriteFile.
 func (f *Files) completeFile(ctx context.Context, sess sqlate.Session, id string, version int64, obj blobfs.Object) (blobfs.File, error) {
 	file, changed, err := f.complete.One(ctx, sess, query.Args{
 		"id": id, "size": obj.Size, "content_type": obj.ContentType, "etag": obj.ETag, "version": version,
@@ -266,16 +238,11 @@ func (f *Files) completeFile(ctx context.Context, sess sqlate.Session, id string
 	return blobfs.File{}, versionMismatch(version, file.Version)
 }
 
-// Move moves the file with id into directoryID as name, which renames it
-// when the name differs, guarded by version, and returns the row as the
-// database holds it. The key is untouched, so no object moves, and a
-// pending row may move.
-//
-// Refusals: blobfs.NameError; blobfs.ErrNotFound for a missing file or
-// directory; blobfs.ErrNameTaken for a name a pending or available file
-// holds in the directory; a blobfs.DeletingError when the file, its
-// directory, or the new directory is deleting; query.ErrVersionMismatch;
-// for a name a deleting file holds, that file's blobfs.DeletingError.
+// Move moves the file with id into directoryID as name, guarded by
+// version, and returns the row; a rename is a move within its directory.
+// The key is untouched. Refusals: blobfs.NameError, blobfs.ErrNotFound,
+// blobfs.ErrNameTaken, a blobfs.DeletingError, and
+// query.ErrVersionMismatch. See Files in docs/features.md.
 func (f *Files) Move(ctx context.Context, sess sqlate.Session, id, directoryID, name string, version int64) (_ blobfs.File, err error) {
 	defer wrap(&err, "move file %s into %s as %q", id, directoryID, name)
 	if name, err = validName(name); err != nil {

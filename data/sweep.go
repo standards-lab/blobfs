@@ -12,11 +12,9 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// ObjectDeleter is the consumer's object store as Store.Sweep calls it.
-// DeleteObject must be idempotent, a missing object being success, since a
-// pass may delete an object again and a pending row's object may never
-// have been stored. An error leaves that file's row deleting for the next
-// pass.
+// ObjectDeleter is the consumer's object store as Store.Sweep and the
+// delete protocols call it. DeleteObject must treat a missing object as
+// success, since a step may run again.
 type ObjectDeleter interface {
 	DeleteObject(ctx context.Context, key string) error
 }
@@ -33,20 +31,9 @@ type SweepResult struct {
 }
 
 // Sweep runs one bounded, stateless pass that finishes the deletes callers
-// began: for each branch root Directories.Deleting returns, it walks the
-// branch, deleting each file's object through objects, purging its row,
-// and removing each directory once empty, and marks the branch again only
-// when the walk meets a straggler; with StaleOlderThan it then reclaims
-// stale rows. It takes the *sqlate.DB because it opens a transaction of
-// its own for each mark, removal, and pending row's delete, and holds none
-// across a call to objects. See The sweep in docs/features.md.
-//
-// A refusal leaves the row it meets, and the directories above it, for a
-// later pass, and the pass goes on past it: an object delete's error, the
-// hook's error, or blobfs.ErrReferenced from a consumer's foreign key. The
-// pass returns every refusal joined, with the result counting what it
-// did. A Batch below 1 and a StaleOlderThan age that is not positive are
-// refused before any SQL.
+// began: the marked branches, and with StaleOlderThan the stale rows. A
+// refusal leaves its row for a later pass, and the pass returns every
+// refusal joined. See The sweep in docs/features.md.
 func (s *Store) Sweep(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, opts ...SweepOption) (_ SweepResult, err error) {
 	defer wrap(&err, "sweep")
 	o := sweepOptions{batch: defaultBatch}
@@ -67,23 +54,10 @@ func (s *Store) Sweep(ctx context.Context, db *sqlate.DB, objects ObjectDeleter,
 	return w.result, err
 }
 
-// SweepUntilDone runs pass while it reports More, checking ctx and stop
-// before each pass, and hands every pass's result and error to report; a
-// nil report discards them. pass is one pass of Store.Sweep as the
-// consumer runs it: a closure over the store, the session, the object
-// store, and the options, inside whatever the consumer holds for a whole
-// pass, such as a lock or a gate a schema change takes exclusively.
-//
-// A pass's own error never ends the loop, since every step of the sweep is
-// idempotent and a later pass finds the work again in the database; report
-// judges what the error means. A pass that refuses its options reports no
-// More, so the loop ends after reporting it.
-//
-// SweepUntilDone returns nil once a pass reports no More, or once stop is
-// closed; a closed stop ends the loop between passes and never interrupts
-// one, and a nil stop never closes. It returns ctx's error once ctx ends,
-// before a pass or during one, and does not report a pass that ctx ended.
-// See The sweep in docs/features.md.
+// SweepUntilDone runs pass, the consumer's closure over one Store.Sweep,
+// while it reports More, handing each result to report, and returns nil
+// once the work is done or stop closes, or ctx's error once ctx ends. A
+// pass's error never ends the loop. See The sweep in docs/features.md.
 func SweepUntilDone(ctx context.Context, stop <-chan struct{}, pass func(context.Context) (SweepResult, error), report func(SweepResult, error)) error {
 	for {
 		if err := ctx.Err(); err != nil {
@@ -465,8 +439,7 @@ func (w *sweep) remains(ctx context.Context) (bool, error) {
 	return len(rows) > 0, nil
 }
 
-// roots reads at most limit branch roots past offset, as
-// Directories.Deleting does.
+// roots reads at most limit branch roots past offset.
 func (w *sweep) roots(ctx context.Context, offset, limit int) ([]blobfs.Directory, error) {
 	roots, err := w.store.Directories.deleting.All(ctx, w.db, query.Args{"offset": offset, "fetch": limit})
 	if err != nil {

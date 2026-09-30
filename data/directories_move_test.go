@@ -28,8 +28,10 @@ func TestMoveRefusesBeforeSQL(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
 	tx := begin(t, db)
-	if _, err := s.Directories.Move(ctx, tx, blobfs.RootID, "P", "root", 1); !errors.Is(err, blobfs.ErrRootDirectory) {
-		t.Errorf("Move(root) = %v, want ErrRootDirectory", err)
+	for _, root := range rootSpellings {
+		if _, err := s.Directories.Move(ctx, tx, root, "P", "root", 1); !errors.Is(err, blobfs.ErrRootDirectory) {
+			t.Errorf("Move(%s) = %v, want ErrRootDirectory", root, err)
+		}
 	}
 	if _, err := s.Directories.Move(ctx, tx, "D", "P", "a/b", 1); !errors.Is(err, blobfs.ErrInvalidName) {
 		t.Errorf("Move with a slash in the name = %v, want ErrInvalidName", err)
@@ -228,15 +230,17 @@ func TestIsWithin(t *testing.T) {
 // counts, and its refusals.
 func TestMarkDeleting(t *testing.T) {
 	ctx := context.Background()
-	s, db, rec := openStore(t, fallback)
-	if _, err := s.Directories.MarkDeleting(ctx, begin(t, db), blobfs.RootID); !errors.Is(err, blobfs.ErrRootDirectory) {
-		t.Errorf("MarkDeleting(root) = %v, want ErrRootDirectory", err)
-	}
-	if got := ops(rec); got != "begin" {
-		t.Errorf("the root's refusal reached the driver with %q", got)
+	for _, root := range rootSpellings {
+		s, db, rec := openStore(t, fallback)
+		if _, err := s.Directories.MarkDeleting(ctx, begin(t, db), root); !errors.Is(err, blobfs.ErrRootDirectory) {
+			t.Errorf("MarkDeleting(%s) = %v, want ErrRootDirectory", root, err)
+		}
+		if got := ops(rec); got != "begin" {
+			t.Errorf("the refusal of %s reached the driver with %q", root, got)
+		}
 	}
 
-	s, db, rec = openStore(t, fallback, sqltest.Response{Affected: 3}, sqltest.Response{Affected: 5})
+	s, db, rec := openStore(t, fallback, sqltest.Response{Affected: 3}, sqltest.Response{Affected: 5})
 	marked, err := s.Directories.MarkDeleting(ctx, begin(t, db), "D")
 	if err != nil || marked != (data.Marked{Directories: 3, Files: 5}) {
 		t.Fatalf("MarkDeleting = %+v, %v, want 3 directories and 5 files", marked, err)
@@ -295,11 +299,11 @@ func TestDeleting(t *testing.T) {
 			directoryRow("B", "P", "b", blobfs.DirectoryStatusDeleting, 3)),
 		noDirectory(),
 	)
-	roots, err := s.Directories.Deleting(ctx, db, 10)
+	roots, err := s.Directories.BranchRoots(ctx, db, 10)
 	if err != nil || len(roots) != 2 || roots[0].ID != "A" || roots[1].ID != "B" || roots[1].Status != blobfs.DirectoryStatusDeleting {
 		t.Fatalf("Deleting = %+v, %v, want A and B, deleting", roots, err)
 	}
-	none, err := s.Directories.Deleting(ctx, db, 1)
+	none, err := s.Directories.BranchRoots(ctx, db, 1)
 	if err != nil || len(none) != 0 {
 		t.Errorf("Deleting with no branch being deleted = %+v, %v, want none", none, err)
 	}
@@ -309,7 +313,7 @@ func TestDeleting(t *testing.T) {
 		t.Errorf("Deleting ran %v, want the roots' read %q from offset 0 to each limit", calls, wantWhere)
 	}
 	for _, limit := range []int{0, -1} {
-		if _, err := s.Directories.Deleting(ctx, db, limit); err == nil {
+		if _, err := s.Directories.BranchRoots(ctx, db, limit); err == nil {
 			t.Errorf("Deleting(%d) = nil, want a refusal", limit)
 		}
 	}

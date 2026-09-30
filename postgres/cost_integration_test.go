@@ -448,7 +448,7 @@ func TestDeletingPlan(t *testing.T) {
 		t.Fatalf("ANALYZE: %v", err)
 	}
 	c := one(t, e.db, func(sess sqlate.Session) error {
-		roots, err := e.store.Directories.Deleting(e.ctx, sess, 10)
+		roots, err := e.store.Directories.BranchRoots(e.ctx, sess, 10)
 		if err == nil && (len(roots) != 1 || roots[0].ID != e.tree.Chain[2].ID) {
 			t.Fatalf("Deleting = %+v, want the marked directory alone", roots)
 		}
