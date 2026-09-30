@@ -4,9 +4,9 @@ go 1.27
 
 require (
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/standards-lab/blobfs v0.3.0
+	github.com/standards-lab/blobfs v0.4.0
 	github.com/standards-lab/blobfs/postgres v0.3.0
-	github.com/standards-lab/go-storage v0.2.0
+	github.com/standards-lab/go-storage v0.2.1
 	github.com/standards-lab/go-storage/azureblob v0.2.0
 	github.com/standards-lab/sqlate v0.4.1
 	github.com/standards-lab/sqlate/postgres v0.4.0

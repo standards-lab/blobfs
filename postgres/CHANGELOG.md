@@ -7,6 +7,11 @@ changelog covers this sub-module only; the base module keeps its own.
 
 ## [Unreleased]
 
+### Changed
+
+- The module requires `blobfs` v0.4.0, whose conformance it runs, and the plan test covers the
+  `create_file` and `create_directory` statements. v0.3.0 works with blobfs v0.4.0 as released.
+
 ## [v0.3.0] - 2026-09-29
 
 ### Added
