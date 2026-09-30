@@ -26,11 +26,11 @@ consumer's authorization never should: the row, not the key, says what a file is
 sits. The name segment exists so an operator browsing the raw container can read it; it is
 frozen at upload and goes stale after a rename by design.
 
-blobfs imports no object store. It exposes the steps of each protocol that involves an object,
-and the consumer runs its own put or delete between them. Every write asks the store whether it
-accepts a key, through a one-method interface the consumer wires to its store's own rule. The
-one other call is the sweep's, which deletes objects through a second one-method interface when
-the consumer runs it (see [deleting a branch](#deleting-a-branch)).
+blobfs imports no object store. It reaches the consumer's through three one-method interfaces,
+which one adapter implements as `data.ObjectStore`: the key check every write asks, the put the
+store's write protocols call, and the delete its delete protocols and the sweep call (see
+[deleting a branch](#deleting-a-branch)). Each protocol's steps are exported too, and a consumer
+that runs them itself runs its own put or delete between them.
 
 ## Directories and files
 
@@ -77,12 +77,12 @@ carries its original key, so a retried put overwrites the same object. A write t
 is removed through the delete steps, which a pending row accepts, or by a sweep that reclaims
 [stale rows](#stale-rows-and-orphaned-objects).
 
-`data.Store.Write` runs the three steps end to end. It runs the first step in one transaction
-around a callback of the consumer's, puts the object through the consumer's `data.ObjectPutter`
-outside any transaction, and completes the row on the pool; when the put or the completion
-fails, it abandons the write. `data.Store.Ensure` is the retry-safe form of `Write` for a file
-under a fixed id. A consumer calls the steps itself only when its write does not fit that shape;
-see [the protocols](features.md#the-protocols).
+`data.Store.WriteFile` runs the three steps end to end. It runs the first step in one
+transaction around a callback of the consumer's, puts the object through the consumer's
+`data.ObjectStore` outside any transaction, and completes the row on the pool; when the put or
+the completion fails, it abandons the write. `data.Store.EnsureFile` is the retry-safe form of
+`WriteFile` for a file under a fixed id. A consumer calls the steps itself only when its write
+does not fit that shape; see [the protocols](features.md#the-protocols).
 
 ## The two-phase delete
 
@@ -105,28 +105,19 @@ from the first. A deleting row is hidden from the listings, so a delete that sto
 resumed leaves a row only a read by id or name, a listing with `data.IncludeDeleting`, or a
 sweep finds.
 
-`data.Store.Remove` runs the three steps end to end. It runs the first step in one transaction
-around a callback of the consumer's, in which the consumer removes its own references to the
-file. `data.Store.Purge` runs the last two steps, for a consumer that began the delete in a
+`data.Store.RemoveFile` runs the three steps end to end. It runs the first step in one
+transaction around a callback of the consumer's, in which the consumer removes its own
+references to the file; `data.Store.RemoveFileID` is the same delete of a file the caller names
+by id. `data.Store.PurgeFile` runs the last two steps, for a consumer that began the delete in a
 transaction of its own; see [the protocols](features.md#the-protocols).
 
-A deleting row keeps its name until it is purged, so a write of the same name in the window is
-refused with the deleting row's `blobfs.DeletingError`, not `blobfs.ErrNameTaken` (see [errors
-and constraints](features.md#errors-and-constraints)). A directory a mark reached holds its name
-the same way. Every mutation other than the delete steps refuses a deleting row with
-`blobfs.ErrDeleting`, so no operation acts on a row whose object is gone or about to be. The
-refusal is a `blobfs.DeletingError`, which says whether the file's own delete or a directory's
-refused the mutation, so a consumer can report "the file is being deleted" apart from "the
-folder is being deleted" (see [errors and constraints](features.md#errors-and-constraints)).
-
-A move's `DeletingError` comes from one of two deletes: that of the moved row or of a directory
-it leaves or enters, or that of the row that holds the name the move asked for, whose refusal
-the store marks as the holder's (see [errors and
-constraints](features.md#errors-and-constraints)). A consumer tells the two apart by the
-`DeletingError`'s `ID`: one that names neither the moved row nor a directory it left or entered
-is the name's holder, and the caller waits out its delete or gives up the name. When a mark
-reaches a file holder's directory after the move read the directories, the refusal is that
-directory's, which is the directory the move entered.
+Every mutation other than the delete steps refuses a deleting row with `blobfs.ErrDeleting`, so
+no operation acts on a row whose object is gone or about to be. The refusal is a
+`blobfs.DeletingError`, which says whether the file's own delete or a directory's refused the
+mutation, so a consumer can report "the file is being deleted" apart from "the folder is being
+deleted". A deleting row also keeps its name until it is purged, and a create or a move onto
+that name is refused with the holder's `DeletingError`, not `blobfs.ErrNameTaken`; [errors and
+constraints](features.md#errors-and-constraints) states the rule.
 
 ### Deleting outranks the version
 
@@ -160,12 +151,12 @@ branch](#deleting-a-branch) sets and nothing undoes.
 
 | Step | Caller | Session |
 |---|---|---|
-| `Files.Create` or `Files.Ensure` | the consumer, often beside its own rows, or `Files.Create` in `Store.Write`'s callback and `Files.Ensure` in `Store.Ensure`'s | the pool or a transaction |
-| the put | the consumer through its object store, or `Store.Write` through the consumer's `ObjectPutter` | none |
-| `Files.Complete` | the consumer, or `Store.Write` | the pool or a transaction |
-| `Files.Delete` | the consumer, after its own reference check, or `Store.Remove` after its callback | a transaction |
-| the object delete | the consumer through its object store, or `Store.Remove` and `Store.Purge` through its `ObjectDeleter` | none |
-| `Files.Purge` | the consumer, or `Store.Remove` and `Store.Purge` | the pool or a transaction |
+| `Files.Create` or `Files.Ensure` | the consumer, often beside its own rows, or `Files.Create` in `Store.WriteFile`'s callback and `Files.Ensure` in `Store.EnsureFile`'s | the pool or a transaction |
+| the put | the consumer through its object store, or `Store.WriteFile` through the consumer's `ObjectStore` | none |
+| `Files.Complete` | the consumer, or `Store.WriteFile` | the pool or a transaction |
+| `Files.Delete` | the consumer, after its own reference check, or `Store.RemoveFile` after its callback | a transaction |
+| the object delete | the consumer through its object store, or `Store.RemoveFile` and `Store.PurgeFile` through its `ObjectDeleter` | none |
+| `Files.Purge` | the consumer, or `Store.RemoveFile` and `Store.PurgeFile` | the pool or a transaction |
 | `Directories.MarkDeleting` | the consumer, to delete a branch | a transaction |
 | `Store.Sweep`, alone or in `SweepUntilDone`'s passes | the consumer, now and then, with its object delete | the pool |
 
@@ -285,10 +276,10 @@ should hold:
 From the mark's commit the branch is hidden and closed. The listings hide its rows, and the
 listing of a directory in it is `blobfs.ErrDeleting`. A create or an ensure under a deleting
 directory, a move into one, and a move of a directory or file out of one are
-`blobfs.ErrDeleting`: nothing enters the branch and nothing leaves it. A create or a move onto a
-name the branch's root holds under its active parent is the root's `blobfs.DeletingError` until
-the sweep removes it. A read by id, name, or path still finds its rows, with their status. A mark
-is never undone, and the root cannot be marked.
+`blobfs.ErrDeleting`: nothing enters the branch and nothing leaves it. The branch's root holds
+its name under its active parent until the sweep removes it, as [a deleting row
+does](#the-two-phase-delete). A read by id, name, or path still finds its rows, with their
+status. A mark is never undone, and the root cannot be marked.
 
 The mark is guarded like the other steps a caller takes on a row it read. `data.AtVersion` marks
 the branch only while its root is at the version the caller read, the directory its user saw and
@@ -316,7 +307,7 @@ the one any create that raced the mark meets: the sweep marks it and removes it,
 [orphaned objects](#stale-rows-and-orphaned-objects)).
 
 The sweep keeps no state. On every pass it finds its work in the database:
-`Directories.Deleting` returns the roots of the branches being deleted, each a deleting
+`Directories.BranchRoots` returns the roots of the branches being deleted, each a deleting
 directory under an active parent, and the listings with `data.IncludeDeleting` reach the rest of
 each branch. Every step it takes is idempotent, so a pass stopped at any point, by an error or a
 crash, is finished by the next, and a row another pass removed first counts as done. A pass is
@@ -358,12 +349,12 @@ object behind. It cannot close one case: a write whose put lands after its pendi
 reclaimed, or after its branch was swept, leaves an object with no row. The write's `Complete`
 then fails, with `blobfs.ErrDeleting` while the row is still deleting and `blobfs.ErrNotFound`
 once it is purged. The case is inherent, since the put and the row share no transaction and the
-put runs in the consumer's store, even when `data.Store.Write` calls it. A consumer bounds it by
+put runs in the consumer's store, even when `data.Store.WriteFile` calls it. A consumer bounds it by
 choosing an age longer than its longest write, counted from the write's first step, since a
 write resumed through `Files.Ensure` keeps its row's `updated_at`; the reclaim then never
 overtakes a write still running. A branch's sweep has no age, so a write into a branch being
 deleted can still lose that race. Either way, a writer whose `Complete` is refused deletes the
-object it put, under the key it holds, as `data.Store.Write` does. An object whose writer
+object it put, under the key it holds, as `data.Store.WriteFile` does. An object whose writer
 stopped after the put is found only by listing the store's keys, the reconciler the library
 defers.
 

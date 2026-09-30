@@ -44,25 +44,27 @@ for. An engine sub-module adds the engine's native forms and ships the schema as
 set.
 
 A consumer builds one pattern catalog, compiles the store against it with the engine installed,
-and runs the steps of the two-phase write around its own put. `keys` is the consumer's adapter
-over its store's key rule and `objects` is its store; error handling is elided.
+and runs the two-phase write through the store's protocol. `objects` is the consumer's adapter
+over its object store, a `data.ObjectStore`; error handling is elided.
 
 ```go
 catalog, err := query.NewCatalog(sqlatepg.Patterns(), data.Patterns())
 store, err := data.New(catalog, db.Dialect(), data.WithEngine(blobfspg.Engine))
 
 // The write: the pending row, the object under the row's key, the row available.
-file, err := store.Files.Create(ctx, db, keys, dirID, "Q3 summary.txt", "text/plain")
-obj, err := objects.Put(ctx, file.Key, body, storage.PutOptions{ContentType: "text/plain"})
-file, err = store.Files.Complete(ctx, db, file.ID, file.Version,
-	blobfs.Object{Size: obj.Size, ContentType: "text/plain", ETag: obj.ETag})
+file, err := store.WriteFile(ctx, db, objects, body, size, func(tx *sqlate.Tx) (blobfs.File, error) {
+	return store.Files.Create(ctx, tx, objects, dirID, "Q3 summary.txt", "text/plain")
+})
 
 // One page of the directory's files, with the total counted in the page's own statement.
 page, err := store.Files.List(ctx, db, dirID, query.Directives{}, query.Page{Number: 1, Size: 20})
 ```
 
-`file.Key` is `<id>/Q3 summary.txt`. A later rename of the file, or a move of its directory,
-updates rows and leaves the object where it is.
+The callback runs in the transaction that inserts the pending row, where the consumer checks
+its own scope. `file.Key` is `<id>/Q3 summary.txt`. A later rename of the file, or a move of its
+directory, updates rows and leaves the object where it is. The protocol's steps are exported
+too: a write that does not fit its shape runs `Files.Create`, its own put, and `Files.Complete`
+itself.
 
 ## Conventions
 
@@ -75,10 +77,11 @@ Four conventions the library keeps are stricter than a reader might expect:
   constraint names, referential actions, and migration set change only in a major release.
   Before v1.0, a minor release may change them, and its changelog marks the change breaking. A
   released migration never changes.
-- The library imports no object store. It reaches the consumer's through two one-method
-  interfaces the consumer implements: every write asks whether the store accepts a key, and
-  only a sweep, which the consumer runs, deletes an object. The protocols' own steps never
-  touch the store.
+- The library imports no object store. It reaches the consumer's through three one-method
+  interfaces, which one adapter implements as `data.ObjectStore`: every write asks whether the
+  store accepts a key, the store's write protocols put the object, and its delete protocols and
+  the sweep delete it. The protocols' steps, which a consumer may run itself, never touch the
+  store.
 - Every statement in the base module is standard tier, and the persistence package is complete
   on any engine. A native form lives only in an engine sub-module, and each native file names
   the feature it uses and what a port to another engine must provide.
@@ -89,10 +92,12 @@ Four conventions the library keeps are stricter than a reader might expect:
   vocabulary and its transitions, `NewKey` and `SanitizeFilename`, `NormalizeName` and
   `ValidateName`, `KeyValidator`, the sentinel errors, `ViolationError`, and the constraint
   names.
-- `data` is the persistence package: `New` compiles the `Store`, whose `Directories` and `Files`
-  handles run the operations and listings, and whose `Sweep` finishes the deletes of marked
-  branches and stopped protocols through the consumer's object delete. The package also holds
-  the `Variant` interface, the `Engine` type, and the published patterns.
+- `data` is the persistence package. `New` compiles the `Store`. The store's `Directories` and
+  `Files` handles run the operations and listings. Its protocols, `WriteFile`, `EnsureFile`,
+  `RemoveFile`, `RemoveFileID`, and `PurgeFile`, run the write and the delete end to end over
+  the consumer's `ObjectStore`, and its `Sweep` finishes the deletes of marked branches and
+  stopped protocols. The package also holds the `Variant` interface, the `Engine` type, and the
+  published patterns.
 - `data/datatest` is the conformance suite, `Run`, which an engine or a consumer's own variant
   runs against a live database.
 - `postgres` (sub-module) is the PostgreSQL engine: `Engine`, whose variant takes an advisory

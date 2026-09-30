@@ -11,27 +11,19 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// List reads one page, by number, of the directories under parentID,
-// under req's filters, sort, and total mode, hiding deleting directories
-// unless IncludeDeleting is given. The declared fields are id, parent_id,
-// name, status, version, created_at, and updated_at. List of blobfs.RootID
-// reads the depth-one directories; a parent that does not exist lists
-// empty. See Listings in docs/features.md.
-//
-// Refusals: an error matching query.ErrDirectives before any SQL;
-// blobfs.ErrDeleting for a deleting parent without IncludeDeleting.
+// List reads one page, by number, of the directories under parentID under
+// req, hiding deleting ones unless IncludeDeleting is given. Refusals:
+// query.ErrDirectives before any SQL; blobfs.ErrDeleting for a deleting
+// parent. See Listings in docs/features.md.
 func (d *Directories) List(ctx context.Context, sess sqlate.Session, parentID string, req query.Directives, page query.Page, opts ...ListOption) (_ query.Collection[blobfs.Directory], err error) {
 	defer wrap(&err, "list directories under %s", parentID)
 	return d.list.list(ctx, sess, parentID, req, page, opts)
 }
 
 // Continue reads the size directories under parentID past after, the Next
-// of an earlier page of this listing, called the same way; the total and
-// the next cursor are as List reports them. A sort by parent_id, the
-// nullable field, issues no cursor.
-//
-// Refusals: List's; a query.CursorError before any SQL for a cursor
-// edited, issued elsewhere, or under other filters or another sort.
+// of an earlier page of the listing called the same way. Refusals: List's,
+// and a query.CursorError before any SQL. See Listings in
+// docs/features.md.
 func (d *Directories) Continue(ctx context.Context, sess sqlate.Session, parentID string, req query.Directives, after query.Cursor, size int, opts ...ListOption) (_ query.Collection[blobfs.Directory], err error) {
 	defer wrap(&err, "continue directories under %s", parentID)
 	return d.list.cont(ctx, sess, parentID, req, after, size, opts)

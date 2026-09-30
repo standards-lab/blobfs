@@ -7,6 +7,59 @@ the `postgres` sub-module keeps its own.
 
 ## [Unreleased]
 
+## [v0.5.0] - 2026-09-30
+
+### Added
+
+- `Store.RemoveFileID`, the two-phase delete of a file the caller names by id, for a caller with
+  no scope to check and no reference to remove in the delete's transaction.
+- `data/datatest` checks new races. The Directories and Writes groups race two `Ensure` calls
+  that supply one id (`EnsureConcurrentUnderOneID`), and the Branches group races a file move
+  out of a branch against the branch's mark in both orders (`MarkRacesAFileMove`). The Protocols
+  group also checks that a retry of a finished `RemoveFile` is `ErrNotFound`.
+
+### Changed
+
+- **Breaking:** the `Store`'s protocols are named for the file they act on: `Write` is
+  `WriteFile`, `Ensure` is `EnsureFile`, `Remove` is `RemoveFile`, and `Purge` is `PurgeFile`.
+  Their signatures and behavior are unchanged.
+- **Breaking:** `ObjectStore` embeds `blobfs.KeyValidator`, so the one adapter a consumer passes
+  to `WriteFile` and `EnsureFile` also implements `ValidateKey`, as the adapter `begin` passes
+  to `Files.Create` or `Files.Ensure` already did. `Files.Create` and `Files.Ensure` keep their
+  `KeyValidator` parameter, since a consumer that runs the steps itself needs no put or delete.
+- **Breaking:** `Directories.Deleting` is `Directories.BranchRoots`, named for what it returns;
+  its error reads `data: branch roots: ...`.
+- Each package's documentation names every exported identifier by concept and states the
+  package-level contracts. Each symbol's documentation states its own contract, names its
+  refusals briefly, and links `docs/features.md`, which holds the refusals, the races, and the
+  protocols in full. The statement headers keep why each clause is there and drop the
+  clause-by-clause narration.
+
+### Fixed
+
+- `Files.Ensure` and `Directories.Ensure` on the pool recover when two callers supply one id
+  through `WithID` and race. PostgreSQL checks the primary key before the name's constraint, so
+  the loser's insert failed as `ErrIDTaken`. The loser now looks the name up again and returns
+  the row found when it carries the id supplied. Otherwise `ErrIDTaken` stands, joined to the
+  second lookup's error when that lookup fails. Inside a transaction the violation is returned,
+  as before.
+- `Directories.Delete`, `Directories.MarkDeleting`, and `Directories.Move` refuse the root
+  before any SQL under every spelling of the nil UUID PostgreSQL accepts, braced or with its
+  hyphens placed otherwise. Previously they caught only `RootID`'s canonical text.
+- `Files.Complete`'s documentation: a retry at the pending version after its completion
+  committed is `query.ErrVersionMismatch`, since the completion advanced the version;
+  `ErrInvalidTransition` is the refusal of a row available at the version named.
+- `Store.RemoveFile`'s documentation: a retry of a finished `RemoveFile` returns `ErrNotFound`,
+  where it said every step converges on a retry.
+- The README and the concepts document name the three interfaces the store reaches the object
+  store through, and the README's example writes through `Store.WriteFile`; both said the
+  library reached the store only through a key check and the sweep's delete.
+
+### Removed
+
+- **Breaking:** `blobfs.CanTransition`; `blobfs.Transition` returns nil for an allowed change.
+- **Breaking:** `Status.Valid` and `DirectoryStatus.Valid`, which nothing called.
+
 ## [v0.4.0] - 2026-09-29
 
 ### Changed
@@ -175,7 +228,8 @@ library never calls.
 - `data/datatest`, the conformance suite: `Run` checks a store over any engine against the
   baseline on a live database, the hold's refusals and interleavings with a delete included.
 
-[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.5.0...HEAD
+[v0.5.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.5.0
 [v0.4.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.4.0
 [v0.3.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.3.0
 [v0.2.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.2.0

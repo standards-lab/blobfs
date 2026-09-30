@@ -21,11 +21,9 @@ var statementFiles embed.FS
 // blobfs_ namespace and the table whose shape the lock serializes.
 const TreeLockName = "blobfs_directory.tree"
 
-// TreeLockKey is the bigint key of the tree lock's advisory lock: the
-// 64-bit FNV-1a hash of TreeLockName read as a signed integer, fixed for
-// every install, since one install per database means one tree per
-// database. A consumer that takes advisory locks of its own avoids it;
-// this package's tests recompute it from the name.
+// TreeLockKey is the tree lock's advisory lock key: the 64-bit FNV-1a hash
+// of TreeLockName read as a signed integer. A consumer that takes advisory
+// locks of its own avoids it.
 const TreeLockKey int64 = -8521165719926625175
 
 // variant is the PostgreSQL data.Variant Engine builds: it embeds the base
@@ -69,16 +67,14 @@ func Engine(catalog *query.Catalog, dialect sqlate.Dialect, base data.Variant) (
 	}, nil
 }
 
-// Statements returns the variant's compiled inventory in name order, for a
-// consumer that lists the SQL its program runs. The store's Statements
-// appends it to the data package's own.
+// Statements returns the variant's compiled statements, which the store's
+// Statements appends to its own.
 func (v *variant) Statements() []query.Statement {
 	return v.stmts.Statements()
 }
 
-// Verify prepares the variant's statements against the schema the session
-// reaches. The store's Verify runs it in the same pass as its own, so a
-// startup Verify covers the variant's statements.
+// Verify prepares the variant's statements against the schema sess
+// reaches, in the store's Verify.
 func (v *variant) Verify(ctx context.Context, sess sqlate.Session) error {
 	return v.stmts.Verify(ctx, sess)
 }

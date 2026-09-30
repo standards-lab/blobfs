@@ -524,8 +524,8 @@ func TestErrorsNamedOnce(t *testing.T) {
 	_, err = s.Directories.FindByPath(ctx, db, blobfs.RootID, "/a")
 	check(t, "FindByPath of an absolute path", err, blobfs.ErrInvalidPath)
 	check(t, "Directories.Delete of the root", s.Directories.Delete(ctx, db, blobfs.RootID), blobfs.ErrRootDirectory)
-	_, err = s.Directories.Deleting(ctx, db, 0)
-	check(t, "Deleting below 1", err, err)
+	_, err = s.Directories.BranchRoots(ctx, db, 0)
+	check(t, "BranchRoots below 1", err, err)
 	_, err = s.Sweep(ctx, db, &objectLog{}, data.Batch(0))
 	check(t, "Sweep of a refused batch", err, err)
 

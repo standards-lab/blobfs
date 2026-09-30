@@ -14,12 +14,10 @@ var (
 	// a parent or directory id that an insert or move referenced.
 	ErrNotFound = errors.New("blobfs: not found")
 
-	// ErrNameTaken reports a name already held in the target directory by a
-	// row of the same table that is not deleting. A deleting row also holds
-	// its name until it is removed, but package data refuses a create or a
-	// move onto that name with the row's DeletingError, which does not match
-	// ErrNameTaken: the listings hide the deleting row, and its delete is
-	// the refusal.
+	// ErrNameTaken reports a name a row of the same kind that is not deleting
+	// already holds in the target directory. A deleting holder is refused with
+	// its DeletingError instead; see Errors and constraints in
+	// docs/features.md.
 	ErrNameTaken = errors.New("blobfs: name taken")
 
 	// ErrInvalidName reports a name ValidateName refused. A NameError
@@ -27,11 +25,8 @@ var (
 	ErrInvalidName = errors.New("blobfs: invalid name")
 
 	// ErrInvalidPath reports a path package data refused: one that starts
-	// with a slash, or one with a segment ValidateName refuses, in which
-	// case the error also matches ErrInvalidName. A path is relative, a/b
-	// below the directory it starts from; a spelling from the root, /a/b,
-	// is a consumer's own input syntax, which it strips before resolving
-	// from RootID.
+	// with a slash, or has a segment ValidateName refuses, which also matches
+	// ErrInvalidName.
 	ErrInvalidPath = errors.New("blobfs: invalid path")
 
 	// ErrRootDirectory reports an operation refused because it targets the
@@ -61,16 +56,9 @@ var (
 	// does not allow. A TransitionError carries the two statuses.
 	ErrInvalidTransition = errors.New("blobfs: invalid status transition")
 
-	// ErrDeleting reports a mutation refused because the row is deleting:
-	// a move or rename, or a status change out of deleting. It also reports
-	// a mutation refused because a directory it reaches is deleting, since a
-	// branch marked for removal takes nothing in and lets nothing out: a
-	// create or an ensure under a deleting directory, a move into one, and a
-	// move of a directory or file whose parent is deleting. A listing of a
-	// deleting directory reports it too, unless the listing asked to include
-	// deleting rows. Package data reports these as a DeletingError, which
-	// says whose delete refused the mutation, whenever it can read the rows
-	// that decide it.
+	// ErrDeleting reports a mutation refused because the row is deleting or a
+	// directory it reaches is, so nothing enters or leaves a branch being
+	// deleted. Package data reports it as a DeletingError.
 	ErrDeleting = errors.New("blobfs: row is deleting")
 
 	// ErrNotDeleting reports a purge, the last step of the two-phase
@@ -89,15 +77,10 @@ var (
 	ErrCycle = errors.New("blobfs: move would create a cycle")
 )
 
-// ViolationError reports a database constraint violation that a classifier
-// mapped to a sentinel: the sentinel it means, the name of the violated
-// constraint, and the error the database reported as the cause. Package
-// data builds one for each constraint blobfs owns, and a
-// consumer builds one for its own constraints with its own sentinels. The
-// message prints the sentinel and the constraint name and never the
-// driver's text. Unwrap yields the sentinel and the cause, so errors.Is
-// matches the sentinel and errors.As reaches the sqlate.ConstraintError
-// beneath, for a caller that imports sqlate and wants the class.
+// ViolationError reports a database constraint violation a classifier
+// mapped to a sentinel: the sentinel, the constraint's name, and the
+// database's error as the cause. Unwrap yields the sentinel and the cause,
+// and the message never prints the driver's text.
 type ViolationError struct {
 	Sentinel   error
 	Constraint string
@@ -120,20 +103,11 @@ func (e *ViolationError) Unwrap() []error {
 	return []error{e.Sentinel, e.Err}
 }
 
-// DeletingError reports a mutation refused with ErrDeleting and says whose
-// delete refused it. Directory is false only for a file whose own delete
-// began, its row deleting while its directory is active, and ID then names
-// the file. Otherwise Directory is true and ID names the deleting
-// directory: the file's own directory, for a file deleting because its
-// branch was marked or whose directory is gone, or the directory the
-// mutation reached. The deleting row is either the one the mutation acts
-// on or the one that holds the name a create or a move asked for; the
-// persistence package wraps the second kind of refusal in a message that
-// names the row as the name's holder.
-// Err is the refusal's cause when it has one, such as the TransitionError
-// of a completion refused from deleting, and is nil otherwise. It matches
-// ErrDeleting under errors.Is, and Unwrap yields Err, so errors.Is and
-// errors.As reach the cause and its sentinels.
+// DeletingError reports a mutation refused with ErrDeleting and names
+// whose delete refused it: a file's own, with Directory false and ID the
+// file, or a directory's, with Directory true and ID the directory. Err is
+// the refusal's cause when it has one. See Errors and constraints in
+// docs/features.md.
 type DeletingError struct {
 	Directory bool
 	ID        string

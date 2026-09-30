@@ -9,14 +9,8 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// MaxNameLength is the longest name a directory or file may carry,
-// counted in runes. It is the per-component limit the common file systems
-// share (ext4, NTFS, and APFS all stop at 255), so a name copied from a
-// local disk always fits. A key built from the longest name is 292 runes,
-// within Azure Blob Storage's limit of 1024 characters. S3 counts its limit
-// of 1024 in bytes of UTF-8, and a name of 255 four-byte runes makes a key
-// of 1057 bytes, so the longest names can exceed it: the store's validator
-// then refuses the key, and the write is a KeyError before any SQL.
+// MaxNameLength is the longest name a directory or file may carry, in
+// runes: the per-component limit ext4, NTFS, and APFS share.
 const MaxNameLength = 255
 
 // NormalizeName returns name in Unicode normalization form C. Uniqueness is

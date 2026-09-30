@@ -7,13 +7,10 @@
 --| [native]: The nullable version predicate is standard SQL.
 --| transaction: required
 -- The PostgreSQL form of hold_file: FOR NO KEY UPDATE takes the row lock
--- delete_file's update takes, and writes no row version. It does not
--- conflict with the FOR KEY SHARE lock a consumer's foreign-key insert
--- takes, so the consumer's reference inserts beside the hold. A deleting
--- row yields no row and takes no lock; under read committed a hold that
--- waited on a delete re-reads the row as the delete left it. The version
--- is nullable, and NULL guards nothing. A transaction is required, since
--- autocommit would release the lock at once.
+-- delete_file's update takes without writing a row version, and does not
+-- conflict with the FOR KEY SHARE lock of a consumer's foreign-key insert.
+-- A deleting row yields no row and takes no lock. A transaction is
+-- required, since autocommit would release the lock at once.
 SELECT f.id
 FROM blobfs_file f
 WHERE f.id = {{id:uuid}} AND f.status <> 'deleting'

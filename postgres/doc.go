@@ -1,7 +1,13 @@
-// Package postgres is the PostgreSQL engine of blobfs: Engine, which
-// builds the PostgreSQL variant of the data package's variation points
-// over native-tier statements, and Migrations, blobfs's schema as a
-// migration set. A consumer selects it by importing it and installing
+// Package postgres is the PostgreSQL engine of blobfs:
+//
+//   - Engine builds the PostgreSQL variant of the data package's variation
+//     points over native-tier statements.
+//   - Migrations returns blobfs's schema as a migration set, named Source
+//     and recorded in the history table Table.
+//   - TreeLockKey is the tree lock's advisory lock key, derived from
+//     TreeLockName.
+//
+// A consumer selects the engine by importing the package and installing
 // Engine, with no registry, init, or flag:
 //
 //	store, err := data.New(catalog, dialect, data.WithEngine(postgres.Engine))

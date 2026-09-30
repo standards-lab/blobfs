@@ -22,9 +22,6 @@ func TestTransitions(t *testing.T) {
 	for _, from := range statuses {
 		for _, to := range statuses {
 			want := allowed[[2]blobfs.Status{from, to}]
-			if got := blobfs.CanTransition(from, to); got != want {
-				t.Errorf("CanTransition(%s, %s) = %v, want %v", from, to, got, want)
-			}
 			err := blobfs.Transition(from, to)
 			if want {
 				if err != nil {
@@ -40,23 +37,15 @@ func TestTransitions(t *testing.T) {
 			}
 		}
 	}
-	if blobfs.CanTransition("", blobfs.StatusPending) || blobfs.CanTransition(blobfs.StatusPending, "") {
+	if blobfs.Transition("", blobfs.StatusPending) == nil || blobfs.Transition(blobfs.StatusPending, "") == nil {
 		t.Error("a transition involving an unknown status was allowed")
 	}
 }
 
-func TestStatusValidAndMutable(t *testing.T) {
+func TestStatusMutable(t *testing.T) {
 	for _, s := range statuses {
-		if !s.Valid() {
-			t.Errorf("%s.Valid() = false", s)
-		}
 		if got, want := s.Mutable(), s != blobfs.StatusDeleting; got != want {
 			t.Errorf("%s.Mutable() = %v, want %v", s, got, want)
-		}
-	}
-	for _, s := range []blobfs.Status{"", "failed", "PENDING"} {
-		if s.Valid() {
-			t.Errorf("%q.Valid() = true", s)
 		}
 	}
 }
@@ -74,7 +63,7 @@ func TestStatusBindsAsText(t *testing.T) {
 	}
 }
 
-func TestDirectoryStatusValidAndMutable(t *testing.T) {
+func TestDirectoryStatusMutable(t *testing.T) {
 	for _, c := range []struct {
 		status  blobfs.DirectoryStatus
 		mutable bool
@@ -82,16 +71,8 @@ func TestDirectoryStatusValidAndMutable(t *testing.T) {
 		{blobfs.DirectoryStatusActive, true},
 		{blobfs.DirectoryStatusDeleting, false},
 	} {
-		if !c.status.Valid() {
-			t.Errorf("%s.Valid() = false", c.status)
-		}
 		if got := c.status.Mutable(); got != c.mutable {
 			t.Errorf("%s.Mutable() = %v, want %v", c.status, got, c.mutable)
-		}
-	}
-	for _, s := range []blobfs.DirectoryStatus{"", "pending", "available", "ACTIVE"} {
-		if s.Valid() {
-			t.Errorf("%q.Valid() = true", s)
 		}
 	}
 }

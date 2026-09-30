@@ -12,14 +12,9 @@ import (
 )
 
 // FindByPath returns the directory at the relative path a/b below startID;
-// each segment is normalized first, and the empty path is the start. The
-// variant resolves it (see Variant.ResolvePath).
-//
-// Refusals: blobfs.ErrInvalidPath for a leading slash, an empty segment, a
-// trailing slash, or a segment ValidateName refuses, which also matches
-// blobfs.ErrInvalidName; blobfs.ErrNotFound for a start that is not a
-// directory, or a segment that names no directory, with the failing prefix
-// in the text.
+// the empty path is the start. Refusals: blobfs.ErrInvalidPath, and
+// blobfs.ErrNotFound with the failing prefix in the text. See Directories
+// in docs/features.md.
 func (d *Directories) FindByPath(ctx context.Context, sess sqlate.Session, startID, path string) (_ blobfs.Directory, err error) {
 	defer wrap(&err, "find %q from %s", path, startID)
 	segments, err := splitPath(path)

@@ -20,6 +20,7 @@ func (s *suite) directories(t *testing.T) {
 	t.Run("CreateRefusals", s.createDirectoryRefusals)
 	t.Run("Ensure", s.ensureDirectory)
 	t.Run("EnsureConcurrent", s.ensureDirectoryConcurrent)
+	t.Run("EnsureConcurrentUnderOneID", s.ensureDirectoryConcurrentUnderOneID)
 	t.Run("FindByName", s.findDirectoryByName)
 	t.Run("Delete", s.deleteDirectory)
 }
@@ -235,6 +236,22 @@ func (s *suite) ensureDirectory(t *testing.T) {
 // racingPool: exactly one caller creates the row, both return it, the
 // lookup runs a third time, and the parent holds one row of the name.
 func (s *suite) ensureDirectoryConcurrent(t *testing.T) {
+	s.ensureDirectoryRace(t)
+}
+
+// ensureDirectoryConcurrentUnderOneID checks the race of two callers that
+// supply one id, whose loser may fail the primary key before the name's
+// constraint: both return the row under the id.
+func (s *suite) ensureDirectoryConcurrentUnderOneID(t *testing.T) {
+	id := blobfs.NewID()
+	if d := s.ensureDirectoryRace(t, data.WithID(id)); d.ID != id {
+		t.Errorf("the row's id is %s, want %s", d.ID, id)
+	}
+}
+
+// ensureDirectoryRace forces two Ensure calls under opts to race and
+// returns the row they share.
+func (s *suite) ensureDirectoryRace(t *testing.T, opts ...data.CreateOption) blobfs.Directory {
 	parent := s.mkdir(t, "ensure-concurrent-"+t.Name())
 	pool := s.racingPool(t, "directory_by_name")
 	var (
@@ -248,7 +265,7 @@ func (s *suite) ensureDirectoryConcurrent(t *testing.T) {
 	for range 2 {
 		done.Go(func() {
 			start.Wait()
-			d, created, err := s.store.Directories.Ensure(s.ctx, pool, parent.ID, "shared")
+			d, created, err := s.store.Directories.Ensure(s.ctx, pool, parent.ID, "shared", opts...)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -270,6 +287,10 @@ func (s *suite) ensureDirectoryConcurrent(t *testing.T) {
 	if n := s.count(t, s.db, "SELECT COUNT(*) FROM blobfs_directory WHERE parent_id = "+s.db.Dialect().Placeholder(1), parent.ID); n != 1 {
 		t.Errorf("%d rows under the parent, want one", n)
 	}
+	if len(results) == 0 {
+		return blobfs.Directory{}
+	}
+	return results[0]
 }
 
 // findDirectoryByName checks FindByName: either spelling finds the row

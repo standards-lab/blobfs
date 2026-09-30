@@ -44,8 +44,6 @@ github.com/pierrec/lz4/v4 v4.1.28/go.mod h1:EoQMVJgeeEOMsCqCzqFm2O0cJvljX2nGZjcR
 github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c h1:+mdjkGKdHQG3305AYmdv1U2eRNDiU2ErMBj1gwrq8eQ=
 github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c/go.mod h1:7rwL4CYBLnjLxUqIJNnCWiEdr3bn6IUYi15bNlnbCCU=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
-github.com/standards-lab/blobfs v0.4.0 h1:7BubahwC9nnNIMMJdBQqyrEGuv3TZPvbo+zI7D8BRbM=
-github.com/standards-lab/blobfs v0.4.0/go.mod h1:mfBLVW+KU+GjkK1pCqK51BVSDOT60ca4/bkf20YgXYs=
 github.com/standards-lab/blobfs/postgres v0.3.0 h1:/7tcIWCX0h2GgV1KAPlP7G66VfiDWY889FQTIOg+xIs=
 github.com/standards-lab/blobfs/postgres v0.3.0/go.mod h1:2b3nImM6iD07FjuXwEtlVLyXlPuyWwz0mmZfrx2IdXg=
 github.com/standards-lab/go-core v0.4.1 h1:6gjZ62FEvk0R99BsrwlvycZZ10tgWqex0IIz2uxhSj8=

@@ -5,14 +5,12 @@
 --| [native]: inside a recursive query (SQL Server's OPENJSON WITH ORDINALITY over a JSON array,
 --| [native]: Oracle's JSON_TABLE, SQLite's json_each with its key), and its driver must encode a Go
 --| [native]: []string as that parameter; an engine without one keeps the baseline's walk.
--- The deepest directory reached below start_id along segments, a text[]
--- of normalized names in path order, with its depth; no row means the
--- start does not exist. Each step joins the child whose name is the
--- segment at the next depth, so the walk stops at the first segment that
--- names no directory, and a step past the last segment compares a name
--- with NULL, so a cycle in the tree cannot extend the walk. An empty array
--- returns the start at depth 0. The row is selected by the maximum depth
--- rather than sorted and cut, which saves a sort's buffers.
+-- The deepest directory reached below start_id along segments, normalized
+-- names in path order, with its depth; no row means the start does not
+-- exist, and an empty array returns the start at depth 0. A step past
+-- the last segment compares a name with NULL, so a cycle in the tree
+-- cannot extend the walk. The row is selected by the maximum depth rather
+-- than sorted and cut, which saves a sort's buffers.
 WITH RECURSIVE walk (id, parent_id, name, status, version, created_at, updated_at, depth) AS (
     SELECT {{> blobfs.directory_columns}}, CAST(0 AS integer)
     FROM blobfs_directory d

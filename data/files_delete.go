@@ -14,13 +14,9 @@ import (
 
 // Hold locks the row of the file with id for the rest of tx without
 // changing it, so a Delete of the file waits for tx: the library's half of
-// the reference-then-delete rule. It takes a *sqlate.Tx because on the
-// pool the lock would end with the statement. The lock is the variant's
-// (see Variant.HoldFile). See Reference-then-delete in docs/concepts.md.
-//
-// Refusals: blobfs.ErrNotFound; a blobfs.DeletingError for a deleting
-// row, the file's or its directory's as a read of the directory tells;
-// query.ErrVersionMismatch under AtVersion.
+// the reference-then-delete rule. Refusals: blobfs.ErrNotFound, a
+// blobfs.DeletingError, and query.ErrVersionMismatch under AtVersion. See
+// Reference-then-delete in docs/concepts.md.
 func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) (err error) {
 	defer wrap(&err, "hold file %s", id)
 	version := atVersion(opts)
@@ -44,15 +40,12 @@ func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...Vers
 	return fmt.Errorf("the hold matched no row, yet the row is %s at version %d", file.Status, file.Version)
 }
 
-// Delete is the first step of a file delete: it moves the row of the file
-// with id, pending or available, to blobfs.StatusDeleting, advancing its
-// version once, and returns it; the caller deletes the object under its
-// Key and then calls Purge. A row already deleting is returned as it is,
-// so a retry converges. It takes a *sqlate.Tx because its update waits on
-// a Hold another transaction took; the consumer checks for its own
-// references in tx after the call.
-//
-// Refusals: blobfs.ErrNotFound; query.ErrVersionMismatch under AtVersion.
+// Delete is the delete's first step: it moves the row of the file with id
+// to deleting and returns it; the caller deletes the object under its Key
+// and then calls Purge. A row already deleting is returned as it is, the
+// step's retry. The consumer checks for its own references in tx after the
+// call. Refusals: blobfs.ErrNotFound; query.ErrVersionMismatch under
+// AtVersion. See Files in docs/features.md.
 func (f *Files) Delete(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) (_ blobfs.File, err error) {
 	defer wrap(&err, "delete file %s", id)
 	return f.deleteFile(ctx, tx, id, atVersion(opts))

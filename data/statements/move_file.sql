@@ -1,13 +1,10 @@
 --| tier: standard
 --| returning: file_by_id
--- The guarded update of a file move: sets directory_id and name at the
--- caller's version, leaving the key. The status predicates require the
--- file not to be deleting and its current and new directories to be
--- active; the new directory's predicate refuses a missing directory before
--- blobfs_fk_file_directory could. A deleting file that holds the name in
--- the new directory refuses the move by the last predicate rather than by
--- the unique constraint, which would abort a transaction. Fails
--- blobfs_uq_file_directory_name for a holder that is not deleting.
+-- The guarded update of a file move, leaving the key. It changes nothing
+-- for a deleting file, a missing or deleting directory, or a name a
+-- deleting file holds, rather than fail a constraint and abort the
+-- caller's transaction; the store then reads why. Fails
+-- blobfs_uq_file_directory_name for a live holder.
 UPDATE blobfs_file
 SET directory_id = {{directory_id:uuid}},
     name = {{name}},

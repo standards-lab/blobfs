@@ -46,10 +46,11 @@ var errHook = errors.New("datatest: the hook failed")
 // often each key was deleted, and fails the delete numbered failAt,
 // counting from 1, having deleted the object first when deleteFirst is
 // set, as a crash between the object's delete and the row's purge leaves
-// it. The Protocols group passes it as an ObjectStore: it holds each put's
-// body under its key until a delete of the key succeeds, counts the puts,
-// and fails every put while failPut is set.
+// it. The Protocols group passes it as an ObjectStore: it accepts every
+// key, holds each put's body under its key until a delete of the key
+// succeeds, counts the puts, and fails every put while failPut is set.
 type objectStore struct {
+	acceptAll
 	deleted     map[string]int
 	calls       int
 	failAt      int
@@ -403,7 +404,7 @@ func (s *suite) sweepHookAborts(t *testing.T) {
 		if d := s.directory(t, b.mid.ID); d.Status != blobfs.DirectoryStatusDeleting {
 			t.Errorf("the aborted directory is %s, want deleting", d.Status)
 		}
-		roots, err := store.Directories.Deleting(s.ctx, s.db, 10)
+		roots, err := store.Directories.BranchRoots(s.ctx, s.db, 10)
 		if err != nil || len(roots) != 1 || roots[0].ID != b.top.ID {
 			t.Errorf("Deleting after the abort = %+v, %v, want the branch's top", roots, err)
 		}
@@ -435,7 +436,7 @@ func (s *suite) sweepRefusalDoesNotBlock(t *testing.T) {
 				t.Fatalf("MarkDeleting: %v", err)
 			}
 		}
-		roots, err := store.Directories.Deleting(s.ctx, s.db, 10)
+		roots, err := store.Directories.BranchRoots(s.ctx, s.db, 10)
 		if err != nil || len(roots) != 2 || roots[0].ID != stuck.top.ID {
 			t.Fatalf("Deleting = %+v, %v, want the stuck branch first", roots, err)
 		}
@@ -470,7 +471,7 @@ func (s *suite) sweepRefusedRootAtBatchOne(t *testing.T) {
 				t.Fatalf("MarkDeleting: %v", err)
 			}
 		}
-		roots, err := store.Directories.Deleting(s.ctx, s.db, 10)
+		roots, err := store.Directories.BranchRoots(s.ctx, s.db, 10)
 		if err != nil || len(roots) != 2 || roots[0].ID != stuck.top.ID {
 			t.Fatalf("Deleting = %+v, %v, want the stuck branch first", roots, err)
 		}

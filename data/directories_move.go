@@ -14,11 +14,8 @@ import (
 
 // IsWithin reports whether the directory with id lies within the subtree
 // of the directory with ancestorID, that directory included: Move's cycle
-// check, for a consumer's own scope check or to refuse a move early. A
-// directory D may move under P only when IsWithin(P, D) is false. A
-// directory that does not exist is within nothing; on a loop in the tree,
-// id is within every directory on its chain and none off it. The answer
-// holds only while no other transaction moves directories.
+// check, for a consumer's own. The answer holds only while no other
+// transaction moves directories. See Directories in docs/features.md.
 func (d *Directories) IsWithin(ctx context.Context, sess sqlate.Session, id, ancestorID string) (_ bool, err error) {
 	defer wrap(&err, "is %s within %s", id, ancestorID)
 	return d.isWithinTree(ctx, sess, id, ancestorID)
@@ -47,24 +44,16 @@ func (d *Directories) Serializes() bool {
 	return d.variant.Serializes()
 }
 
-// Move moves the directory with id under parentID as name, which renames
-// it when the name differs, and returns the row as the database holds it.
-// It runs in tx under the tree lock: LockTree, then IsWithin(parentID, id),
-// then the update, guarded by version, which the caller read in the same
-// transaction. The directory's children and files follow it. See Moves in
-// docs/concepts.md for the lock and isolation levels.
-//
-// Refusals: blobfs.ErrRootDirectory before any SQL; blobfs.NameError;
-// blobfs.ErrCycle for a new parent inside the directory's subtree;
-// blobfs.ErrNotFound for a missing directory or new parent;
-// blobfs.ErrNameTaken for a name an active directory under the new parent
-// holds; blobfs.ErrDeleting when the directory or either parent is
-// deleting; query.ErrVersionMismatch; for a name a deleting directory
-// holds, that directory's blobfs.DeletingError;
-// sqlate.ErrSerializationFailure at repeatable read or serializable.
+// Move moves the directory with id under parentID as name, guarded by
+// version, and returns the row; its children and files follow it. It runs
+// in tx under the tree lock, after the cycle check. Refusals:
+// blobfs.ErrRootDirectory, blobfs.NameError, blobfs.ErrCycle,
+// blobfs.ErrNotFound, blobfs.ErrNameTaken, a blobfs.DeletingError,
+// query.ErrVersionMismatch, and sqlate.ErrSerializationFailure above read
+// committed. See Moves in docs/concepts.md.
 func (d *Directories) Move(ctx context.Context, tx *sqlate.Tx, id, parentID, name string, version int64) (_ blobfs.Directory, err error) {
 	defer wrap(&err, "move directory %s under %s as %q", id, parentID, name)
-	if id == blobfs.RootID {
+	if isRoot(id) {
 		return blobfs.Directory{}, blobfs.ErrRootDirectory
 	}
 	if name, err = validName(name); err != nil {
