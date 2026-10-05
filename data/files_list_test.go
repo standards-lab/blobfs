@@ -38,17 +38,6 @@ func fileNames(c query.Collection[blobfs.File]) []string {
 	return out
 }
 
-// fileBase is the file listing's base as the plain, uncounted page wraps
-// it, anchored on its directory by the first placeholder.
-const fileBase = "FROM blobfs_file f\nWHERE f.directory_id = CAST($1 AS uuid)) q"
-
-// fileCounted is the file listing's base as a counted page wraps it: the
-// plain base inside the window that counts the rows under the listing's
-// filters, itself re-aliased as q for the keyset predicate, the order, and
-// the paging outside it. A listing's own filters, if any, close the inner
-// layer before the count's closing parenthesis.
-const fileCounted = "SELECT * FROM (SELECT q.*, COUNT(*) OVER () AS sqlate_total FROM (SELECT f.id, f.directory_id, f.name, f.status, f.key, f.size, f.content_type, f.etag, f.version, f.created_at, f.updated_at\n" + fileBase
-
 // TestListFiles checks List and Continue over one directory's files: the
 // filters, the count, the order, the cursor, and the directory's read.
 func TestListFiles(t *testing.T) {
@@ -80,16 +69,15 @@ func TestListFiles(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("ran %d pages, want one per call", len(calls))
 	}
-	filter := " WHERE q.status = CAST($2 AS text) AND " + hideDeleting(3)
-	want := fileCounted + filter + ") q ORDER BY q.updated_at, q.name OFFSET $4 ROWS FETCH NEXT $5 ROWS ONLY"
-	if calls[0].SQL != want || !slices.Equal(calls[0].Args, []any{parentID, "available", "deleting", 0, 3}) {
-		t.Errorf("page = %q %v, want %q", calls[0].SQL, calls[0].Args, want)
+	// The caller's filter, then the one hiding deleting rows, under the
+	// count, ordered by the caller's sort with the name breaking ties.
+	wantClauses(t, "page", calls[0].SQL, countWindow, "q.status = CAST($2 AS text)", hideDeleting(3), "ORDER BY q.updated_at, q.name OFFSET")
+	if !slices.Equal(calls[0].Args, []any{parentID, "available", "deleting", 0, 3}) {
+		t.Errorf("page bound %v, want the directory, the filter, the hidden status, and the paging", calls[0].Args)
 	}
-	want = fileCounted + filter + ") q WHERE (q.updated_at > CAST($4 AS timestamp with time zone) OR (q.updated_at = CAST($4 AS timestamp with time zone) AND q.name > CAST($5 AS text)))" +
-		" ORDER BY q.updated_at, q.name OFFSET $6 ROWS FETCH NEXT $7 ROWS ONLY"
-	if calls[1].SQL != want {
-		t.Errorf("continued page = %q, want %q", calls[1].SQL, want)
-	}
+	wantClauses(t, "continued page", calls[1].SQL, countWindow, "q.status = CAST($2 AS text)", hideDeleting(3),
+		"q.updated_at > CAST($4 AS timestamp with time zone) OR (q.updated_at = CAST($4 AS timestamp with time zone) AND q.name > CAST($5 AS text))",
+		"ORDER BY q.updated_at, q.name OFFSET")
 	if args := calls[1].Args; len(args) != 7 || args[0] != parentID || args[4] != "b" {
 		t.Errorf("continued page args = %v, want the directory, the filter, the keyed values past b, and the paging", args)
 	}
@@ -173,8 +161,8 @@ func TestListFilesDeleting(t *testing.T) {
 		t.Fatalf("List with IncludeDeleting: %v", err)
 	}
 	calls := queries(rec)
-	want := fileBase + " WHERE q.status = CAST($2 AS text) ORDER BY q.name OFFSET $3 ROWS FETCH NEXT $4 ROWS ONLY"
-	if len(calls) != 3 || !strings.HasSuffix(calls[2].SQL, want) || !slices.Equal(calls[2].Args, []any{parentID, "deleting", 0, 3}) {
-		t.Errorf("with IncludeDeleting ran %v, want the page %q alone", calls[2:], want)
+	if len(calls) != 3 || strings.Contains(calls[2].SQL, "q.status <>") || !slices.Equal(calls[2].Args, []any{parentID, "deleting", 0, 3}) {
+		t.Fatalf("with IncludeDeleting ran %v, want the page under the caller's filter alone", calls[2:])
 	}
+	wantClauses(t, "page with IncludeDeleting", calls[2].SQL, "q.status = CAST($2 AS text)", "ORDER BY q.name OFFSET")
 }

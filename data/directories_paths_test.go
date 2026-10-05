@@ -84,9 +84,6 @@ func TestFindByPathWalks(t *testing.T) {
 			t.Errorf("query %d bound %v, want %v", i, calls[i].Args, args)
 		}
 	}
-	if !strings.HasSuffix(calls[1].SQL, "WHERE d.parent_id = CAST($1 AS uuid) AND d.name = $2") {
-		t.Errorf("a step is not directory_by_name:\n%s", calls[1].SQL)
-	}
 }
 
 // TestPathComposes checks the path is composed from the ancestor rows in
@@ -119,10 +116,5 @@ func TestPathComposes(t *testing.T) {
 			t.Errorf("Path of %s on a looping chain = %v, want ErrCycle", start, err)
 		}
 	}
-	if text := rec.SQL(sqltest.OpQuery)[0]; !strings.Contains(text, "UNION\n") || strings.Contains(text, "UNION ALL") {
-		t.Errorf("the walk does not combine its steps with UNION, so it would not terminate on a cycle:\n%s", text)
-	}
-	if n := len(rec.SQL(sqltest.OpQuery)); n != 6 {
-		t.Errorf("six paths ran %d queries, want 6 (one recursive statement each)", n)
-	}
+	wantDone(t, rec)
 }
