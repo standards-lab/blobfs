@@ -26,8 +26,7 @@ updates the guide in the same effort.
   module of its own that composes the library with `go-storage` and is never imported.
 - **Dependency line.** The base module takes `sqlate` and `golang.org/x/text` and nothing else:
   no driver, no dialect module, no object store. An engine's driver and dialect enter only
-  through its sub-module; `go-storage` enters only through `example`. `mise run split-check`
-  enforces the import boundaries between the layers.
+  through its sub-module; `go-storage` enters only through `example`.
 - **Local development** uses the committed root `go.work`. In the steady state each `go.mod`
   pins released `require` versions. A `replace` directive is temporary: it points a sub-module
   at unreleased base changes, and the release removes it.
