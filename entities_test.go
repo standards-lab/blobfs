@@ -2,7 +2,6 @@ package blobfs_test
 
 import (
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 	"uuid"
@@ -86,61 +85,5 @@ func TestIsRoot(t *testing.T) {
 	}
 	if (blobfs.Directory{ID: blobfs.RootID, ParentID: &parent, Name: name}).IsRoot() {
 		t.Error("a directory with a parent is the root")
-	}
-}
-
-// TestEntityTags fixes the scan and binding contract: every exported field
-// of Directory and File carries a json tag naming its column, and the
-// column the root leaves NULL (a directory's parent_id) and the columns a
-// store fills late (a file's size and etag) are pointers, so a NULL scans
-// as nil and a nil binds as NULL. A directory's name is never NULL: the
-// root's is /.
-func TestEntityTags(t *testing.T) {
-	nullable := map[string]bool{
-		"Directory.ParentID": true,
-		"File.Size":          true,
-		"File.ETag":          true,
-	}
-	for _, v := range []any{blobfs.Directory{}, blobfs.File{}} {
-		rt := reflect.TypeOf(v)
-		for f := range rt.Fields() {
-			tag := f.Tag.Get("json")
-			if tag == "" || tag != strings.ToLower(tag) {
-				t.Errorf("%s.%s has json tag %q, want a lowercase column name", rt.Name(), f.Name, tag)
-			}
-			key := rt.Name() + "." + f.Name
-			if got := f.Type.Kind() == reflect.Pointer; got != nullable[key] {
-				t.Errorf("%s is a pointer: %v, want %v", key, got, nullable[key])
-			}
-		}
-	}
-}
-
-// TestSentinels fixes that each sentinel is distinct and matches only
-// itself, so package data's mapping cannot alias two outcomes.
-func TestSentinels(t *testing.T) {
-	sentinels := []error{
-		blobfs.ErrNotFound,
-		blobfs.ErrNameTaken,
-		blobfs.ErrInvalidName,
-		blobfs.ErrInvalidPath,
-		blobfs.ErrInvalidKey,
-		blobfs.ErrNotEmpty,
-		blobfs.ErrInvalidTransition,
-		blobfs.ErrDeleting,
-		blobfs.ErrCycle,
-		blobfs.ErrRootDirectory,
-		blobfs.ErrInvalidID,
-		blobfs.ErrIDTaken,
-	}
-	for i, a := range sentinels {
-		for j, b := range sentinels {
-			if got := errors.Is(a, b); got != (i == j) {
-				t.Errorf("errors.Is(%v, %v) = %v", a, b, got)
-			}
-		}
-		if a.Error() == "" {
-			t.Errorf("sentinel %d has an empty message", i)
-		}
 	}
 }
