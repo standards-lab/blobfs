@@ -29,6 +29,19 @@ matches() {
 	grep -ho "$pattern" "${files[@]}" || [ $? -eq 1 ]
 }
 
+# tool_modules prints the module of each package a tool directive in the
+# current directory's module declares, once each. go list warns on stderr
+# when no tool directive matches; that one warning is no output, and any
+# other failure prints go list's output and fails.
+tool_modules() {
+	local out
+	out=$(go list -f '{{.Module.Path}}' tool 2>&1) || {
+		echo "$out" >&2
+		return 1
+	}
+	grep -v '^go: warning: "tool" matched no packages$' <<<"$out" | sort -u || [ $? -eq 1 ]
+}
+
 go_minor=$(mise latest go | cut -d. -f1,2)
 
 for mod in $GO_MODULES; do
@@ -38,6 +51,18 @@ for mod in $GO_MODULES; do
 	while read -r line; do
 		[ -n "$line" ] && report "$mod/go.mod: $line"
 	done <<<"$updates"
+
+	# Tool modules with a newer version within their major. A tool's module is
+	# an indirect requirement, which the scan above leaves out; one the module
+	# also requires directly is reported there, so it is skipped here.
+	tools=$(cd "$mod" && tool_modules)
+	if [ -n "$tools" ]; then
+		updates=$(cd "$mod" && go list -m -u -f \
+			'{{if and (not .Main) .Indirect .Update}}{{.Path}} {{.Version}} -> {{.Update.Version}}{{end}}' $tools)
+		while read -r line; do
+			[ -n "$line" ] && report "$mod/go.mod: $line"
+		done <<<"$updates"
+	fi
 
 	# The go directive's minor against the current Go minor.
 	directive=$(cd "$mod" && go mod edit -json | jq -r .Go | cut -d. -f1,2)
