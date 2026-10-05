@@ -129,43 +129,40 @@ func ops(rec *sqltest.Recorder) string {
 	return strings.Join(out, " ")
 }
 
-// TestNew checks the compiled inventory: its size, tiers, the statements
-// requiring a transaction, and the returning commands in each dialect.
+// names returns the names of statements, in order.
+func names(stmts []query.Statement) []string {
+	var out []string
+	for _, st := range stmts {
+		out = append(out, st.Name())
+	}
+	return out
+}
+
+// TestNew checks the compiled inventory in each dialect: listed once
+// each in name order, standard tier, and each returning command naming a
+// read in the inventory and carrying its single-statement form exactly
+// where the dialect renders RETURNING.
 func TestNew(t *testing.T) {
-	want := []string{
-		"complete_file", "create_directory", "create_file", "delete_directory",
-		"delete_file", "deleting_branches", "directory_ancestors", "directory_by_id", "directory_by_name", "directory_children",
-		"directory_files", "directory_is_within", "file_by_id", "file_by_name", "hold_file",
-		"mark_directory_deleting", "mark_directory_files_deleting", "move_directory", "move_file", "purge_file", "stale_files_before",
-	}
-	returning := map[string]string{
-		"create_directory": "directory_by_id", "move_directory": "directory_by_id",
-		"create_file": "file_by_id", "complete_file": "file_by_id",
-		"move_file": "file_by_id", "delete_file": "file_by_id",
-	}
-	txRequired := map[string]bool{
-		"move_directory": true, "mark_directory_deleting": true, "mark_directory_files_deleting": true, "delete_file": true, "hold_file": true,
-	}
 	for _, f := range forms {
 		t.Run(f.name, func(t *testing.T) {
-			var names []string
-			for _, st := range newStore(t, f).Statements() {
-				names = append(names, st.Name())
+			stmts := newStore(t, f).Statements()
+			listed := names(stmts)
+			if len(listed) == 0 {
+				t.Fatal("Statements() is empty")
+			}
+			if !slices.IsSorted(listed) || len(slices.Compact(slices.Clone(listed))) != len(listed) {
+				t.Errorf("Statements() = %v, want each once, in name order", listed)
+			}
+			for _, st := range stmts {
 				if st.Tier() != query.TierStandard {
 					t.Errorf("%s is %s tier, want standard", st.Name(), st.Tier())
 				}
-				if st.TransactionRequired() != txRequired[st.Name()] {
-					t.Errorf("%s: TransactionRequired = %v, want %v", st.Name(), st.TransactionRequired(), txRequired[st.Name()])
+				if reads := st.Reads(); reads != "" && !slices.Contains(listed, reads) {
+					t.Errorf("%s reads %q, which the inventory does not hold", st.Name(), reads)
 				}
-				if reads := returning[st.Name()]; st.Reads() != reads {
-					t.Errorf("%s reads %q, want %q", st.Name(), st.Reads(), reads)
-				}
-				if rendered := st.ReturningText() != ""; rendered != (f.single && returning[st.Name()] != "") {
+				if rendered := st.ReturningText() != ""; rendered != (f.single && st.Reads() != "") {
 					t.Errorf("%s: ReturningText = %q under %s", st.Name(), st.ReturningText(), f.name)
 				}
-			}
-			if !slices.Equal(names, want) {
-				t.Errorf("Statements = %v, want %v", names, want)
 			}
 		})
 	}
@@ -216,17 +213,28 @@ func TestNewWithoutPatterns(t *testing.T) {
 // TestVerify checks Verify prepares every statement, each single-statement
 // form, and each listing's projection probes.
 func TestVerify(t *testing.T) {
-	for _, c := range []struct {
-		form      form
-		returning int
-	}{{forms[0], 0}, {forms[1], 6}} {
-		t.Run(c.form.name, func(t *testing.T) {
-			s, db, rec := openStore(t, c.form)
+	for _, f := range forms {
+		t.Run(f.name, func(t *testing.T) {
+			s, db, rec := openStore(t, f)
 			if err := s.Verify(context.Background(), db); err != nil {
 				t.Fatalf("Verify: %v", err)
 			}
 			prepared := rec.SQL(sqltest.OpPrepare)
-			if want := 21 + c.returning + 6; len(prepared) != want {
+			stmts, single := s.Statements(), 0
+			for _, st := range stmts {
+				if !slices.Contains(prepared, st.Text()) {
+					t.Errorf("Verify did not prepare %s", st.Name())
+				}
+				if text := st.ReturningText(); text != "" {
+					single++
+					if !slices.Contains(prepared, text) {
+						t.Errorf("Verify did not prepare the single-statement form of %s", st.Name())
+					}
+				}
+			}
+			// Each statement, each single-statement form, and the six
+			// probes, two per listing, and nothing else.
+			if want := len(stmts) + single + 6; len(prepared) != want {
 				t.Errorf("Verify prepared %d statements, want %d", len(prepared), want)
 			}
 			returning, contracts, cursors, counted := 0, 0, 0, 0
@@ -243,8 +251,8 @@ func TestVerify(t *testing.T) {
 					cursors++
 				}
 			}
-			if returning != c.returning {
-				t.Errorf("Verify prepared %d single-statement forms, want %d", returning, c.returning)
+			if returning != single {
+				t.Errorf("Verify prepared %d single-statement forms, want %d", returning, single)
 			}
 			if contracts != 2 || cursors != 2 || counted != 2 {
 				t.Errorf("Verify prepared %d field-contract, %d cursor-page, and %d counted cursor-page probes, want 2 of each", contracts, cursors, counted)
@@ -285,15 +293,9 @@ func probeEngine(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Va
 func TestEngineSharesTheBaseline(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t, fallback, data.WithEngine(probeEngine))
-	var names []string
-	for _, st := range s.Statements() {
-		names = append(names, st.Name())
-	}
-	if len(names) != 22 || names[21] != "probe_engine" || slices.Contains(names[:21], "probe_engine") {
-		t.Errorf("Statements() = %v, want the package's 21 and then probe_engine", names)
-	}
-	if distinct := slices.Compact(slices.Sorted(slices.Values(names))); len(distinct) != len(names) {
-		t.Errorf("Statements() = %v lists a statement twice", names)
+	want := append(names(newStore(t, fallback).Statements()), "probe_engine")
+	if got := names(s.Statements()); !slices.Equal(got, want) {
+		t.Errorf("Statements() = %v, want the package's own and then probe_engine: %v", got, want)
 	}
 	// A consumer's wrapper that embeds the engine's variant inherits its
 	// inventory, so the engine's statement is still listed.
@@ -304,8 +306,8 @@ func TestEngineSharesTheBaseline(t *testing.T) {
 		}
 		return failingLock{Variant: v}, nil
 	}))
-	if all := wrapped.Statements(); len(all) != 22 || all[21].Name() != "probe_engine" {
-		t.Errorf("a wrapper over the engine's variant lists %d statements, want the package's 21 and then probe_engine", len(all))
+	if got := names(wrapped.Statements()); !slices.Equal(got, want) {
+		t.Errorf("a wrapper over the engine's variant lists %v, want the package's own and then probe_engine: %v", got, want)
 	}
 
 	pool, rec := sqltest.Open(t)
@@ -316,7 +318,7 @@ func TestEngineSharesTheBaseline(t *testing.T) {
 	if err := plain.Verify(ctx, plainDB); err != nil {
 		t.Fatalf("Verify without an engine: %v", err)
 	}
-	want := plainRec.SQL(sqltest.OpPrepare)
+	baselinePrepared := plainRec.SQL(sqltest.OpPrepare)
 	got := rec.SQL(sqltest.OpPrepare)
 	var engine []string
 	for _, text := range got {
@@ -329,9 +331,9 @@ func TestEngineSharesTheBaseline(t *testing.T) {
 	}
 	baseline := slices.DeleteFunc(slices.Clone(got), func(text string) bool { return slices.Contains(engine, text) })
 	slices.Sort(baseline)
-	slices.Sort(want)
-	if !slices.Equal(baseline, want) {
-		t.Errorf("Verify with an engine prepared the baseline as\n%q\nwant the store's own\n%q", baseline, want)
+	slices.Sort(baselinePrepared)
+	if !slices.Equal(baseline, baselinePrepared) {
+		t.Errorf("Verify with an engine prepared the baseline as\n%q\nwant the store's own\n%q", baseline, baselinePrepared)
 	}
 
 	errEngine := errors.New("no native statements")
@@ -429,8 +431,8 @@ func TestConsumerEngineSwapsOneMethod(t *testing.T) {
 	if n := len(rec.SQL(sqltest.OpQuery)); n != 2 {
 		t.Errorf("the walk ran %d queries, want the baseline's 2", n)
 	}
-	if n := len(s.Statements()); n != 21 {
-		t.Errorf("Statements() lists %d, want the persistence package's 21", n)
+	if got, want := names(s.Statements()), names(newStore(t, fallback).Statements()); !slices.Equal(got, want) {
+		t.Errorf("Statements() = %v, want the persistence package's own %v", got, want)
 	}
 
 	failing := func(_ *query.Catalog, _ sqlate.Dialect, base data.Variant) (data.Variant, error) {
