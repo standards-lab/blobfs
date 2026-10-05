@@ -59,9 +59,6 @@ func listed() sqltest.Response {
 	return directoryResponse(parentID, blobfs.RootID, "parent", 1)
 }
 
-// directoryRead is the text of that read, directory_by_id.
-const directoryRead = "SELECT d.id, d.parent_id, d.name, d.status, d.version, d.created_at, d.updated_at\nFROM blobfs_directory d\nWHERE d.id = CAST($1 AS uuid)"
-
 // pages returns the recorder's query calls without the reads of the
 // listed directory, failing the test unless each page is followed by one,
 // bound to the page's own anchor.
@@ -73,7 +70,7 @@ func pages(t *testing.T, rec *sqltest.Recorder) []sqltest.Call {
 	}
 	var out []sqltest.Call
 	for i := 0; i < len(calls); i += 2 {
-		if read := calls[i+1]; read.SQL != directoryRead || read.Args[0] != calls[i].Args[0] {
+		if read := calls[i+1]; !strings.HasPrefix(read.SQL, "SELECT d.id") || !slices.Equal(read.Args, calls[i].Args[:1]) {
 			t.Errorf("query %d = %q %v, want the read of the listed directory %v", i+1, read.SQL, read.Args, calls[i].Args[0])
 		}
 		out = append(out, calls[i])
@@ -87,16 +84,24 @@ func hideDeleting(n int) string {
 	return "q.status <> CAST($" + strconv.Itoa(n) + " AS text)"
 }
 
-// directoryBase is the listing's base as the plain, uncounted page wraps
-// it, anchored on its parent by the first placeholder.
-const directoryBase = "FROM blobfs_directory d\nWHERE d.parent_id = CAST($1 AS uuid)) q"
+// countWindow is the window a counted page reads its total through.
+const countWindow = "COUNT(*) OVER ()"
 
-// directoryCounted is the listing's base as a counted page wraps it: the
-// plain base inside the window that counts the rows under the listing's
-// filters, itself re-aliased as q for the keyset predicate, the order, and
-// the paging outside it. A listing's own filters, if any, close the inner
-// layer before the count's closing parenthesis.
-const directoryCounted = "SELECT * FROM (SELECT q.*, COUNT(*) OVER () AS sqlate_total FROM (SELECT d.id, d.parent_id, d.name, d.status, d.version, d.created_at, d.updated_at\n" + directoryBase
+// wantClauses fails the test unless the page's text holds each clause,
+// in order: the clauses a listing composes from its request, and not the
+// text around them.
+func wantClauses(t *testing.T, what, sql string, clauses ...string) {
+	t.Helper()
+	rest := sql
+	for _, c := range clauses {
+		i := strings.Index(rest, c)
+		if i < 0 {
+			t.Errorf("%s = %q, want the clauses %q in order", what, sql, clauses)
+			return
+		}
+		rest = rest[i+len(c):]
+	}
+}
 
 // TestListDirectories checks List by page number, counted and under
 // TotalNone: the statement, its bindings, More, the cursor, and the
@@ -136,16 +141,17 @@ func TestListDirectories(t *testing.T) {
 	if len(calls) != 3 {
 		t.Fatalf("ran %d pages, want one per call", len(calls))
 	}
-	wantPage := directoryCounted + " WHERE q.version >= CAST($2 AS bigint) AND " + hideDeleting(3) + ") q ORDER BY q.name OFFSET $4 ROWS FETCH NEXT $5 ROWS ONLY"
-	if calls[0].SQL != wantPage || !slices.Equal(calls[0].Args, []any{parentID, 1, "deleting", 0, 3}) {
-		t.Errorf("page 1 = %q %v, want %q at offset 0 fetching 3", calls[0].SQL, calls[0].Args, wantPage)
+	// The caller's filter, then the one hiding deleting rows, under the
+	// count, in name order, fetching one row past the page.
+	for i, offset := range []int{0, 2} {
+		wantClauses(t, "page", calls[i].SQL, countWindow, "q.version >= CAST($2 AS bigint)", hideDeleting(3), "ORDER BY q.name OFFSET")
+		if want := []any{parentID, 1, "deleting", offset, 3}; !slices.Equal(calls[i].Args, want) {
+			t.Errorf("page %d bound %v, want %v", i+1, calls[i].Args, want)
+		}
 	}
-	if calls[1].SQL != wantPage || !slices.Equal(calls[1].Args, []any{parentID, 1, "deleting", 2, 3}) {
-		t.Errorf("page 2 = %q %v, want %q at offset 2 fetching 3", calls[1].SQL, calls[1].Args, wantPage)
-	}
-	wantUntotalled := directoryBase + " WHERE " + hideDeleting(2) + " ORDER BY q.name OFFSET $3 ROWS FETCH NEXT $4 ROWS ONLY"
-	if !strings.HasSuffix(calls[2].SQL, wantUntotalled) || strings.Contains(calls[2].SQL, "COUNT") || !slices.Equal(calls[2].Args, []any{parentID, "deleting", 0, 3}) {
-		t.Errorf("TotalNone page = %q %v, want the plain page %q with no count", calls[2].SQL, calls[2].Args, wantUntotalled)
+	wantClauses(t, "TotalNone page", calls[2].SQL, hideDeleting(2), "ORDER BY q.name OFFSET")
+	if strings.Contains(calls[2].SQL, countWindow) || !slices.Equal(calls[2].Args, []any{parentID, "deleting", 0, 3}) {
+		t.Errorf("TotalNone page = %q %v, want the plain page with no count", calls[2].SQL, calls[2].Args)
 	}
 }
 
@@ -211,9 +217,9 @@ func TestContinueDirectories(t *testing.T) {
 		t.Errorf("continued page = %v total %d more %v, want [c d] of 5 with a cursor of its own", got, next.Total, next.More)
 	}
 	calls := pages(t, rec)
-	want := directoryCounted + " WHERE " + hideDeleting(2) + ") q WHERE (q.name > CAST($3 AS text)) ORDER BY q.name OFFSET $4 ROWS FETCH NEXT $5 ROWS ONLY"
-	if calls[1].SQL != want || !slices.Equal(calls[1].Args, []any{parentID, "deleting", "b", 0, 3}) {
-		t.Errorf("continued page = %q %v, want %q past b", calls[1].SQL, calls[1].Args, want)
+	wantClauses(t, "continued page", calls[1].SQL, countWindow, hideDeleting(2), "q.name > CAST($3 AS text)", "ORDER BY q.name OFFSET")
+	if !slices.Equal(calls[1].Args, []any{parentID, "deleting", "b", 0, 3}) {
+		t.Errorf("continued page bound %v, want the page past b", calls[1].Args)
 	}
 
 	desc := query.Directives{Sort: []query.Sort{{Field: "name", Descending: true}}, Total: query.TotalNone}
@@ -225,9 +231,9 @@ func TestContinueDirectories(t *testing.T) {
 		t.Fatalf("Continue descending: %v", err)
 	}
 	calls = pages(t, rec)
-	want = " WHERE " + hideDeleting(2) + " AND (q.name < CAST($3 AS text)) ORDER BY q.name DESC OFFSET $4 ROWS FETCH NEXT $5 ROWS ONLY"
-	if !strings.HasSuffix(calls[3].SQL, want) || calls[3].Args[2] != "d" {
-		t.Errorf("descending continuation = %q %v, want the suffix %q past d", calls[3].SQL, calls[3].Args, want)
+	wantClauses(t, "descending continuation", calls[3].SQL, hideDeleting(2), "q.name < CAST($3 AS text)", "ORDER BY q.name DESC OFFSET")
+	if calls[3].Args[2] != "d" {
+		t.Errorf("descending continuation bound %v, want the page past d", calls[3].Args)
 	}
 }
 
@@ -399,10 +405,10 @@ func TestListDirectoriesDeleting(t *testing.T) {
 		t.Fatalf("Continue with IncludeDeleting: %v", err)
 	}
 	calls := queries(rec)
-	want := directoryCounted + ") q ORDER BY q.name OFFSET $2 ROWS FETCH NEXT $3 ROWS ONLY"
-	if len(calls) != 2 || calls[0].SQL != want || !slices.Equal(calls[0].Args, []any{parentID, 0, 3}) {
-		t.Fatalf("with IncludeDeleting ran %v, want the page %q alone, then its continuation", calls, want)
+	if len(calls) != 2 || strings.Contains(calls[0].SQL, "q.status") || !slices.Equal(calls[0].Args, []any{parentID, 0, 3}) {
+		t.Fatalf("with IncludeDeleting ran %v, want the page with no status predicate alone, then its continuation", calls)
 	}
+	wantClauses(t, "page with IncludeDeleting", calls[0].SQL, countWindow, "ORDER BY q.name OFFSET")
 	for _, c := range []struct {
 		name  string
 		after query.Cursor

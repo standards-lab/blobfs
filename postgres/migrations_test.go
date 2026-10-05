@@ -15,8 +15,9 @@ var (
 	constraint   = regexp.MustCompile(`(?i)\bCONSTRAINT\s+([A-Za-z_][A-Za-z0-9_]*)`)
 )
 
-// TestMigrations checks the set's name, history table, and three
-// transactional migrations in order, each with an up and a down.
+// TestMigrations checks the set's name and history table, and that its
+// migrations run in version order, each in a transaction with an up and a
+// down. TestReleasedMigrations pins which migrations the set holds.
 func TestMigrations(t *testing.T) {
 	set, err := postgres.Migrations()
 	if err != nil {
@@ -25,15 +26,11 @@ func TestMigrations(t *testing.T) {
 	if set.Name != postgres.Source || set.Table != postgres.Table {
 		t.Errorf("set = %q under %q, want %q under %q", set.Name, set.Table, postgres.Source, postgres.Table)
 	}
-	if len(set.Migrations) != 3 {
-		t.Fatalf("Migrations returned %d migrations, want 3 (directory, file, directory_status)", len(set.Migrations))
+	if len(set.Migrations) == 0 {
+		t.Fatal("Migrations returned no migrations")
 	}
 	last := 0
-	for i, name := range []string{"directory", "file", "directory_status"} {
-		m := set.Migrations[i]
-		if m.Name != name || m.Version != i+1 {
-			t.Errorf("migration %d is %d %q, want %d %q", i, m.Version, m.Name, i+1, name)
-		}
+	for _, m := range set.Migrations {
 		if m.Version <= last {
 			t.Errorf("version %d follows %d; versions must strictly increase", m.Version, last)
 		}
