@@ -35,7 +35,7 @@ updates the guide in the same effort.
   against the compose stack and is not part of CI. `mise run acceptance` starts the stack, runs
   the integration tier and the example, and resets the stack.
 - **Releases, CI, tasks** follow the organization's engineering conventions, the Go Elemental
-  principles in the architecture repository: `v*` and `postgres/v*` tags, one CI job,
-  `mise run check`, mise tasks over the modules.
+  principles in the architecture repository: `v*` and `postgres/v*` tags, one CI job
+  running `mise run check`, mise tasks over the modules.
 - **Public repo.** Modules resolve through the public Go proxy; CI has no private-module
   configuration.

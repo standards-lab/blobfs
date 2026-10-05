@@ -113,8 +113,8 @@ through [mise](https://mise.jdx.dev):
 
 ```sh
 mise run check         # build, vet, format, fix, tidy, test, and lint every module, then sqlint; writes nothing
-mise run currency      # what trails its latest: requirements, Go, tools, action pins, images
-mise run upgrade       # bump direct requirements and mise tools to their latest
+mise run currency      # report requirements, Go, tools, actions, and images behind their latest
+mise run upgrade       # upgrade every module's requirements and the tools to their latest
 mise run test          # the unit tier, every module, nothing installed
 mise run lint          # golangci-lint over every module, then sqlint over the repository
 mise run build         # each module built with the workspace off, against its own pins
