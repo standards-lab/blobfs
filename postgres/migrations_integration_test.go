@@ -44,6 +44,7 @@ func TestMigrationsWithAConsumerSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("migrate.New: %v", err)
 	}
+	latest := set.Migrations[len(set.Migrations)-1].Version
 	up := func() {
 		t.Helper()
 		if err := m.Up(ctx); err != nil {
@@ -56,9 +57,9 @@ func TestMigrationsWithAConsumerSet(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Status: %v", err)
 		}
-		if len(status) != 2 || status[0].Name != postgres.Source || status[0].Table != postgres.Table || status[0].Version != 3 ||
+		if len(status) != 2 || status[0].Name != postgres.Source || status[0].Table != postgres.Table || status[0].Version != latest ||
 			status[1].Name != "consumer" || status[1].Version != 1 || status[0].Dirty || status[1].Dirty {
-			t.Fatalf("Status after Up = %+v, want blobfs at 3 under %s and the consumer at 1", status, postgres.Table)
+			t.Fatalf("Status after Up = %+v, want blobfs at %d under %s and the consumer at 1", status, latest, postgres.Table)
 		}
 		if n := dbtest.Int(ctx, t, db, "SELECT count(*) FROM blobfs_directory WHERE id = $1 AND parent_id IS NULL AND name = '/'", blobfs.RootID); n != 1 {
 			t.Errorf("the root is seeded %d times, want once", n)
@@ -79,7 +80,7 @@ func TestMigrationsWithAConsumerSet(t *testing.T) {
 	if dbtest.Exists(ctx, t, db, "consumer_bookmark") {
 		t.Error("the consumer's table survived its revert")
 	}
-	if err := blobfsLayer.Down(ctx, 3); err != nil {
+	if err := blobfsLayer.Down(ctx, len(set.Migrations)); err != nil {
 		t.Fatalf("Down of blobfs's set: %v", err)
 	}
 	for _, table := range []string{"blobfs_directory", "blobfs_file"} {
