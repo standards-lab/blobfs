@@ -21,9 +21,9 @@ jobs:
           - "example"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version: "1.27"
 
@@ -66,21 +66,21 @@ jobs:
           - "example"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
 
       - name: golangci-lint
         if: ${{ hashFiles(format('{0}/go.mod', matrix.module)) != '' }}
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@v9.3.0
         with:
-          version: v2.13.2
+          version: v2.14.0
           working-directory: ${{ matrix.module }}
 
   sqlint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version: "1.27"
 
@@ -98,9 +98,9 @@ jobs:
   split-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
 
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5.1.1
         with:
           install_args: go
 

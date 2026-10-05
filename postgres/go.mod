@@ -3,7 +3,7 @@ module github.com/standards-lab/blobfs/postgres
 go 1.27
 
 require (
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/standards-lab/blobfs v0.5.0
 	github.com/standards-lab/sqlate v0.4.1
 	github.com/standards-lab/sqlate/postgres v0.4.0
