@@ -1,11 +1,13 @@
 [tools]
-go = "1.27"
-golangci-lint = "2.13.2"
+go = "1.27.1"
+golangci-lint = "2.14.0"
+jq = "1.8.2"
+"aqua:google/go-containerregistry" = "0.22.1"
 
 # Space-separated list of module directories, kept in sync with the go.work
-# use-list and the ci.yml matrix. "." is the base module; postgres is the
-# engine sub-module and example the composition proof. A directory without a
-# go.mod is skipped.
+# use-list. "." is the base module; postgres is the engine sub-module and
+# example the composition proof. The maintenance tasks below skip a
+# directory without a go.mod; check, currency, and upgrade require one.
 [env]
 GO_MODULES = ". postgres example"
 # The compose stack's defaults. The Azurite account and key are the
@@ -15,6 +17,57 @@ BLOBFS_STORAGE_ENDPOINT = "http://127.0.0.1:10000/devstoreaccount1"
 BLOBFS_STORAGE_ACCOUNT = "devstoreaccount1"
 BLOBFS_STORAGE_KEY = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
 BLOBFS_STORAGE_CONTAINER = "blobfs"
+
+# The one check: read-only and deterministic, stopping at the first failure.
+[tasks.check]
+description = "Build, vet, format, fix, tidy, test, and lint every module, then sqlint the repository; writes nothing"
+run = '''
+set -eu
+export GOWORK=off
+for mod in $GO_MODULES; do
+  echo "check: $mod"
+  cd "$MISE_PROJECT_ROOT/$mod"
+  go build ./...
+  go vet ./...
+  unformatted=$(gofmt -l .)
+  if [ -n "$unformatted" ]; then echo "gofmt: unformatted files:"; echo "$unformatted"; exit 1; fi
+  go fix -diff ./...
+  go mod tidy -diff
+  go test -race ./...
+  golangci-lint run ./...
+done
+# sqlint resolves the modules sqlint.toml names with go list -m, which the
+# base module reaches only through the committed go.work, so it runs with
+# the workspace on. go list -m does not download, so the engine is fetched
+# first.
+echo "check: sqlint"
+cd "$MISE_PROJECT_ROOT"
+env -u GOWORK go mod download github.com/standards-lab/sqlate/postgres
+env -u GOWORK go run github.com/standards-lab/sqlate/sqlint/cmd/sqlint .
+'''
+
+# Currency: report what trails its latest, and the convenience that upgrades it.
+[tasks.currency]
+description = "Report every requirement, Go version, tool, action pin, and image tag behind its latest; writes nothing"
+run = "scripts/currency.sh"
+
+[tasks.upgrade]
+description = "Upgrade every module's go directive and direct requirements and the local mise tools to their latest, rewriting go.mod and mise.toml"
+run = '''
+set -eu
+export GOWORK=off
+# The go directive follows the current Go minor, with no toolchain line.
+go_minor=$(mise latest go | cut -d. -f1,2)
+for mod in $GO_MODULES; do
+  cd "$MISE_PROJECT_ROOT/$mod"
+  go mod edit -go="$go_minor" -toolchain=none
+  direct=$(go mod edit -json | jq -r '.Require[]? | select(.Indirect | not) | .Path')
+  [ -z "$direct" ] || go get $(printf '%s@latest ' $direct)
+  go mod tidy
+done
+cd "$MISE_PROJECT_ROOT"
+mise upgrade --bump --local
+'''
 
 # Maintenance.
 [tasks.tidy]
@@ -70,51 +123,6 @@ for mod in $GO_MODULES; do
   echo "==> vet: $mod"
   (cd "$mod" && go vet ./...)
 done
-'''
-
-[tasks.split-check]
-description = "Fail if a library package imports what its layer may not"
-run = '''
-{% raw %}
-set -e
-fail=0
-module='github.com/standards-lab/blobfs'
-sqlate='github.com/standards-lab/sqlate'
-storage='github.com/standards-lab/go-storage'
-
-# report <rule> <offenders>: print the rule's failure and the offenders, and mark the run failed.
-report() {
-  echo "split-check: $1:"; echo "$2"; fail=1
-}
-
-# deps <dir> <package> <extended-regex>: fail when a transitive non-test dependency of the
-# package, listed from the module at dir, matches the pattern. A package directory that does
-# not exist is skipped.
-deps() {
-  [ -d "$1/$2" ] || return 0
-  self=$(cd "$1" && go list "./$2" 2>/dev/null) || return 0
-  bad=$(cd "$1" && go list -deps "./$2" 2>/dev/null | grep -v -x "$self" | grep -E "$3" || true)
-  [ -z "$bad" ] || report "$2 depends on what its layer may not" "$bad"
-}
-
-# The root package is Go only: neither sqlate nor go-storage.
-deps . . "^($sqlate|$storage)"
-# The persistence package takes sqlate, never go-storage or an engine.
-deps . data "^($storage|$module/postgres)"
-# The conformance suite is engine-agnostic.
-deps . data/datatest "^($storage|$module/postgres)"
-# The engine takes the persistence package and sqlate only: never go-storage, never the
-# conformance suite, never a driver outside its tests.
-deps postgres . "^($storage|$module/data/datatest|github.com/jackc/)"
-
-# No non-test file outside the suite names the conformance suite or the test support.
-bad=$(grep -rl --include='*.go' -E "\"$module/(data/datatest|postgres/internal/dbtest)\"" . \
-  | grep -v '_test.go$' | sed 's#^\./##' | grep -v -E '^(data/datatest|postgres/internal/dbtest)/' || true)
-[ -z "$bad" ] || report "a non-test file names the conformance suite or the test support" "$bad"
-
-[ "$fail" -eq 0 ] && echo "split-check: ok"
-exit "$fail"
-{% endraw %}
 '''
 
 # Testing.

@@ -112,10 +112,12 @@ The repository is a Go workspace of three modules, `.`, `postgres`, and `example
 through [mise](https://mise.jdx.dev):
 
 ```sh
+mise run check         # build, vet, format, fix, tidy, test, and lint every module, then sqlint; writes nothing
+mise run currency      # report requirements, Go, tools, actions, and images behind their latest
+mise run upgrade       # upgrade every module's go directive and requirements, and the tools, to their latest
 mise run test          # the unit tier, every module, nothing installed
 mise run lint          # golangci-lint over every module, then sqlint over the repository
 mise run build         # each module built with the workspace off, against its own pins
-mise run split-check   # the import boundaries between the layers
 mise run up            # the compose stack: PostgreSQL and Azurite
 mise run integration   # the conformance suite and the engine's proofs against the stack
 mise run example       # the composition proof against the stack

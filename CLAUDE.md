@@ -26,8 +26,7 @@ updates the guide in the same effort.
   module of its own that composes the library with `go-storage` and is never imported.
 - **Dependency line.** The base module takes `sqlate` and `golang.org/x/text` and nothing else:
   no driver, no dialect module, no object store. An engine's driver and dialect enter only
-  through its sub-module; `go-storage` enters only through `example`. `mise run split-check`
-  enforces the import boundaries between the layers.
+  through its sub-module; `go-storage` enters only through `example`.
 - **Local development** uses the committed root `go.work`. In the steady state each `go.mod`
   pins released `require` versions. A `replace` directive is temporary: it points a sub-module
   at unreleased base changes, and the release removes it.
@@ -36,7 +35,7 @@ updates the guide in the same effort.
   against the compose stack and is not part of CI. `mise run acceptance` starts the stack, runs
   the integration tier and the example, and resets the stack.
 - **Releases, CI, tasks** follow the organization's engineering conventions, the Go Elemental
-  principles in the architecture repository: `v*` and `postgres/v*` tags, a per-module CI
-  matrix, mise tasks over the modules.
+  principles in the architecture repository: `v*` and `postgres/v*` tags, one CI job
+  running `mise run check`, mise tasks over the modules.
 - **Public repo.** Modules resolve through the public Go proxy; CI has no private-module
   configuration.
