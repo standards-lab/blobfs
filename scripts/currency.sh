@@ -29,6 +29,23 @@ matches() {
 	grep -ho "$pattern" "${files[@]}" || [ $? -eq 1 ]
 }
 
+# tool_modules prints the module of each package a tool directive in the
+# current directory's module declares, once each. Only go list's standard
+# output names modules: its standard error carries the warning when no tool
+# directive matches and the progress of any download, so it is shown only
+# when go list fails.
+tool_modules() {
+	local out err
+	err=$(mktemp)
+	if ! out=$(go list -f '{{.Module.Path}}' tool 2>"$err"); then
+		cat "$err" >&2
+		rm -f "$err"
+		return 1
+	fi
+	rm -f "$err"
+	[ -z "$out" ] || sort -u <<<"$out"
+}
+
 go_minor=$(mise latest go | cut -d. -f1,2)
 
 for mod in $GO_MODULES; do
@@ -38,6 +55,18 @@ for mod in $GO_MODULES; do
 	while read -r line; do
 		[ -n "$line" ] && report "$mod/go.mod: $line"
 	done <<<"$updates"
+
+	# Tool modules with a newer version within their major. A tool's module is
+	# an indirect requirement, which the scan above leaves out; one the module
+	# also requires directly is reported there, so it is skipped here.
+	tools=$(cd "$mod" && tool_modules)
+	if [ -n "$tools" ]; then
+		updates=$(cd "$mod" && go list -m -u -f \
+			'{{if and (not .Main) .Indirect .Update}}{{.Path}} {{.Version}} -> {{.Update.Version}}{{end}}' $tools)
+		while read -r line; do
+			[ -n "$line" ] && report "$mod/go.mod: $line"
+		done <<<"$updates"
+	fi
 
 	# The go directive's minor against the current Go minor.
 	directive=$(cd "$mod" && go mod edit -json | jq -r .Go | cut -d. -f1,2)
