@@ -30,16 +30,20 @@ matches() {
 }
 
 # tool_modules prints the module of each package a tool directive in the
-# current directory's module declares, once each. go list warns on stderr
-# when no tool directive matches; that one warning is no output, and any
-# other failure prints go list's output and fails.
+# current directory's module declares, once each. Only go list's standard
+# output names modules: its standard error carries the warning when no tool
+# directive matches and the progress of any download, so it is shown only
+# when go list fails.
 tool_modules() {
-	local out
-	out=$(go list -f '{{.Module.Path}}' tool 2>&1) || {
-		echo "$out" >&2
+	local out err
+	err=$(mktemp)
+	if ! out=$(go list -f '{{.Module.Path}}' tool 2>"$err"); then
+		cat "$err" >&2
+		rm -f "$err"
 		return 1
-	}
-	grep -v '^go: warning: "tool" matched no packages$' <<<"$out" | sort -u || [ $? -eq 1 ]
+	fi
+	rm -f "$err"
+	[ -z "$out" ] || sort -u <<<"$out"
 }
 
 go_minor=$(mise latest go | cut -d. -f1,2)
