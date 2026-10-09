@@ -118,12 +118,12 @@ mise run upgrade       # upgrade every module's go directive and requirements, a
 mise run test          # the unit tier, every module, nothing installed
 mise run lint          # golangci-lint over every module, then sqlint over the repository
 mise run build         # each module built with the workspace off, against its own pins
-mise run db:up         # the compose stack: PostgreSQL and Azurite, built and healthy
+mise run db:up         # build and start the compose PostgreSQL and Azurite and wait until both are healthy
 mise run db:down       # stop the stack, keeping its data
 mise run db:reset      # stop the stack and drop its data
 mise run integration   # the conformance suite and the engine's proofs against the stack
 mise run example       # the composition proof against the stack
-mise run acceptance    # db:up, integration, and example, then db:reset
+mise run acceptance    # run db:up, integration, and example, then db:reset whatever the result
 ```
 
 `compose.yml` runs PostgreSQL on port 5434 and Azurite's blob service on port 10000;
