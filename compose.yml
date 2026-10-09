@@ -1,3 +1,10 @@
+# blobfs's development stack: PostgreSQL for the metadata and Azurite for the
+# bytes, which the integration tier and the example run against. Each service
+# builds from compose/<service>/Dockerfile, which pins its image and carries
+# its configuration and health check. The named volumes keep the data across
+# `mise run db:down`; `mise run db:reset` drops them.
+name: blobfs
+
 include:
   - compose/postgres.yml
   - compose/azurite.yml

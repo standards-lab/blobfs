@@ -48,10 +48,10 @@ github.com/standards-lab/blobfs v0.5.0 h1:Y/L4Hw2vcSm9D2RcAIwfSXpn5ExJ88luf/+1ld
 github.com/standards-lab/blobfs v0.5.0/go.mod h1:mfBLVW+KU+GjkK1pCqK51BVSDOT60ca4/bkf20YgXYs=
 github.com/standards-lab/blobfs/postgres v0.3.0 h1:/7tcIWCX0h2GgV1KAPlP7G66VfiDWY889FQTIOg+xIs=
 github.com/standards-lab/blobfs/postgres v0.3.0/go.mod h1:2b3nImM6iD07FjuXwEtlVLyXlPuyWwz0mmZfrx2IdXg=
-github.com/standards-lab/go-core v0.5.0 h1:ZWe5o92DIICVH43B5TNXTfyG5H/O6Vs9CsBUUTS8whI=
-github.com/standards-lab/go-core v0.5.0/go.mod h1:Yl/R+gM9YWczsePBCKXdPGh3FSdZ/5i8SapLIh3BDHU=
-github.com/standards-lab/go-storage v0.4.0 h1:UTomVwoy+5staEbH4JLoTzEIMPQAH+nwoGInTWos3qs=
-github.com/standards-lab/go-storage v0.4.0/go.mod h1:o/rxyaNp6BP/NKaW8i9srd/vp1T1UHfpeb2FFghoRqM=
+github.com/standards-lab/go-core v0.6.0 h1:Ywf+gyndx4+PV2DtzmAxsgnMJWIRS+RpQJhuvdUVq60=
+github.com/standards-lab/go-core v0.6.0/go.mod h1:Yl/R+gM9YWczsePBCKXdPGh3FSdZ/5i8SapLIh3BDHU=
+github.com/standards-lab/go-storage v0.5.0 h1:TNAWESyM9ZSDaDJwSzsU/dzvUDvFJjA4zkVvMtsiNJg=
+github.com/standards-lab/go-storage v0.5.0/go.mod h1:xJKCpbsOo/8pZzbmoxB3YCiJr1kskt7jkXmfS8JeGe8=
 github.com/standards-lab/go-storage/azureblob v0.4.0 h1:sY9c0AqiRNXnBPpWWR0grcJjjXi0lWd6KchO6/wNfR8=
 github.com/standards-lab/go-storage/azureblob v0.4.0/go.mod h1:bN6I5S7gUOdvkGhR4jIuzLwOVXLOlhh8YBBf/c6vZoE=
 github.com/standards-lab/sqlate v0.4.1 h1:IvptIl7JXdtDPzNEv3imAIf2evJIfe4nxhEP6CI+wRU=

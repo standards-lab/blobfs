@@ -14,10 +14,10 @@ express.
 
 ## Capability map
 
-The repository holds the v0.5.0 release, which `docs/` describes. The code comprises the root
-package, the persistence package `data` with its conformance suite `data/datatest`, the
-`postgres` engine sub-module (its variant, native statements, migration set, and integration
-tier), and the `example` module, which composes the library with `go-storage`.
+The code, which `docs/` describes, comprises the root package, the persistence package `data`
+with its conformance suite `data/datatest`, the `postgres` engine sub-module (its variant, native
+statements, migration set, and integration tier), and the `example` module, which composes the
+library with `go-storage`.
 
 ## Notes
 

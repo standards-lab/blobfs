@@ -7,13 +7,21 @@ changelog covers this sub-module only; the base module keeps its own.
 
 ## [Unreleased]
 
+## [v0.4.0] - 2026-10-09
+
 ### Changed
 
-- The module requires `blobfs` v0.5.0, whose conformance it runs. The plan test covers the
-  `create_file` and `create_directory` statements and reads the branch roots through
-  `Directories.BranchRoots`, blobfs v0.5.0's name for `Directories.Deleting`. The package
-  documentation names every exported identifier. The engine's behavior is unchanged, and v0.3.0
-  works with blobfs v0.5.0 as released.
+- **Breaking:** The `blobfs` requirement is v0.6.0, whose conformance suite it runs, and the
+  `sqlate/postgres` and `sqlate` requirements are v0.5.0, so every `File` and `Directory` read
+  through the engine carries its times in `time.UTC`, whatever `time.Local` is. v0.3.0 required
+  blobfs v0.3.0, so the requirements pull the breaking changes of blobfs v0.4.0, v0.5.0, and
+  v0.6.0 into an importer's build. The `sqlate/sqlint` tool requirement is v0.3.0.
+- Under `sqlate/postgres` v0.5.0, a consumer's next locked migration run alters the set's
+  history table, `Table`, in place: `applied_at` becomes `timestamp with time zone`, as it does in
+  the consumer's own history table. The engine's migrations and statements are unchanged.
+- The plan test covers the `create_file` and `create_directory` statements and reads the branch
+  roots through `Directories.BranchRoots`, blobfs v0.5.0's name for `Directories.Deleting`. The
+  package documentation names every exported identifier.
 
 ## [v0.3.0] - 2026-09-29
 
@@ -94,7 +102,8 @@ The first release of the PostgreSQL engine.
 
 Requires `github.com/standards-lab/blobfs v0.1.0` and `github.com/standards-lab/sqlate v0.4.0`.
 
-[Unreleased]: https://github.com/standards-lab/blobfs/compare/postgres/v0.3.0...HEAD
+[Unreleased]: https://github.com/standards-lab/blobfs/compare/postgres/v0.4.0...HEAD
+[v0.4.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.4.0
 [v0.3.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.3.0
 [v0.2.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.2.0
 [v0.1.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.1.0

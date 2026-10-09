@@ -1,5 +1,5 @@
 [tools]
-go = "1.27.1"
+go = "1.27.2"
 golangci-lint = "2.14.0"
 jq = "1.8.2"
 "aqua:google/go-containerregistry" = "0.22.1"
@@ -10,10 +10,11 @@ jq = "1.8.2"
 # directory without a go.mod; check, currency, and upgrade require one.
 [env]
 GO_MODULES = ". postgres example"
-# The compose stack's defaults. The Azurite account and key are the
+# The compose stack's defaults, whose ports follow POSTGRES_PORT and
+# AZURITE_BLOB_PORT as compose.yml's do. The Azurite account and key are the
 # emulator's published development credentials, not secrets.
-BLOBFS_DSN = "postgres://app:app@127.0.0.1:5434/app?sslmode=disable"
-BLOBFS_STORAGE_ENDPOINT = "http://127.0.0.1:10000/devstoreaccount1"
+BLOBFS_DSN = "postgres://app:app@127.0.0.1:{{ get_env(name='POSTGRES_PORT', default='5434') }}/app?sslmode=disable"
+BLOBFS_STORAGE_ENDPOINT = "http://127.0.0.1:{{ get_env(name='AZURITE_BLOB_PORT', default='10000') }}/devstoreaccount1"
 BLOBFS_STORAGE_ACCOUNT = "devstoreaccount1"
 BLOBFS_STORAGE_KEY = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
 BLOBFS_STORAGE_CONTAINER = "blobfs"
@@ -146,24 +147,25 @@ description = "Run the composition proof against the compose PostgreSQL and Azur
 run = "cd example && go run ."
 
 [tasks.acceptance]
-description = "The one-shot proof: up, integration, example, then reset regardless of the result"
+description = "The one-shot proof: db:up, integration, example, then db:reset regardless of the result, printing the stack's log on failure"
 run = '''
 set -e
-trap 'mise run reset' EXIT
-mise run up
+trap 'rc=$?; [ $rc -eq 0 ] || docker compose logs; mise run db:reset; exit $rc' EXIT
+mise run db:up
 mise run integration
 mise run example
 '''
 
-# Services.
-[tasks.up]
-description = "Start the compose PostgreSQL and Azurite and wait until they are healthy"
-run = "docker compose up -d --wait"
+# The development stack: compose.yml's PostgreSQL and Azurite, whose data
+# lives in named volumes that db:down keeps and db:reset drops.
+[tasks."db:up"]
+description = "Build and start the compose PostgreSQL and Azurite and wait until they are healthy"
+run = "docker compose up -d --wait --build"
 
-[tasks.down]
+[tasks."db:down"]
 description = "Stop the compose stack, keeping its volumes"
 run = "docker compose down"
 
-[tasks.reset]
+[tasks."db:reset"]
 description = "Stop the compose stack and drop its volumes"
 run = "docker compose down -v"
