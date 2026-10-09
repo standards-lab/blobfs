@@ -7,6 +7,17 @@ the `postgres` sub-module keeps its own.
 
 ## [Unreleased]
 
+## [v0.6.0] - 2026-10-09
+
+### Changed
+
+- **Breaking:** The module requires `sqlate` v0.5.0, whose `query.Scanner` returns every
+  `time.Time` in `time.UTC`. Every `File` and `Directory` the store returns, from a read, a
+  listing, a create, or a protocol, carries `CreatedAt` and `UpdatedAt` in UTC, whatever zone the
+  process runs in. Under v0.5.0 they kept the location the driver gave them, which with pgx is
+  `time.Local`. The instant is unchanged. A listing's cursor carries a keyed time as UTC text, and
+  a cursor issued before this release still reads back as the same instant.
+
 ## [v0.5.0] - 2026-09-30
 
 ### Added
@@ -228,7 +239,8 @@ library never calls.
 - `data/datatest`, the conformance suite: `Run` checks a store over any engine against the
   baseline on a live database, the hold's refusals and interleavings with a delete included.
 
-[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.6.0...HEAD
+[v0.6.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.6.0
 [v0.5.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.5.0
 [v0.4.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.4.0
 [v0.3.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.3.0
