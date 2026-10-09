@@ -118,14 +118,19 @@ mise run upgrade       # upgrade every module's go directive and requirements, a
 mise run test          # the unit tier, every module, nothing installed
 mise run lint          # golangci-lint over every module, then sqlint over the repository
 mise run build         # each module built with the workspace off, against its own pins
-mise run up            # the compose stack: PostgreSQL and Azurite
+mise run up            # the compose stack: PostgreSQL and Azurite, built and healthy
+mise run down          # stop the stack, keeping its data
+mise run reset         # stop the stack and drop its data
 mise run integration   # the conformance suite and the engine's proofs against the stack
 mise run example       # the composition proof against the stack
 mise run acceptance    # up, integration, and example, then the stack reset
 ```
 
-`compose.yml` runs PostgreSQL 18 on port 5434 and Azurite's blob service on port 10000, and
-`mise.toml` sets the connection settings the integration tier and the example read. The
+`compose.yml` runs PostgreSQL on port 5434 and Azurite's blob service on port 10000. Each
+service builds from `compose/<service>/Dockerfile`, whose `FROM` line is the service's one image
+pin and which carries its configuration and health check; `mise run currency` reports a pin
+behind its latest. `mise.toml` sets the connection settings the integration tier and the example
+read. The
 integration tier is not part of CI.
 
 ## License

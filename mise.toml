@@ -146,19 +146,21 @@ description = "Run the composition proof against the compose PostgreSQL and Azur
 run = "cd example && go run ."
 
 [tasks.acceptance]
-description = "The one-shot proof: up, integration, example, then reset regardless of the result"
+description = "The one-shot proof: up, integration, example, then reset regardless of the result, printing the stack's log on failure"
 run = '''
 set -e
-trap 'mise run reset' EXIT
+trap 'rc=$?; [ $rc -eq 0 ] || docker compose logs; mise run reset; exit $rc' EXIT
 mise run up
 mise run integration
 mise run example
 '''
 
-# Services.
+# Services: compose.yml's development stack, each service built from
+# compose/<service>/Dockerfile, which pins its image and carries its health
+# check. The named volumes keep the data across down; reset drops them.
 [tasks.up]
-description = "Start the compose PostgreSQL and Azurite and wait until they are healthy"
-run = "docker compose up -d --wait"
+description = "Build and start the compose PostgreSQL and Azurite and wait until they are healthy"
+run = "docker compose up -d --wait --build"
 
 [tasks.down]
 description = "Stop the compose stack, keeping its volumes"

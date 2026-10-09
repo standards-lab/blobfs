@@ -60,8 +60,8 @@ APP_STORAGE_KEY = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6t
 APP_STORAGE_CONTAINER = "documents"
 
 [tasks.up]
-description = "Start PostgreSQL and Azurite and wait until they are healthy"
-run = "docker compose up -d --wait"
+description = "Build and start PostgreSQL and Azurite and wait until they are healthy"
+run = "docker compose up -d --wait --build"
 
 [tasks.down]
 description = "Stop the stack and drop its volumes"
@@ -90,33 +90,50 @@ mise trust && mise install
 
 ## 2. Start PostgreSQL and Azurite
 
+Each service builds from a Dockerfile of its own, whose `FROM` line is the service's one image
+pin and which carries its configuration and its health check, so `compose.yml` adds only the
+build context and the port.
+
 `compose.yml`:
 
 ```yaml
 services:
   postgres:
-    image: postgres:18-alpine
-    environment:
-      POSTGRES_USER: app
-      POSTGRES_PASSWORD: app
-      POSTGRES_DB: app
+    build:
+      context: compose/postgres
     ports:
       - "127.0.0.1:5433:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U app -d app"]
-      interval: 2s
-      timeout: 3s
-      retries: 15
   azurite:
-    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
-    command: azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
+    build:
+      context: compose/azurite
     ports:
       - "127.0.0.1:10000:10000"
-    healthcheck:
-      test: ["CMD-SHELL", "nc -z 127.0.0.1 10000"]
-      interval: 2s
-      timeout: 3s
-      retries: 15
+```
+
+`compose/postgres/Dockerfile`:
+
+```dockerfile
+FROM postgres:18-alpine
+
+ENV POSTGRES_USER=app \
+    POSTGRES_PASSWORD=app \
+    POSTGRES_DB=app
+
+HEALTHCHECK --start-period=30s --start-interval=1s --interval=5s --timeout=3s --retries=5 \
+    CMD ["pg_isready", "-U", "app", "-d", "app"]
+```
+
+`compose/azurite/Dockerfile`:
+
+```dockerfile
+FROM mcr.microsoft.com/azure-storage/azurite:3.37.0
+
+# The image's busybox nc shows the blob listener accepts connections.
+HEALTHCHECK --start-period=30s --start-interval=1s --interval=5s --timeout=3s --retries=5 \
+    CMD ["nc", "-z", "127.0.0.1", "10000"]
+
+# The Azure SDK sends an x-ms-version that Azurite rejects unless the version check is off.
+CMD ["azurite-blob", "--blobHost", "0.0.0.0", "--skipApiVersionCheck"]
 ```
 
 ```sh
@@ -856,6 +873,11 @@ The finished tree:
 
 ```
 docstore/
+├── compose/
+│   ├── azurite/
+│   │   └── Dockerfile
+│   └── postgres/
+│       └── Dockerfile
 ├── compose.yml
 ├── conformance_test.go
 ├── database.go
