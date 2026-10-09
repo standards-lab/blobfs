@@ -9,5 +9,6 @@ The judgement calls the standards-reviewer applies to blobfs, beyond what `mise 
 - `architecture/standards/go-elemental/principles/release-and-ci.md`: the check, currency, the root `go.work`, and a changelog per module.
 - `architecture/standards/go-elemental/principles/dsl-driven-services.md`: every authored `.sql` file, in `data/statements`, `data/patterns`, `postgres/statements` and `postgres/migrations`.
 - `architecture/standards/go-elemental/principles/baseline-standards.md`: `data`'s listings take their page from the caller, and the sweep's stale age has no default.
+- `architecture/standards/go-elemental/principles/utc-times.md`: `File`'s and `Directory`'s `CreatedAt` and `UpdatedAt`, read through sqlate's `query.Scanner`.
 - `architecture/principles/service-tiers.md`: `data`'s standard-tier statements, and the `Variant` an engine sub-module's `Engine` supplies its native forms through.
 - `architecture/principles/context-architecture.md`: the guide and each `doc.go` are the homes.
