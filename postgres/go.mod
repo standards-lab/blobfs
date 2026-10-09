@@ -4,9 +4,9 @@ go 1.27
 
 require (
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/standards-lab/blobfs v0.5.0
-	github.com/standards-lab/sqlate v0.4.1
-	github.com/standards-lab/sqlate/postgres v0.4.0
+	github.com/standards-lab/blobfs v0.6.0
+	github.com/standards-lab/sqlate v0.5.0
+	github.com/standards-lab/sqlate/postgres v0.5.0
 )
 
 require (
@@ -14,9 +14,9 @@ require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
-	github.com/standards-lab/sqlate/sqlint v0.2.1 // indirect
-	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	github.com/standards-lab/sqlate/sqlint v0.3.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 )
 
 tool github.com/standards-lab/sqlate/sqlint/cmd/sqlint
