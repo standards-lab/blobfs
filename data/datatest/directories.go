@@ -23,6 +23,45 @@ func (s *suite) directories(t *testing.T) {
 	t.Run("EnsureConcurrentUnderOneID", s.ensureDirectoryConcurrentUnderOneID)
 	t.Run("FindByName", s.findDirectoryByName)
 	t.Run("Delete", s.deleteDirectory)
+	t.Run("ReadsInUTC", s.directoryReadsInUTC)
+}
+
+// directoryReadsInUTC checks every read of a directory returns its
+// timestamps in time.UTC, whatever the session's zone and time.Local: the
+// created row, Find, FindByName, FindByPath, Ensure of an existing row,
+// and a listing.
+func (s *suite) directoryReadsInUTC(t *testing.T) {
+	parent := s.mkdir(t, "utc-"+t.Name())
+	created := s.mkdirUnder(t, parent.ID, "child")
+	wantUTC(t, "Create", created.CreatedAt, created.UpdatedAt)
+	found := s.directory(t, created.ID)
+	wantUTC(t, "Find", found.CreatedAt, found.UpdatedAt)
+	if !equalDirectory(found, created) {
+		t.Errorf("Find returned\n%+v\nbut Create returned\n%+v", found, created)
+	}
+	byName, err := s.store.Directories.FindByName(s.ctx, s.db, parent.ID, "child")
+	if err != nil {
+		t.Fatalf("FindByName: %v", err)
+	}
+	wantUTC(t, "FindByName", byName.CreatedAt, byName.UpdatedAt)
+	byPath, err := s.store.Directories.FindByPath(s.ctx, s.db, parent.ID, "child")
+	if err != nil {
+		t.Fatalf("FindByPath: %v", err)
+	}
+	wantUTC(t, "FindByPath", byPath.CreatedAt, byPath.UpdatedAt)
+	ensured, _, err := s.store.Directories.Ensure(s.ctx, s.db, parent.ID, "child")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	wantUTC(t, "Ensure", ensured.CreatedAt, ensured.UpdatedAt)
+	c, err := s.store.Directories.List(s.ctx, s.db, parent.ID, listAll(), firstPage(10))
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(c.Items) != 1 {
+		t.Fatalf("List returned %d directories, want the one child", len(c.Items))
+	}
+	wantUTC(t, "List", c.Items[0].CreatedAt, c.Items[0].UpdatedAt)
 }
 
 // root checks the seeded root as the store reads it: the row with

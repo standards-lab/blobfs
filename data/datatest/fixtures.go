@@ -272,6 +272,15 @@ func equalFile(a, b blobfs.File) bool {
 		a.Version == b.Version && a.CreatedAt.Equal(b.CreatedAt) && a.UpdatedAt.Equal(b.UpdatedAt)
 }
 
+// wantUTC checks a row's timestamps are in time.UTC, as blobfs returns
+// every File and Directory whatever time.Local is; what names the read.
+func wantUTC(t *testing.T, what string, createdAt, updatedAt time.Time) {
+	t.Helper()
+	if createdAt.Location() != time.UTC || updatedAt.Location() != time.UTC {
+		t.Errorf("%s returned CreatedAt in %v and UpdatedAt in %v, want both in UTC", what, createdAt.Location(), updatedAt.Location())
+	}
+}
+
 // sameFileShape compares two file rows on every column that does not
 // identify the row or carry a clock.
 func sameFileShape(a, b blobfs.File) bool {

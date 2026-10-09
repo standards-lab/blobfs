@@ -14,6 +14,40 @@ func (s *suite) files(t *testing.T) {
 	t.Run("Find", s.findFile)
 	t.Run("Move", s.moveFile)
 	t.Run("MoveRefusals", s.moveFileRefusals)
+	t.Run("ReadsInUTC", s.fileReadsInUTC)
+}
+
+// fileReadsInUTC checks every read of a file returns its timestamps in
+// time.UTC, whatever the session's zone and time.Local: a row the
+// database stamped, read by Find, FindByName, and a listing, and the row
+// a move returns.
+func (s *suite) fileReadsInUTC(t *testing.T) {
+	dir := s.mkdir(t, "utc-"+t.Name())
+	dst := s.mkdir(t, "utc-dst-"+t.Name())
+	id := s.insertFile(t, dir.ID, "a.txt", blobfs.StatusAvailable)
+	found := s.file(t, id)
+	wantUTC(t, "Find", found.CreatedAt, found.UpdatedAt)
+	byName, err := s.store.Files.FindByName(s.ctx, s.db, dir.ID, "a.txt")
+	if err != nil {
+		t.Fatalf("FindByName: %v", err)
+	}
+	wantUTC(t, "FindByName", byName.CreatedAt, byName.UpdatedAt)
+	c, err := s.store.Files.List(s.ctx, s.db, dir.ID, listAll(), firstPage(10))
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(c.Items) != 1 {
+		t.Fatalf("List returned %d files, want the one row", len(c.Items))
+	}
+	wantUTC(t, "List", c.Items[0].CreatedAt, c.Items[0].UpdatedAt)
+	moved, err := s.store.Files.Move(s.ctx, s.db, id, dst.ID, "a.txt", found.Version)
+	if err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	wantUTC(t, "Move", moved.CreatedAt, moved.UpdatedAt)
+	if !moved.CreatedAt.Equal(found.CreatedAt) {
+		t.Errorf("Move returned CreatedAt %v, want the row's %v unchanged", moved.CreatedAt, found.CreatedAt)
+	}
 }
 
 // findFile checks Find and FindByName: a row read whatever its status, a
