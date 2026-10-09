@@ -10,8 +10,8 @@ const RootID = "00000000-0000-0000-0000-000000000000"
 
 // Directory is one node of the tree, a row of blobfs_directory. The root
 // alone has a nil ParentID and the Name "/". Version is the concurrency
-// token the guarded commands check. The json tags are the scan and binding
-// contract.
+// token the guarded commands check. CreatedAt and UpdatedAt are in time.UTC,
+// whatever time.Local is. The json tags are the scan and binding contract.
 type Directory struct {
 	ID        string          `json:"id"`
 	ParentID  *string         `json:"parent_id"`

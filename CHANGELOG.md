@@ -11,10 +11,10 @@ the `postgres` sub-module keeps its own.
 
 ### Changed
 
-- **Breaking:** The module requires `sqlate` v0.5.0, whose `query.Scanner` returns every
+- **Breaking:** The `sqlate` requirement is v0.5.0, whose `query.Scanner` returns every
   `time.Time` in `time.UTC`. Every `File` and `Directory` the store returns, from a read, a
-  listing, a create, or a protocol, carries `CreatedAt` and `UpdatedAt` in UTC, whatever zone the
-  process runs in. Under v0.5.0 they kept the location the driver gave them, which with pgx is
+  listing, a create, or a protocol, carries `CreatedAt` and `UpdatedAt` in `time.UTC`, whatever
+  `time.Local` is. Under v0.5.0 they kept the location the driver gave them, which with pgx is
   `time.Local`. The instant is unchanged. A listing's cursor carries a keyed time as UTC text, and
   a cursor issued before this release still reads back as the same instant.
 

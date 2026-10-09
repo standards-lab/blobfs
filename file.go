@@ -5,8 +5,9 @@ import "time"
 // File is one file's metadata, a row of blobfs_file. Key is the object's
 // key, built once by NewKey and never parsed back. Size and ETag are nil
 // until the row is available, and ContentType is the declared type until
-// the completion records the store's. The json tags are the scan and
-// binding contract.
+// the completion records the store's. CreatedAt and UpdatedAt are in
+// time.UTC, whatever time.Local is. The json tags are the scan and binding
+// contract.
 type File struct {
 	ID          string    `json:"id"`
 	DirectoryID string    `json:"directory_id"`

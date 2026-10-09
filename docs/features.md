@@ -21,6 +21,8 @@ insert and rename, builds each key with `NewKey`, and checks status changes with
   (`*int64`), `ContentType`, `ETag` (`*string`), `Version`, `CreatedAt`, and `UpdatedAt`. `Size`
   and `ETag` are nil until the write completes; `ContentType` is the type declared at upload
   until `Complete` replaces it with the one the store reported.
+- Both entities carry `CreatedAt` and `UpdatedAt` in `time.UTC`, whatever `time.Local` is, as
+  sqlate's `query.Scanner` returns every time.
 - `Object` is what the store reported about a stored object, `Size`, `ContentType`, and `ETag`,
   which the consumer builds from its store's answer to the put and hands to `Complete`.
 
