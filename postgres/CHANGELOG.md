@@ -11,7 +11,7 @@ changelog covers this sub-module only; the base module keeps its own.
 
 ### Changed
 
-- **Breaking:** The `blobfs` requirement is v0.6.0, whose conformance it runs, and the
+- **Breaking:** The `blobfs` requirement is v0.6.0, whose conformance suite it runs, and the
   `sqlate/postgres` and `sqlate` requirements are v0.5.0, so every `File` and `Directory` read
   through the engine carries its times in `time.UTC`, whatever `time.Local` is. v0.3.0 required
   blobfs v0.3.0, so the requirements pull the breaking changes of blobfs v0.4.0, v0.5.0, and
