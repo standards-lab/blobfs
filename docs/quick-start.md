@@ -59,11 +59,11 @@ APP_STORAGE_ACCOUNT = "devstoreaccount1"
 APP_STORAGE_KEY = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
 APP_STORAGE_CONTAINER = "documents"
 
-[tasks.up]
-description = "Build and start PostgreSQL and Azurite and wait until they are healthy"
+[tasks."db:up"]
+description = "Start PostgreSQL and Azurite and wait until they are healthy"
 run = "docker compose up -d --wait --build"
 
-[tasks.down]
+[tasks."db:reset"]
 description = "Stop the stack and drop its volumes"
 run = "docker compose down -v"
 
@@ -97,6 +97,8 @@ build context and the port.
 `compose.yml`:
 
 ```yaml
+name: docstore
+
 services:
   postgres:
     build:
@@ -113,14 +115,14 @@ services:
 `compose/postgres/Dockerfile`:
 
 ```dockerfile
-FROM postgres:18-alpine
+FROM postgres:18.6-alpine
 
 ENV POSTGRES_USER=app \
     POSTGRES_PASSWORD=app \
     POSTGRES_DB=app
 
 HEALTHCHECK --start-period=30s --start-interval=1s --interval=5s --timeout=3s --retries=5 \
-    CMD ["pg_isready", "-U", "app", "-d", "app"]
+    CMD ["pg_isready", "-h", "127.0.0.1", "-U", "app", "-d", "app"]
 ```
 
 `compose/azurite/Dockerfile`:
@@ -137,7 +139,7 @@ CMD ["azurite-blob", "--blobHost", "0.0.0.0", "--skipApiVersionCheck"]
 ```
 
 ```sh
-mise run up
+mise run db:up
 ```
 
 ## 3. Write the program's migration
@@ -866,7 +868,7 @@ ok  	example.com/docstore
 ## 11. Clean up
 
 ```sh
-mise run down
+mise run db:reset
 ```
 
 The finished tree:

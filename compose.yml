@@ -2,7 +2,7 @@
 # bytes, which the integration tier and the example run against. Each service
 # builds from compose/<service>/Dockerfile, which pins its image and carries
 # its configuration and health check. The named volumes keep the data across
-# `mise run down`; `mise run reset` drops them.
+# `mise run db:down`; `mise run db:reset` drops them.
 name: blobfs
 
 include:

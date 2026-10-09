@@ -11,7 +11,7 @@
 // documents; mise.toml sets both for the compose stack, so from the
 // repository root:
 //
-//	mise run up
+//	mise run db:up
 //	mise run example
 package main
 
