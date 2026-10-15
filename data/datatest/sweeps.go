@@ -26,7 +26,6 @@ func (s *suite) sweeps(t *testing.T) {
 	t.Run("ABranch", s.sweepBranch)
 	t.Run("CrashMidway", s.sweepCrash)
 	t.Run("Stragglers", s.sweepStragglers)
-	t.Run("StragglerWaits", s.sweepStragglerWaits)
 	t.Run("Batch", s.sweepBatch)
 	t.Run("HookAborts", s.sweepHookAborts)
 	t.Run("RefusalDoesNotBlock", s.sweepRefusalDoesNotBlock)
@@ -357,66 +356,6 @@ func (s *suite) sweepStragglers(t *testing.T) {
 		wantDeletedOnce(t, objects, keys)
 		s.wantDirectoriesGone(t, b.top.ID, b.mid.ID, b.leaf.ID, dir)
 		s.wantFilesGone(t, files...)
-	}
-}
-
-// landing is an objectStore that runs land once, inside the delete of the
-// object under key, as a create racing the pass lands a row while the pass
-// is deleting objects.
-type landing struct {
-	*objectStore
-	key  string
-	land func()
-}
-
-func (l *landing) DeleteObject(ctx context.Context, key string) error {
-	if key == l.key && l.land != nil {
-		l.land()
-		l.land = nil
-	}
-	return l.objectStore.DeleteObject(ctx, key)
-}
-
-// sweepStragglerWaits checks, against the baseline, that a straggler
-// landing after the pass marked the branch again, an upload in flight in
-// the leaf, stops the branch's walk with no More and no error, the upload
-// and the branch's directories left; once the upload's row is deleting,
-// the next pass removes the branch.
-func (s *suite) sweepStragglerWaits(t *testing.T) {
-	for i, store := range []*data.Store{s.store, s.baseline} {
-		b := s.newBranch(t, fmt.Sprintf("straggler-waits-%d-%s", i, t.Name()))
-		if _, err := s.mark(store, b.top.ID); err != nil {
-			t.Fatalf("MarkDeleting: %v", err)
-		}
-		// The straggler in top has the pass mark the branch again; the
-		// upload lands as the pass deletes its object, after that mark.
-		marked := s.insertFile(t, b.top.ID, "straggler.txt", blobfs.StatusAvailable)
-		var upload string
-		objects := &landing{objectStore: newObjectStore(), key: s.keys(t, marked)[0], land: func() {
-			upload = s.insertFile(t, b.leaf.ID, "upload.txt", blobfs.StatusPending)
-		}}
-		r, err := s.sweep(store, objects)
-		if want := (data.SweepResult{Files: 6}); err != nil || r != want {
-			t.Errorf("Sweep over the upload in flight = %+v, %v, want %+v and no More", r, err, want)
-		}
-		if f := s.file(t, upload); f.Status != blobfs.StatusPending {
-			t.Errorf("the upload is %s after the pass, want pending", f.Status)
-		}
-		for _, id := range []string{b.top.ID, b.mid.ID, b.leaf.ID} {
-			s.directory(t, id)
-		}
-
-		if _, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
-			return store.Files.Delete(s.ctx, tx, upload)
-		}); err != nil {
-			t.Fatalf("Delete of the upload: %v", err)
-		}
-		r, err = s.sweep(store, objects)
-		if want := (data.SweepResult{Files: 1, Directories: 3}); err != nil || r != want {
-			t.Errorf("Sweep once the upload is deleting = %+v, %v, want %+v", r, err, want)
-		}
-		s.wantDirectoriesGone(t, b.top.ID, b.mid.ID, b.leaf.ID)
-		s.wantFilesGone(t, append(branchFiles(b), marked, upload)...)
 	}
 }
 

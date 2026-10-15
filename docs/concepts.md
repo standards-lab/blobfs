@@ -306,9 +306,7 @@ rows already deleting. The sweep walks each branch without marking it, and marks
 when the walk meets a straggler, an active row or a directory refused as not empty, since a
 mark walks the whole branch and on the PostgreSQL engine holds the tree lock while it does. It
 marks a branch again at most once a pass; a straggler that lands after that mark stops the
-branch's walk without `More`, since a further pass could make no progress while the row stays
-mutable, an upload in flight among them. The branch waits for a later pass, the consumer's next
-interval or a nudge, which marks it and goes on.
+branch's walk, and the pass reports `More`; the next pass marks it and goes on.
 
 `Files.Ensure` and `Directories.Ensure` return an active row they find by name, even one that
 landed in a deleting directory as a straggler, without reading the directory: the read would
@@ -323,9 +321,8 @@ directory under an active parent, and the listings with `data.IncludeDeleting` r
 each branch. Every step it takes is idempotent, so a pass stopped at any point, by an error or a
 crash, is finished by the next, and a row another pass removed first counts as done. A pass is
 bounded by `data.Batch`, a count of records and not of bytes, since a pass never reads an
-object's size, and reports `More` when its bound left work it did not reach, work a further
-pass can make progress on; a consumer runs passes while `More` is true, and again on a schedule
-of its own. A refusal leaves the row it
+object's size, and reports `More` when work remains that it did not reach; a consumer runs
+passes while `More` is true, and again on a schedule of its own. A refusal leaves the row it
 meets, and the directories above it, which cannot be removed while it remains, for a later pass,
 and the pass goes on past it: to the row's siblings, to the next branch, and to the next stale
 row, each read past the ones the pass left, so a row refused on every pass holds back nothing

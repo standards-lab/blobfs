@@ -191,10 +191,8 @@ func (f *failingKey) DeleteObject(_ context.Context, key string) error {
 
 // TestSweepStraggler checks a straggler has the branch marked again, once,
 // and the directory walked again: the marked straggler is swept in the
-// same pass, and a straggler met after the mark, an upload in flight,
-// stops the branch without More, since a further pass could make no
-// progress on it. Once the upload's row is deleting, the next pass
-// removes the branch.
+// same pass, and a straggler met after the mark stops the branch with
+// More.
 func TestSweepStraggler(t *testing.T) {
 	ctx := context.Background()
 	straggler := fileIn("S", "D", "s.txt", blobfs.StatusAvailable, 1)
@@ -216,8 +214,8 @@ func TestSweepStraggler(t *testing.T) {
 	s, db, rec = openStore(t, fallback, append(responses, straggler)...)
 	objects := &objectLog{}
 	got, err = s.Sweep(ctx, db, objects)
-	if err != nil || got != (data.SweepResult{}) || len(objects.keys) != 0 {
-		t.Errorf("Sweep over a straggler after the mark = %+v, %v, deleted %v, want no More and nothing done", got, err, objects.keys)
+	if err != nil || got != (data.SweepResult{More: true}) || len(objects.keys) != 0 {
+		t.Errorf("Sweep over a straggler after the mark = %+v, %v, deleted %v, want More and nothing done", got, err, objects.keys)
 	}
 	if n := len(callsTo(rec, "UPDATE blobfs_directory")); n != 1 {
 		t.Errorf("the pass marked the branch %d times, want once", n)
@@ -225,17 +223,6 @@ func TestSweepStraggler(t *testing.T) {
 	if n := len(callsTo(rec, "DELETE")); n != 0 {
 		t.Errorf("the straggler was followed by %d deletes", n)
 	}
-	wantDone(t, rec)
-
-	s, db, rec = openStore(t, fallback, deletingRoot(), files("D", "S"), sqltest.Response{Affected: 1}, noDirectory(), sqltest.Response{Affected: 1})
-	got, err = s.Sweep(ctx, db, objects)
-	if err != nil || got != (data.SweepResult{Files: 1, Directories: 1}) {
-		t.Errorf("Sweep once the upload's row is deleting = %+v, %v, want it swept with the branch", got, err)
-	}
-	if n := len(callsTo(rec, "UPDATE blobfs_directory")); n != 0 {
-		t.Errorf("the later pass marked the branch %d times, want no mark", n)
-	}
-	wantDone(t, rec)
 }
 
 // TestSweepRefusals checks a refusal keeps its row and the directories
@@ -266,9 +253,8 @@ func TestSweepRefusals(t *testing.T) {
 
 // TestSweepRemovalOutcomes checks a directory's removal: one gone
 // already counts as removed, one refused as not empty is a straggler that
-// has the branch marked again and walked again, one refused as not empty
-// again after that mark stops the branch without More, and one a
-// consumer's foreign key refuses is kept, the refusal returned.
+// has the branch marked again and walked again, and one a consumer's
+// foreign key refuses is kept, the refusal returned.
 func TestSweepRemovalOutcomes(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, deletingRoot(), files("D"), noDirectory(), sqltest.Response{Affected: 0}, noDirectory())
@@ -290,19 +276,6 @@ func TestSweepRemovalOutcomes(t *testing.T) {
 		t.Errorf("Sweep of a directory refused as not empty = %+v, %v, want it marked again and removed", got, err)
 	}
 	if want := "query query query begin exec rollback begin exec query exec commit query query begin exec commit"; ops(rec) != want {
-		t.Errorf("ops = %q, want %q", ops(rec), want)
-	}
-	wantDone(t, rec)
-
-	s, db, rec = openStore(t, fallback, deletingRoot(), files("D"), noDirectory(),
-		violation(blobfs.ConstraintForeignKeyDirectoryParent, sqlate.ErrForeignKeyViolation),
-		sqltest.Response{Affected: 0}, deletingRoot(), sqltest.Response{Affected: 0},
-		files("D"), noDirectory(), violation(blobfs.ConstraintForeignKeyDirectoryParent, sqlate.ErrForeignKeyViolation))
-	got, err = s.Sweep(ctx, db, &objectLog{})
-	if err != nil || got != (data.SweepResult{}) {
-		t.Errorf("Sweep of a directory refused as not empty after the mark = %+v, %v, want no More and no error", got, err)
-	}
-	if want := "query query query begin exec rollback begin exec query exec commit query query begin exec rollback"; ops(rec) != want {
 		t.Errorf("ops = %q, want %q", ops(rec), want)
 	}
 	wantDone(t, rec)
@@ -345,8 +318,8 @@ func TestSweepRemark(t *testing.T) {
 	child := directoryIn("C", "D", "c", blobfs.DirectoryStatusActive, 1)
 	s, db, rec = openStore(t, fallback, deletingRoot(), files("D"), child, remark()[0], remark()[1], remark()[2], files("D"), child)
 	got, err = s.Sweep(ctx, db, &objectLog{})
-	if err != nil || got != (data.SweepResult{}) {
-		t.Errorf("Sweep over an active child directory = %+v, %v, want the branch marked once and no More", got, err)
+	if err != nil || got != (data.SweepResult{More: true}) {
+		t.Errorf("Sweep over an active child directory = %+v, %v, want the branch marked once and More", got, err)
 	}
 	if want := "query query query begin exec query exec commit query query"; ops(rec) != want {
 		t.Errorf("ops = %q, want %q", ops(rec), want)

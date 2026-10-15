@@ -21,11 +21,8 @@ type ObjectDeleter interface {
 
 // SweepResult is what one pass of Store.Sweep did: Files counts the
 // branches' files finished, Directories the directories removed, and Stale
-// the stale rows reclaimed, each row once. More reports work a spent
-// budget left, which a further pass can make progress on; a caller runs
-// passes while it is true. A branch a straggler stops does not set More:
-// no pass can finish it until the straggler's row stops being mutable, so
-// a later pass picks it up.
+// the stale rows reclaimed, each row once. More reports work remaining; a
+// caller runs passes while it is true.
 type SweepResult struct {
 	Files       int
 	Directories int
@@ -123,8 +120,8 @@ const (
 	// straggler is a directory holding an active row, or refused as not
 	// empty.
 	straggler
-	// stopped ends the branch's walk: the budget is spent, with More set,
-	// a straggler is left, without it, or a read failed.
+	// stopped ends the branch's walk: the budget is spent, a straggler is
+	// left, or a read failed.
 	stopped
 )
 
@@ -194,10 +191,7 @@ func (w *sweep) refuse(err error) {
 // directory empties and removes dir, files first, then child directories.
 // A straggler has the branch marked again, once a pass, and dir walked
 // again, once more after that; a straggler left then stops the branch
-// without setting More. Until the straggler's row stops being mutable, an
-// upload in flight completing or the stale reclaim deleting it, a further
-// pass would meet it again and make no progress, so the branch waits for
-// a later pass: the caller's next interval, or a nudge.
+// with More set.
 func (w *sweep) directory(ctx context.Context, dir blobfs.Directory) (walk, error) {
 	for again := false; ; again = true {
 		end, err := w.contents(ctx, dir)
@@ -217,6 +211,7 @@ func (w *sweep) directory(ctx context.Context, dir blobfs.Directory) (walk, erro
 				return removed, nil
 			}
 		case again:
+			w.result.More = true
 			return stopped, nil
 		}
 	}
@@ -224,8 +219,7 @@ func (w *sweep) directory(ctx context.Context, dir blobfs.Directory) (walk, erro
 
 // contents empties dir: each file finished, then each child directory
 // walked, both read a page at a time in name order past the last row
-// read. It stops at the budget with More set, and at an active row, a
-// straggler, without it.
+// read. It stops at the budget with More set, and at an active row.
 func (w *sweep) contents(ctx context.Context, dir blobfs.Directory) (walk, error) {
 	if w.budget == 0 {
 		w.result.More = true
