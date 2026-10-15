@@ -383,10 +383,9 @@ caller that hangs up mid-body still cleans up. That context carries no deadline 
 the consumer's object store adapter and its pool bound their own calls. If the abandon fails
 too, the row stays pending or deleting, a stale row the sweep reclaims. For that reason `begin`
 inserts no row that references the file: a reference would refuse the reclaim's purge; the
-completion's hook inserts it instead. A
-completion refused with `ErrDeleting` or `ErrNotFound` means a sweep reached the row before the
-put landed; `WriteFile` deletes the object it put, which that sweep could not have deleted, and
-leaves the row to the sweep.
+completion's hook inserts it instead. A completion refused with `ErrDeleting` or `ErrNotFound`
+means a sweep reached the row before the put landed; `WriteFile` deletes the object it put,
+which that sweep could not have deleted, and leaves the row to the sweep.
 
 `OnComplete(fn)` is the one `WriteOption`, which `WriteFile` and `EnsureFile` both take. Each
 runs `fn(ctx, tx, file)` in the completion's transaction, after `Files.Complete` has made the

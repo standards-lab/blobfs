@@ -83,8 +83,9 @@ transaction around a callback of the consumer's, puts the object through the con
 where `data.OnComplete` runs the consumer's function so its rows commit with the file; when the
 put or the completion fails, the function's error among them, it abandons the write.
 `data.Store.EnsureFile` is the retry-safe form of `WriteFile` for a file under a fixed id, and
-runs the function only when the call itself completes the file. A consumer calls the steps itself only when its write
-does not fit that shape; see [the protocols](features.md#the-protocols).
+runs the function only when the call itself completes the file. A consumer calls the steps
+itself only when its write does not fit that shape; see [the
+protocols](features.md#the-protocols).
 
 ## The two-phase delete
 
@@ -112,9 +113,9 @@ transaction around a callback of the consumer's, in which the consumer removes i
 references to the file, and where `data.OnDelete` runs the consumer's function once the row is
 deleting, so its rows commit as the delete begins; a retry over a row already deleting runs no
 function, and the function's error rolls the step back. `data.Store.RemoveFileID` is the same
-delete of a file the caller names
-by id. `data.Store.PurgeFile` runs the last two steps, for a consumer that began the delete in a
-transaction of its own; see [the protocols](features.md#the-protocols).
+delete of a file the caller names by id. `data.Store.PurgeFile` runs the last two steps, for a
+consumer that began the delete in a transaction of its own; see [the
+protocols](features.md#the-protocols).
 
 Every mutation other than the delete steps refuses a deleting row with `blobfs.ErrDeleting`, so
 no operation acts on a row whose object is gone or about to be. The refusal is a
