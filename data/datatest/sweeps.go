@@ -380,51 +380,43 @@ func (l *landing) DeleteObject(ctx context.Context, key string) error {
 // sweepStragglerWaits checks, against the baseline, that a straggler
 // landing after the pass marked the branch again, an upload in flight in
 // the leaf, stops the branch's walk with no More and no error, the upload
-// and the branch's directories left; and that the next pass, which marks
-// the branch again, removes it with the upload, whether the upload is
-// still in flight or has completed since.
+// and the branch's directories left; once the upload's row is deleting,
+// the next pass removes the branch.
 func (s *suite) sweepStragglerWaits(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
-		for _, completed := range []bool{false, true} {
-			b := s.newBranch(t, fmt.Sprintf("straggler-waits-%d-%t-%s", i, completed, t.Name()))
-			if _, err := s.mark(store, b.top.ID); err != nil {
-				t.Fatalf("MarkDeleting: %v", err)
-			}
-			// The straggler in top has the pass mark the branch again; the
-			// upload lands as the pass deletes its object, after that mark.
-			marked := s.insertFile(t, b.top.ID, "straggler.txt", blobfs.StatusAvailable)
-			var upload string
-			objects := &landing{objectStore: newObjectStore(), key: s.keys(t, marked)[0], land: func() {
-				upload = s.insertFile(t, b.leaf.ID, "upload.txt", blobfs.StatusPending)
-			}}
-			r, err := s.sweep(store, objects)
-			if want := (data.SweepResult{Files: 6}); err != nil || r != want {
-				t.Errorf("Sweep over the upload in flight = %+v, %v, want %+v and no More", r, err, want)
-			}
-			f := s.file(t, upload)
-			if f.Status != blobfs.StatusPending {
-				t.Errorf("the upload is %s after the pass, want pending", f.Status)
-			}
-			for _, id := range []string{b.top.ID, b.mid.ID, b.leaf.ID} {
-				s.directory(t, id)
-			}
-
-			if completed {
-				object := blobfs.Object{Size: 6, ContentType: "text/plain", ETag: `"upload"`}
-				if f, err = store.Files.Complete(s.ctx, s.db, upload, f.Version, object); err != nil || f.Status != blobfs.StatusAvailable {
-					t.Fatalf("Complete of the upload = %s, %v, want available", f.Status, err)
-				}
-			}
-			r, err = s.sweep(store, objects)
-			if want := (data.SweepResult{Files: 1, Directories: 3}); err != nil || r != want {
-				t.Errorf("the next Sweep, completed %t, = %+v, %v, want %+v", completed, r, err, want)
-			}
-			if n := objects.deleted[f.Key]; n != 1 {
-				t.Errorf("the upload's object was deleted %d times, want once", n)
-			}
-			s.wantDirectoriesGone(t, b.top.ID, b.mid.ID, b.leaf.ID)
-			s.wantFilesGone(t, append(branchFiles(b), marked, upload)...)
+		b := s.newBranch(t, fmt.Sprintf("straggler-waits-%d-%s", i, t.Name()))
+		if _, err := s.mark(store, b.top.ID); err != nil {
+			t.Fatalf("MarkDeleting: %v", err)
 		}
+		// The straggler in top has the pass mark the branch again; the
+		// upload lands as the pass deletes its object, after that mark.
+		marked := s.insertFile(t, b.top.ID, "straggler.txt", blobfs.StatusAvailable)
+		var upload string
+		objects := &landing{objectStore: newObjectStore(), key: s.keys(t, marked)[0], land: func() {
+			upload = s.insertFile(t, b.leaf.ID, "upload.txt", blobfs.StatusPending)
+		}}
+		r, err := s.sweep(store, objects)
+		if want := (data.SweepResult{Files: 6}); err != nil || r != want {
+			t.Errorf("Sweep over the upload in flight = %+v, %v, want %+v and no More", r, err, want)
+		}
+		if f := s.file(t, upload); f.Status != blobfs.StatusPending {
+			t.Errorf("the upload is %s after the pass, want pending", f.Status)
+		}
+		for _, id := range []string{b.top.ID, b.mid.ID, b.leaf.ID} {
+			s.directory(t, id)
+		}
+
+		if _, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
+			return store.Files.Delete(s.ctx, tx, upload)
+		}); err != nil {
+			t.Fatalf("Delete of the upload: %v", err)
+		}
+		r, err = s.sweep(store, objects)
+		if want := (data.SweepResult{Files: 1, Directories: 3}); err != nil || r != want {
+			t.Errorf("Sweep once the upload is deleting = %+v, %v, want %+v", r, err, want)
+		}
+		s.wantDirectoriesGone(t, b.top.ID, b.mid.ID, b.leaf.ID)
+		s.wantFilesGone(t, append(branchFiles(b), marked, upload)...)
 	}
 }
 

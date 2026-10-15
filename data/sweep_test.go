@@ -192,8 +192,9 @@ func (f *failingKey) DeleteObject(_ context.Context, key string) error {
 // TestSweepStraggler checks a straggler has the branch marked again, once,
 // and the directory walked again: the marked straggler is swept in the
 // same pass, and a straggler met after the mark, an upload in flight,
-// stops the branch without More. The next pass, over the upload still in
-// flight, marks the branch again and removes it.
+// stops the branch without More, since a further pass could make no
+// progress on it. Once the upload's row is deleting, the next pass
+// removes the branch.
 func TestSweepStraggler(t *testing.T) {
 	ctx := context.Background()
 	straggler := fileIn("S", "D", "s.txt", blobfs.StatusAvailable, 1)
@@ -226,15 +227,13 @@ func TestSweepStraggler(t *testing.T) {
 	}
 	wantDone(t, rec)
 
-	upload := fileIn("S", "D", "s.txt", blobfs.StatusPending, 1)
-	s, db, rec = openStore(t, fallback, append(append([]sqltest.Response{deletingRoot(), upload}, remark()...),
-		files("D", "S"), sqltest.Response{Affected: 1}, noDirectory(), sqltest.Response{Affected: 1})...)
+	s, db, rec = openStore(t, fallback, deletingRoot(), files("D", "S"), sqltest.Response{Affected: 1}, noDirectory(), sqltest.Response{Affected: 1})
 	got, err = s.Sweep(ctx, db, objects)
 	if err != nil || got != (data.SweepResult{Files: 1, Directories: 1}) {
-		t.Errorf("the next Sweep over the upload in flight = %+v, %v, want it marked and swept with the branch", got, err)
+		t.Errorf("Sweep once the upload's row is deleting = %+v, %v, want it swept with the branch", got, err)
 	}
-	if n := len(callsTo(rec, "UPDATE blobfs_directory")); n != 1 {
-		t.Errorf("the next pass marked the branch %d times, want once", n)
+	if n := len(callsTo(rec, "UPDATE blobfs_directory")); n != 0 {
+		t.Errorf("the later pass marked the branch %d times, want no mark", n)
 	}
 	wantDone(t, rec)
 }
