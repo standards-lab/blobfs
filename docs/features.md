@@ -582,8 +582,11 @@ purges the file's row, empties and removes each child directory the same way, an
 the directory itself. Each removal runs in a transaction of its own, guarded by the version the
 pass read the directory at. A straggler, an active row the walk meets or a directory refused as
 `ErrNotEmpty`, has the pass mark the branch again, in a transaction of its own, and walk the
-directory again; a straggler met after that mark stops the branch's walk with `More` set, for
-the next pass.
+directory again; a straggler met after that mark stops the branch's walk without setting
+`More`, and the pass goes on to the other roots. A further pass could make no progress on the
+branch until the straggler's row stops being mutable, an upload in flight completing or the
+stale reclaim deleting it, so the branch waits for a later pass: the consumer's next interval,
+or a nudge.
 
 A pass's cost is bounded by `Batch`: it reads the roots, the pages of each directory, and the
 stale rows no further than the records its budget allows, plus the rows it leaves in place. A
@@ -600,10 +603,11 @@ all.
 
 `SweepResult` counts what the pass did, each row once, by the step that purged it: `Files`
 counts the files of branches, `Directories` the directories removed, and `Stale` the stale rows
-reclaimed. `More` reports work the pass did not reach: it stopped at its bound with a page, a
-branch, or a read of roots or stale rows not finished, or at a straggler. When the budget runs
-out exactly as a read ends, one row read past the rows the pass left tells whether more remain.
-A caller runs passes while `More` is true. A stale row in a branch the walk has not reached yet
+reclaimed. `More` reports work the pass's bound left, which a further pass can make progress
+on: it stopped at its bound with a page, a branch, or a read of roots or stale rows not
+finished. When the budget runs out exactly as a read ends, one row read past the rows the pass
+left tells whether more remain. A straggler does not set `More`: a branch it stops waits for a
+later pass. A caller runs passes while `More` is true. A stale row in a branch the walk has not reached yet
 is finished by the reclaim and counted in `Stale`. Nothing to do is a zero result and no error.
 
 A refusal leaves the row it meets, not the branch or the pass. The refusals are an object
