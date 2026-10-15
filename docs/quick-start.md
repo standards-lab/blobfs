@@ -703,7 +703,7 @@ func TestUpload_CommitsThePendingRowBeforeThePut(t *testing.T) {
 	if !slices.Equal(objects.atPut, begun) {
 		t.Errorf("ops at the put = %v, want %v", objects.atPut, begun)
 	}
-	want := append(begun, sqltest.OpQuery, // the completion, on the pool
+	want := append(begun, sqltest.OpBegin, sqltest.OpQuery, sqltest.OpCommit, // the completion, in its transaction
 		sqltest.OpBegin, sqltest.OpQuery, sqltest.OpExec, sqltest.OpCommit) // the hold and the note
 	if got := rec.Ops(); !slices.Equal(got, want) {
 		t.Errorf("ops = %v, want %v", got, want)

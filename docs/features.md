@@ -365,7 +365,7 @@ error once as `data: <op> file <id>: ...`.
 
 | Method | What it does | Refusals |
 |---|---|---|
-| `WriteFile(ctx, db, objects, body, size, begin)` | Runs `begin`, which calls `Files.Create`, in one transaction, so the pending row commits before any byte; puts `body` under the row's `Key` outside any transaction, in the type the row declares; completes the row on the pool and returns it available. | `begin`'s; before any put, a `TransitionError` for a row that is not pending, wrapped in its `DeletingError` for a deleting one; the put's; `Complete`'s |
+| `WriteFile(ctx, db, objects, body, size, begin, opts...)` | Runs `begin`, which calls `Files.Create`, in one transaction, so the pending row commits before any byte; puts `body` under the row's `Key` outside any transaction, in the type the row declares; completes the row in a transaction of its own, with `OnComplete`'s hook in it, and returns it available. | `begin`'s; before any put, a `TransitionError` for a row that is not pending, wrapped in its `DeletingError` for a deleting one; the put's; `Complete`'s; the hook's |
 | `EnsureFile(ctx, db, objects, id, body, size, begin)` | The retry-safe `WriteFile` of the file under the fixed `id`, such as a seed's: `begin` calls `Files.Ensure` with `WithID(id)`. Returns the row and whether this call stored its object. | `IDError` before any SQL; `begin`'s; `ErrNameTaken` for a pending or available row found under another id; an error naming both ids for a row `begin` created under another id; a `DeletingError` for a deleting row found, under `id` or another; `WriteFile`'s |
 | `RemoveFile(ctx, db, objects, pick, opts...)` | Runs `pick`, which returns the file's id, and `Files.Delete` under `opts` in one transaction, then deletes the object and purges the row. | `pick`'s; `Files.Delete`'s; `PurgeFile`'s |
 | `RemoveFileID(ctx, db, objects, id, opts...)` | `RemoveFile` of the file with `id`, for a caller with no scope to check and no reference to remove in the delete's transaction. | `Files.Delete`'s; `PurgeFile`'s |
@@ -382,10 +382,20 @@ abandon, and the object delete described below, run under `ctx` without its canc
 caller that hangs up mid-body still cleans up. That context carries no deadline of its own, so
 the consumer's object store adapter and its pool bound their own calls. If the abandon fails
 too, the row stays pending or deleting, a stale row the sweep reclaims. For that reason `begin`
-inserts no row that references the file: a reference would refuse the reclaim's purge. A
+inserts no row that references the file: a reference would refuse the reclaim's purge; the
+completion's hook inserts it instead. A
 completion refused with `ErrDeleting` or `ErrNotFound` means a sweep reached the row before the
 put landed; `WriteFile` deletes the object it put, which that sweep could not have deleted, and
 leaves the row to the sweep.
+
+`OnComplete(fn)` is the one `WriteOption`. `WriteFile` runs `fn(ctx, tx, file)` in the
+completion's transaction, after `Files.Complete` has made the row available, with the call's
+`ctx` and the completed row, so what `fn` writes, such as the consumer's reference to the file,
+commits exactly when the file does. An error from `fn` rolls the completion back with whatever
+`fn` wrote and abandons the write as a failed completion does: the row is deleted at its pending
+version and its object with it, and `WriteFile` returns the error wrapped as `data: write file
+<id>: the hook: ...`. A completion refused before the hook runs, or a write refused before the
+put, never runs it.
 
 `EnsureFile` differs from `WriteFile` in what it finds:
 

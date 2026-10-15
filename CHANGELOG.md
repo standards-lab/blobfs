@@ -7,6 +7,23 @@ the `postgres` sub-module keeps its own.
 
 ## [Unreleased]
 
+### Added
+
+- `data.OnComplete`, a `data.WriteOption` that `Store.WriteFile` takes as a trailing variadic
+  argument. Its function runs in the completion's transaction, after `Files.Complete`, with the
+  call's context and the completed `File`, so a consumer's rows, such as its reference to the
+  file, commit exactly when the file does. An error from the function rolls the completion back
+  and abandons the write as a failed completion does, and `WriteFile` returns it wrapped. A
+  caller that passes no option compiles and behaves as before.
+- `data/datatest` checks the hook. The Protocols group checks that the hook's writes commit with
+  the row (`WriteOnComplete`) and that a hook's error rolls them back and leaves no file
+  (`WriteOnCompleteRefuses`).
+
+### Changed
+
+- `Store.WriteFile` and `Store.EnsureFile` complete the file in a transaction of their own on
+  `db`, hooked or not, where they completed it on the pool. Their outcomes are unchanged.
+
 ## [v0.6.0] - 2026-10-09
 
 ### Changed

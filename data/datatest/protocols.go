@@ -22,6 +22,8 @@ func (s *suite) protocols(t *testing.T) {
 	t.Run("Write", s.protocolWrite)
 	t.Run("WriteFailedPut", s.protocolWriteFailedPut)
 	t.Run("WriteRefusedCompletion", s.protocolWriteRefusedCompletion)
+	t.Run("WriteOnComplete", s.protocolWriteOnComplete)
+	t.Run("WriteOnCompleteRefuses", s.protocolWriteOnCompleteRefuses)
 	t.Run("WriteRefusedBegin", s.protocolWriteRefusedBegin)
 	t.Run("WriteRefusesAnAvailableRow", s.protocolWriteRefusesAvailable)
 	t.Run("WriteUnderADeletingName", s.protocolWriteUnderADeletingName)
@@ -184,6 +186,80 @@ func (s *suite) protocolWriteRefusedCompletion(t *testing.T) {
 			}
 			s.wantFilesGone(t, ids...)
 			s.wantDirectoriesGone(t, dir.ID)
+		})
+	}
+}
+
+// protocolWriteOnComplete checks the completion hook runs in the
+// completion's transaction: the row it reads there is the completed one,
+// and the reference it inserts there commits with the row.
+func (s *suite) protocolWriteOnComplete(t *testing.T) {
+	s.createFileReferences(t)
+	for _, tier := range s.storesUnder() {
+		t.Run(tier.name, func(t *testing.T) {
+			dir := s.mkdir(t, "write-on-complete-"+t.Name())
+			objects := newObjectStore()
+			var hooked, read blobfs.File
+			got, err := tier.store.WriteFile(s.ctx, s.db, objects, strings.NewReader("report"), 6, func(tx *sqlate.Tx) (blobfs.File, error) {
+				return tier.store.Files.Create(s.ctx, tx, acceptAll{}, dir.ID, "report.txt", "text/plain")
+			}, data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+				hooked = f
+				var err error
+				if read, err = tier.store.Files.Find(ctx, tx, f.ID); err != nil {
+					return err
+				}
+				s.reference(t, tx, f.ID)
+				return nil
+			}))
+			if err != nil {
+				t.Fatalf("Write with a hook: %v", err)
+			}
+			defer s.unreference(t, got.ID)
+			s.wantWritten(t, objects, got, "report")
+			if !equalFile(hooked, got) || !equalFile(read, got) {
+				t.Errorf("the hook received\n%+v\nand read\n%+v\nin its transaction, want the completed row\n%+v", hooked, read, got)
+			}
+			if n := s.references(t, got.ID); n != 1 {
+				t.Errorf("the hook's reference committed %d times, want once with the row", n)
+			}
+		})
+	}
+}
+
+// protocolWriteOnCompleteRefuses checks a hook that fails rolls the
+// completion back with the reference it inserted, and abandons the write:
+// the hook's error returned, the object deleted, and no row left, so the
+// file is never complete.
+func (s *suite) protocolWriteOnCompleteRefuses(t *testing.T) {
+	s.createFileReferences(t)
+	refused := errors.New("datatest: the hook refuses")
+	for _, tier := range s.storesUnder() {
+		t.Run(tier.name, func(t *testing.T) {
+			dir := s.mkdir(t, "write-on-complete-refuses-"+t.Name())
+			objects := newObjectStore()
+			var id, key string
+			_, err := tier.store.WriteFile(s.ctx, s.db, objects, strings.NewReader("report"), 6, func(tx *sqlate.Tx) (blobfs.File, error) {
+				return tier.store.Files.Create(s.ctx, tx, acceptAll{}, dir.ID, "report.txt", "text/plain")
+			}, data.OnComplete(func(_ context.Context, tx *sqlate.Tx, f blobfs.File) error {
+				id, key = f.ID, f.Key
+				s.reference(t, tx, f.ID)
+				return refused
+			}))
+			if !errors.Is(err, refused) {
+				t.Fatalf("Write under a refusing hook = %v, want the hook's error", err)
+			}
+			if id == "" {
+				t.Fatal("the hook never ran")
+			}
+			if n := s.references(t, id); n != 0 {
+				t.Errorf("the hook's reference outlived the rollback %d times", n)
+			}
+			if _, ok := objects.objects[key]; ok || objects.deleted[key] != 1 || len(objects.deleted) != 1 {
+				t.Errorf("the abandon deleted %v, want the row's key %q once", objects.deleted, key)
+			}
+			if f, err := tier.store.Files.FindByName(s.ctx, s.db, dir.ID, "report.txt"); !errors.Is(err, blobfs.ErrNotFound) {
+				t.Errorf("the refused hook left %+v, %v, want no row", f, err)
+			}
 		})
 	}
 }
