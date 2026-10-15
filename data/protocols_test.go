@@ -809,6 +809,36 @@ func TestEnsureWriteOnCompleteRefuses(t *testing.T) {
 	}
 }
 
+// TestEnsureWriteOnCompleteRefusesAMovedRow checks a hook that fails, whose
+// abandon then finds the row another writer completed, is still the hook's
+// failure: its error and the abandon's returned, and no row read back as
+// another writer's win, as a failed put's abandon would read it.
+func TestEnsureWriteOnCompleteRefusesAMovedRow(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, single, slices.Concat(
+		[]sqltest.Response{protocolRow(blobfs.StatusPending, 1)},                  // resumed
+		[]sqltest.Response{protocolRow(blobfs.StatusAvailable, 2), {Affected: 1}}, // completed, and the hook's exec
+		unchangedFile(single, protocolRow(blobfs.StatusAvailable, 2)),             // the abandon at 1 finds it completed
+	)...)
+	refused := errors.New("the consumer refuses")
+	hook := data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID); err != nil {
+			return err
+		}
+		return refused
+	})
+	got, stored, err := s.EnsureFile(ctx, db, newObjectStore(), protocolFile, strings.NewReader("report"), 6, ensure(ctx, s), hook)
+	if !errors.Is(err, refused) || !errors.Is(err, query.ErrVersionMismatch) || stored || got.ID != "" {
+		t.Fatalf("Ensure = %+v, %v, %v, want the hook's error and the abandon's", got, stored, err)
+	}
+	// A read back after the abandon's rollback would take the hook's
+	// failure for a lost race.
+	if want := "begin query commit begin query exec rollback begin query query rollback"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q: no read back after the abandon", ops(rec), want)
+	}
+	wantDone(t, rec)
+}
+
 // TestEnsureWriteRefusesAnID checks an id blobfs.ParseID refuses is
 // refused before any SQL.
 func TestEnsureWriteRefusesAnID(t *testing.T) {

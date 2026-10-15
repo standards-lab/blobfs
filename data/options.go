@@ -56,6 +56,14 @@ type versionOptions struct {
 	hasVersion bool
 }
 
+// at is the version AtVersion gave, or nil when none did.
+func (o versionOptions) at() *int64 {
+	if !o.hasVersion {
+		return nil
+	}
+	return &o.version
+}
+
 // AtVersion makes the call act on the row only at version, the value the
 // caller read from a listing or an earlier read; a row at another version
 // is query.ErrVersionMismatch and is left as it is. A row already deleting
@@ -163,14 +171,6 @@ func removeOpts(opts []RemoveOption) removeOptions {
 		opt.applyRemove(&o)
 	}
 	return o
-}
-
-// at is the version AtVersion gave, or nil when none did.
-func (o versionOptions) at() *int64 {
-	if !o.hasVersion {
-		return nil
-	}
-	return &o.version
 }
 
 // OnDelete runs fn in the transaction that begins the delete, after pick
