@@ -46,10 +46,10 @@ github.com/pierrec/lz4/v4 v4.1.28/go.mod h1:EoQMVJgeeEOMsCqCzqFm2O0cJvljX2nGZjcR
 github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c h1:+mdjkGKdHQG3305AYmdv1U2eRNDiU2ErMBj1gwrq8eQ=
 github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c/go.mod h1:7rwL4CYBLnjLxUqIJNnCWiEdr3bn6IUYi15bNlnbCCU=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
-github.com/standards-lab/blobfs v0.6.0 h1:ruNVhWYgIclLD3qnNfy6zG+99c4F25NSrPrISDDyNbk=
-github.com/standards-lab/blobfs v0.6.0/go.mod h1:TPVserSOd5D6G/G1s9eIFy3Ta6vvZzBEBnwB15FYBq4=
-github.com/standards-lab/blobfs/postgres v0.4.0 h1:Z3iZ/Z7xWtHLrKB/3oAuBCNPeLve0pk7G89MHlIKVpg=
-github.com/standards-lab/blobfs/postgres v0.4.0/go.mod h1:OXQqfiYrWmYTKjLd6MqHVTJOX3DJ0+ziLgutl8GOXnE=
+github.com/standards-lab/blobfs v0.7.0 h1:f7Unfg+2OfCJlLGjGKS1iiVVn7EIVrsIuS0eCbOniAA=
+github.com/standards-lab/blobfs v0.7.0/go.mod h1:TPVserSOd5D6G/G1s9eIFy3Ta6vvZzBEBnwB15FYBq4=
+github.com/standards-lab/blobfs/postgres v0.5.0 h1:zraAvKGkg6uNhXKFl2dyqZPq1OUMh8poATPQFbQDcRY=
+github.com/standards-lab/blobfs/postgres v0.5.0/go.mod h1:gKk9NElMtKdXCbHlAdEiJNxT1pz2G1y1QrBb/xLwpwM=
 github.com/standards-lab/go-core v0.7.0 h1:eVBSSZ3axkQfh0+iYfuim6oXiOBR+DRXHn4fzlEDP4E=
 github.com/standards-lab/go-core v0.7.0/go.mod h1:Yl/R+gM9YWczsePBCKXdPGh3FSdZ/5i8SapLIh3BDHU=
 github.com/standards-lab/go-storage v0.6.0 h1:QGuZgshPPzhBhZpWmWh0U8yqNHR+6dxjXHirEOIuuss=
