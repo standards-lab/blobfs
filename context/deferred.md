@@ -32,6 +32,10 @@ policy a consumer may not want, or waits for a second consumer to show its shape
   in place that the golden test missed.
 - **A `blobfstest` toolkit** beyond the conformance suite. Trigger: what the first consumer's tests
   need.
+- **A branch mark that reports whether it marked its anchor.** `MarkDeleting` returning whether
+  this call moved the anchor to deleting, so a hook in the mark's transaction needs no
+  `LockTree`-and-`Find` read to tell its mark from a retry. Its cost is a change to the mark
+  statement. Trigger: a second consumer that hooks a branch mark.
 - **An interleaved directory-and-file listing.** Trigger: a consumer that builds a folder browser.
 - **MySQL and MariaDB.** A second engine sub-module, with its DDL and native forms; its port notes
   are the work list. Two standard-tier statements need work beyond them:

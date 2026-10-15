@@ -79,10 +79,13 @@ is removed through the delete steps, which a pending row accepts, or by a sweep 
 
 `data.Store.WriteFile` runs the three steps end to end. It runs the first step in one
 transaction around a callback of the consumer's, puts the object through the consumer's
-`data.ObjectStore` outside any transaction, and completes the row on the pool; when the put or
-the completion fails, it abandons the write. `data.Store.EnsureFile` is the retry-safe form of
-`WriteFile` for a file under a fixed id. A consumer calls the steps itself only when its write
-does not fit that shape; see [the protocols](features.md#the-protocols).
+`data.ObjectStore` outside any transaction, and completes the row in a transaction of its own,
+where `data.OnComplete` runs the consumer's function so its rows commit with the file; when the
+put or the completion fails, the function's error among them, it abandons the write.
+`data.Store.EnsureFile` is the retry-safe form of `WriteFile` for a file under a fixed id, and
+runs the function only when the call itself completes the file. A consumer calls the steps
+itself only when its write does not fit that shape; see [the
+protocols](features.md#the-protocols).
 
 ## The two-phase delete
 
@@ -107,9 +110,12 @@ sweep finds.
 
 `data.Store.RemoveFile` runs the three steps end to end. It runs the first step in one
 transaction around a callback of the consumer's, in which the consumer removes its own
-references to the file; `data.Store.RemoveFileID` is the same delete of a file the caller names
-by id. `data.Store.PurgeFile` runs the last two steps, for a consumer that began the delete in a
-transaction of its own; see [the protocols](features.md#the-protocols).
+references to the file, and where `data.OnDelete` runs the consumer's function once the row is
+deleting, so its rows commit as the delete begins; a retry over a row already deleting runs no
+function, and the function's error rolls the step back. `data.Store.RemoveFileID` is the same
+delete of a file the caller names by id. `data.Store.PurgeFile` runs the last two steps, for a
+consumer that began the delete in a transaction of its own; see [the
+protocols](features.md#the-protocols).
 
 Every mutation other than the delete steps refuses a deleting row with `blobfs.ErrDeleting`, so
 no operation acts on a row whose object is gone or about to be. The refusal is a
@@ -285,7 +291,10 @@ The mark is guarded like the other steps a caller takes on a row it read. `data.
 the branch only while its root is at the version the caller read, the directory its user saw and
 confirmed; a directory at another version is `query.ErrVersionMismatch`, and nothing is marked.
 A directory already deleting is the mark's retry and reports what it reached anew (see
-[deleting outranks the version](#deleting-outranks-the-version)).
+[deleting outranks the version](#deleting-outranks-the-version)), a straggler included, so a
+consumer that runs its own work in the mark's transaction tells its mark from a retry by reading
+the root's status under `Directories.LockTree` before the mark (see [deleting a
+branch](features.md#deleting-a-branch)).
 
 ### Stragglers and convergence
 

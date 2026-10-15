@@ -46,13 +46,22 @@ func WithID(id string) CreateOption {
 
 // VersionOption configures a call that acts on a row the caller read,
 // beyond its required arguments: Files.Hold, Files.Delete,
-// Directories.Delete, and Directories.MarkDeleting.
+// Directories.Delete, Directories.MarkDeleting, Store.RemoveFileID, and,
+// as a RemoveOption, Store.RemoveFile.
 type VersionOption func(*versionOptions)
 
 // versionOptions collects what the version options set.
 type versionOptions struct {
 	version    int64
 	hasVersion bool
+}
+
+// at is the version AtVersion gave, or nil when none did.
+func (o versionOptions) at() *int64 {
+	if !o.hasVersion {
+		return nil
+	}
+	return &o.version
 }
 
 // AtVersion makes the call act on the row only at version, the value the
@@ -66,6 +75,10 @@ func AtVersion(version int64) VersionOption {
 	}
 }
 
+// applyRemove makes a VersionOption a RemoveOption, so Store.RemoveFile
+// takes AtVersion as the other version calls do.
+func (opt VersionOption) applyRemove(o *removeOptions) { opt(&o.versionOptions) }
+
 // atVersion resolves a call's version options: the version AtVersion
 // gave, or nil when none did.
 func atVersion(opts []VersionOption) *int64 {
@@ -73,10 +86,7 @@ func atVersion(opts []VersionOption) *int64 {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	if !o.hasVersion {
-		return nil
-	}
-	return &o.version
+	return o.at()
 }
 
 // withVersion binds version into args for a statement whose version
@@ -105,6 +115,73 @@ type listOptions struct {
 // without it. See Listings in docs/features.md.
 func IncludeDeleting() ListOption {
 	return func(o *listOptions) { o.includeDeleting = true }
+}
+
+// WriteOption configures one call of a write protocol, Store.WriteFile or
+// Store.EnsureFile, beyond its required arguments.
+type WriteOption func(*writeOptions)
+
+// writeOptions collects what the write options set.
+type writeOptions struct {
+	onComplete func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error
+}
+
+// writeOpts resolves a call's write options.
+func writeOpts(opts []WriteOption) writeOptions {
+	var o writeOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+// OnComplete runs fn in the transaction that completes the file, after
+// Files.Complete has made the row available, with the call's context and
+// the completed File: where a consumer writes its own rows that must
+// commit exactly when the file does. An error from fn rolls the completion
+// back and abandons the write as a failed completion does, the pending row
+// deleted with its object; the call returns an error wrapping fn's.
+// Store.EnsureFile runs fn only when the call completes the file itself:
+// never for a row it finds available, or one another writer completed.
+func OnComplete(fn func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error) WriteOption {
+	return func(o *writeOptions) { o.onComplete = fn }
+}
+
+// RemoveOption configures one call of Store.RemoveFile beyond its required
+// arguments: AtVersion, a VersionOption, or OnDelete.
+type RemoveOption interface {
+	applyRemove(*removeOptions)
+}
+
+// removeOptions collects what the remove options set.
+type removeOptions struct {
+	versionOptions
+	onDelete func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error
+}
+
+// removeFunc is a RemoveOption that is not also a VersionOption.
+type removeFunc func(*removeOptions)
+
+func (opt removeFunc) applyRemove(o *removeOptions) { opt(o) }
+
+// removeOpts resolves a call's remove options.
+func removeOpts(opts []RemoveOption) removeOptions {
+	var o removeOptions
+	for _, opt := range opts {
+		opt.applyRemove(&o)
+	}
+	return o
+}
+
+// OnDelete runs fn in the transaction that begins the delete, after pick
+// and Files.Delete have marked the file deleting, with the call's context
+// and the File as marked: where a consumer writes its own rows that must
+// commit exactly when the delete begins. A retry, which finds the file
+// already deleting, runs no hook and finishes the delete. An error from fn
+// rolls the transaction back, leaving the file as it was and its object in
+// place; the call returns an error wrapping fn's.
+func OnDelete(fn func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error) RemoveOption {
+	return removeFunc(func(o *removeOptions) { o.onDelete = fn })
 }
 
 // SweepOption configures one call of Store.Sweep beyond its required

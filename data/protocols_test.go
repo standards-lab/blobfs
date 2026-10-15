@@ -127,7 +127,7 @@ func wantDone(t *testing.T, rec *sqltest.Recorder) {
 
 // TestWrite checks the write: begin's transaction with the pending row,
 // the put under the row's key in the type the row declares, and the
-// completion on the pool.
+// completion in a transaction of its own.
 func TestWrite(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2))
@@ -139,7 +139,7 @@ func TestWrite(t *testing.T) {
 	if objects.lastType != "text/plain" || objects.objects[protocolKey] != "report" {
 		t.Errorf("the put stored %q as %q, want the body under the row's key in the row's type", objects.objects[protocolKey], objects.lastType)
 	}
-	if want := "begin query commit query"; ops(rec) != want {
+	if want := "begin query commit begin query commit"; ops(rec) != want {
 		t.Errorf("ops = %q, want %q", ops(rec), want)
 	}
 	wantDone(t, rec)
@@ -229,8 +229,8 @@ func TestWriteRefusedCompletion(t *testing.T) {
 		want error
 		ops  string
 	}{
-		{"Deleting", []sqltest.Response{protocolRow(blobfs.StatusDeleting, 2), protocolDirectory()}, blobfs.ErrDeleting, "begin query commit query query query"},
-		{"Removed", []sqltest.Response{noFile()}, blobfs.ErrNotFound, "begin query commit query query"},
+		{"Deleting", []sqltest.Response{protocolRow(blobfs.StatusDeleting, 2), protocolDirectory()}, blobfs.ErrDeleting, "begin query commit begin query query query rollback"},
+		{"Removed", []sqltest.Response{noFile()}, blobfs.ErrNotFound, "begin query commit begin query query rollback"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -266,8 +266,79 @@ func TestWriteFailedCompletion(t *testing.T) {
 	if objects.stored() {
 		t.Error("the object outlived the abandoned write")
 	}
-	if want := "begin query commit query begin query commit exec"; ops(rec) != want {
+	if want := "begin query commit begin query rollback begin query commit exec"; ops(rec) != want {
 		t.Errorf("ops = %q, want %q", ops(rec), want)
+	}
+	wantDone(t, rec)
+}
+
+// callerKey marks the context a protocol's caller passes, so a hook can
+// tell it received the call's own.
+type callerKey struct{}
+
+// TestWriteOnComplete checks the completion hook runs inside the
+// completion's transaction, after Files.Complete and before the commit,
+// with the call's context and the completed File, and that what it writes
+// there commits with the row.
+func TestWriteOnComplete(t *testing.T) {
+	ctx := context.WithValue(context.Background(), callerKey{}, "caller")
+	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2), sqltest.Response{Affected: 1})
+	objects := newObjectStore()
+	var hooked blobfs.File
+	hook := data.OnComplete(func(hctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+		if hctx.Value(callerKey{}) != "caller" {
+			t.Error("the hook ran under another context than the call's")
+		}
+		hooked = f
+		_, err := tx.ExecContext(hctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID)
+		return err
+	})
+	got, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow), hook)
+	if err != nil || got.Status != blobfs.StatusAvailable || got.Version != 2 {
+		t.Fatalf("Write = %+v, %v, want the available row", got, err)
+	}
+	if hooked.ID != protocolFile || hooked.Status != blobfs.StatusAvailable || hooked.Version != 2 {
+		t.Errorf("the hook received %+v, want the completed row", hooked)
+	}
+	// The hook's exec sits between the completion and its commit: a hook
+	// run on the pool, or after the commit, puts it past the commit.
+	if want := "begin query commit begin query exec commit"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q", ops(rec), want)
+	}
+	wantDone(t, rec)
+}
+
+// TestWriteOnCompleteRefuses checks a hook that fails rolls the
+// completion back with what it wrote, and abandons the write as a failed
+// completion does: the row's delete at its pending version, the object's
+// delete, and the purge, the hook's error returned, named.
+func TestWriteOnCompleteRefuses(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, single,
+		protocolRow(blobfs.StatusPending, 1),
+		protocolRow(blobfs.StatusAvailable, 2), sqltest.Response{Affected: 1}, // completed, and the hook's exec
+		protocolRow(blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1}, // abandoned
+	)
+	objects := newObjectStore()
+	refused := errors.New("the consumer refuses")
+	hook := data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID); err != nil {
+			return err
+		}
+		return refused
+	})
+	got, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow), hook)
+	if !errors.Is(err, refused) || !strings.HasPrefix(err.Error(), "data: write file "+protocolFile+": the hook: ") || got.ID != "" {
+		t.Fatalf("Write = %+v, %v, want the hook's error, named", got, err)
+	}
+	if want := "begin query commit begin query exec rollback begin query commit exec"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q: the completion rolled back, then the abandon", ops(rec), want)
+	}
+	if del := rec.Calls()[8]; !strings.HasPrefix(del.SQL, "UPDATE blobfs_file") || !slices.Equal(del.Args, []any{protocolFile, int64(1)}) {
+		t.Errorf("the delete is %q %v, want the pending row's, at its version", del.SQL, del.Args)
+	}
+	if objects.stored() || !slices.Equal(objects.deletes, []string{protocolKey}) {
+		t.Errorf("deletes = %v, stored = %v, want the put object deleted with the row", objects.deletes, objects.stored())
 	}
 	wantDone(t, rec)
 }
@@ -401,7 +472,7 @@ func TestEnsureWrite(t *testing.T) {
 	if objects.objects[protocolKey] != "report" {
 		t.Errorf("object = %q, want the leftover replaced by the write's bytes", objects.objects[protocolKey])
 	}
-	if want := "begin query query commit query"; ops(rec) != want {
+	if want := "begin query query commit begin query commit"; ops(rec) != want {
 		t.Errorf("ops = %q, want %q", ops(rec), want)
 	}
 	wantDone(t, rec)
@@ -411,7 +482,7 @@ func TestEnsureWrite(t *testing.T) {
 	if _, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s)); err != nil || !stored || objects.puts != 1 {
 		t.Fatalf("Ensure = %v, %v after %d puts, want the pending row put once and completed", stored, err, objects.puts)
 	}
-	if want := "begin query commit query"; ops(rec) != want {
+	if want := "begin query commit begin query commit"; ops(rec) != want {
 		t.Errorf("ops = %q, want %q", ops(rec), want)
 	}
 	wantDone(t, rec)
@@ -519,7 +590,7 @@ func TestEnsureWriteRaces(t *testing.T) {
 	if err != nil || stored || got.Status != blobfs.StatusAvailable || got.Version != 2 {
 		t.Fatalf("Ensure = %+v, %v, %v, want the other writer's row, found", got, stored, err)
 	}
-	if len(objects.deletes) != 0 || ops(rec) != "begin query query commit query query query" {
+	if len(objects.deletes) != 0 || ops(rec) != "begin query query commit begin query query rollback query" {
 		t.Errorf("deletes = %v, ops = %q, want no abandon", objects.deletes, ops(rec))
 	}
 	wantDone(t, rec)
@@ -532,7 +603,7 @@ func TestEnsureWriteRaces(t *testing.T) {
 	if _, stored, err := s.EnsureFile(ctx, db, newObjectStore(), protocolFile, strings.NewReader("report"), 6, ensure(ctx, s)); err != nil || !stored {
 		t.Fatalf("Ensure = %v, %v, want the resumed row stored", stored, err)
 	}
-	if want := "begin query query rollback begin query commit query"; ops(rec) != want {
+	if want := "begin query query rollback begin query commit begin query commit"; ops(rec) != want {
 		t.Errorf("ops = %q, want %q", ops(rec), want)
 	}
 	wantDone(t, rec)
@@ -592,8 +663,8 @@ func TestEnsureWriteRefusedCompletion(t *testing.T) {
 		want error
 		ops  string
 	}{
-		{"Deleting", []sqltest.Response{protocolRow(blobfs.StatusDeleting, 2), protocolDirectory()}, blobfs.ErrDeleting, "begin query commit query query query"},
-		{"Removed", []sqltest.Response{noFile()}, blobfs.ErrNotFound, "begin query commit query query"},
+		{"Deleting", []sqltest.Response{protocolRow(blobfs.StatusDeleting, 2), protocolDirectory()}, blobfs.ErrDeleting, "begin query commit begin query query query rollback"},
+		{"Removed", []sqltest.Response{noFile()}, blobfs.ErrNotFound, "begin query commit begin query query rollback"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -615,6 +686,157 @@ func TestEnsureWriteRefusedCompletion(t *testing.T) {
 			wantDone(t, rec)
 		})
 	}
+}
+
+// TestEnsureWriteOnComplete checks the completion hook runs inside the
+// completion's transaction when this call completes the file, after
+// Files.Complete and before the commit, with the call's context and the
+// completed File.
+func TestEnsureWriteOnComplete(t *testing.T) {
+	ctx := context.WithValue(context.Background(), callerKey{}, "caller")
+	s, db, rec := openStore(t, single, noFile(), protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2), sqltest.Response{Affected: 1})
+	objects := newObjectStore()
+	var hooked blobfs.File
+	hook := data.OnComplete(func(hctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+		if hctx.Value(callerKey{}) != "caller" {
+			t.Error("the hook ran under another context than the call's")
+		}
+		hooked = f
+		_, err := tx.ExecContext(hctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID)
+		return err
+	})
+	got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s), hook)
+	if err != nil || !stored || got.Status != blobfs.StatusAvailable || got.Version != 2 {
+		t.Fatalf("Ensure = %+v, %v, %v, want the file stored", got, stored, err)
+	}
+	if hooked.ID != protocolFile || hooked.Status != blobfs.StatusAvailable || hooked.Version != 2 {
+		t.Errorf("the hook received %+v, want the completed row", hooked)
+	}
+	// The hook's exec sits between the completion and its commit.
+	if want := "begin query query commit begin query exec commit"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q", ops(rec), want)
+	}
+	wantDone(t, rec)
+}
+
+// TestEnsureWriteOnCompleteNotThisCall checks the hook never runs for a
+// completion this call does not make: a row found available, returned as
+// it stands, and a row another writer completed first, read back. Each
+// script holds no response for the hook's exec, so a hook run there fails
+// the call as well as the test.
+func TestEnsureWriteOnCompleteNotThisCall(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		script []sqltest.Response
+		ops    string
+	}{
+		{"Present", []sqltest.Response{protocolRow(blobfs.StatusAvailable, 2)}, "begin query commit"},
+		{"Lost", []sqltest.Response{
+			noFile(), protocolRow(blobfs.StatusPending, 1), // created
+			noFile(), protocolRow(blobfs.StatusAvailable, 2), // the completion matches no pending row at 1
+			protocolRow(blobfs.StatusAvailable, 2), // the row read back
+		}, "begin query query commit begin query query rollback query"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			s, db, rec := openStore(t, single, c.script...)
+			ran := false
+			hook := data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+				ran = true
+				_, err := tx.ExecContext(ctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID)
+				return err
+			})
+			got, stored, err := s.EnsureFile(ctx, db, newObjectStore(), protocolFile, strings.NewReader("report"), 6, ensure(ctx, s), hook)
+			if err != nil || stored || got.Status != blobfs.StatusAvailable || got.Version != 2 {
+				t.Fatalf("Ensure = %+v, %v, %v, want the available row, not stored", got, stored, err)
+			}
+			if ran || ops(rec) != c.ops {
+				t.Errorf("the hook ran = %v, ops = %q, want no hook and %q", ran, ops(rec), c.ops)
+			}
+			wantDone(t, rec)
+		})
+	}
+}
+
+// TestEnsureWriteOnCompleteRefuses checks a hook that fails rolls the
+// completion back and abandons the write as WriteFile does, its error
+// returned, named. A hook error wrapping the sentinels of a lost race is
+// still the hook's: the write abandoned and no row read back as another
+// writer's.
+func TestEnsureWriteOnCompleteRefuses(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		refused error
+	}{
+		{"Plain", errors.New("the consumer refuses")},
+		{"WrappingVersionMismatch", fmt.Errorf("the consumer's row moved: %w", query.ErrVersionMismatch)},
+		{"WrappingInvalidTransition", fmt.Errorf("the consumer's state: %w", blobfs.ErrInvalidTransition)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			s, db, rec := openStore(t, single,
+				protocolRow(blobfs.StatusPending, 1),                                  // resumed
+				protocolRow(blobfs.StatusAvailable, 2), sqltest.Response{Affected: 1}, // completed, and the hook's exec
+				protocolRow(blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1}, // abandoned
+			)
+			objects := newObjectStore()
+			hook := data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+				if _, err := tx.ExecContext(ctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID); err != nil {
+					return err
+				}
+				return c.refused
+			})
+			got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s), hook)
+			if !errors.Is(err, c.refused) || !strings.HasPrefix(err.Error(), "data: ensure file "+protocolFile+": the hook: ") || stored || got.ID != "" {
+				t.Fatalf("Ensure = %+v, %v, %v, want the hook's error, named", got, stored, err)
+			}
+			if errors.Is(err, blobfs.ErrNotFound) {
+				t.Errorf("Ensure = %v, want no read back's refusal beside the hook's", err)
+			}
+			// A read back after the abandon's exec would mark the hook's
+			// error taken for a lost race.
+			if want := "begin query commit begin query exec rollback begin query commit exec"; ops(rec) != want {
+				t.Errorf("ops = %q, want %q: the completion rolled back, then the abandon", ops(rec), want)
+			}
+			if del := rec.Calls()[8]; !strings.HasPrefix(del.SQL, "UPDATE blobfs_file") || !slices.Equal(del.Args, []any{protocolFile, int64(1)}) {
+				t.Errorf("the delete is %q %v, want the pending row's, at its version", del.SQL, del.Args)
+			}
+			if objects.stored() || !slices.Equal(objects.deletes, []string{protocolKey}) {
+				t.Errorf("deletes = %v, stored = %v, want the put object deleted with the row", objects.deletes, objects.stored())
+			}
+			wantDone(t, rec)
+		})
+	}
+}
+
+// TestEnsureWriteOnCompleteRefusesAMovedRow checks a hook that fails, whose
+// abandon then finds the row another writer completed, is still the hook's
+// failure: its error and the abandon's returned, and no row read back as
+// another writer's win, as a failed put's abandon would read it.
+func TestEnsureWriteOnCompleteRefusesAMovedRow(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, single, slices.Concat(
+		[]sqltest.Response{protocolRow(blobfs.StatusPending, 1)},                  // resumed
+		[]sqltest.Response{protocolRow(blobfs.StatusAvailable, 2), {Affected: 1}}, // completed, and the hook's exec
+		unchangedFile(single, protocolRow(blobfs.StatusAvailable, 2)),             // the abandon at 1 finds it completed
+	)...)
+	refused := errors.New("the consumer refuses")
+	hook := data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID); err != nil {
+			return err
+		}
+		return refused
+	})
+	got, stored, err := s.EnsureFile(ctx, db, newObjectStore(), protocolFile, strings.NewReader("report"), 6, ensure(ctx, s), hook)
+	if !errors.Is(err, refused) || !errors.Is(err, query.ErrVersionMismatch) || stored || got.ID != "" {
+		t.Fatalf("Ensure = %+v, %v, %v, want the hook's error and the abandon's", got, stored, err)
+	}
+	// A read back after the abandon's rollback would take the hook's
+	// failure for a lost race.
+	if want := "begin query commit begin query exec rollback begin query query rollback"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q: no read back after the abandon", ops(rec), want)
+	}
+	wantDone(t, rec)
 }
 
 // TestEnsureWriteRefusesAnID checks an id blobfs.ParseID refuses is
@@ -670,6 +892,102 @@ func TestRemove(t *testing.T) {
 	if !errors.Is(err, query.ErrVersionMismatch) || !strings.HasPrefix(err.Error(), "data: remove file "+protocolFile+": ") {
 		t.Errorf("Remove at a stale version = %v, want ErrVersionMismatch, named", err)
 	}
+}
+
+// TestRemoveOnDelete checks the delete hook runs in the delete's first
+// transaction, after the row is marked deleting under the version guard
+// and before the commit, with the call's context and the marked File; the
+// object and the purge follow.
+func TestRemoveOnDelete(t *testing.T) {
+	ctx := context.WithValue(context.Background(), callerKey{}, "caller")
+	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusDeleting, 3), sqltest.Response{Affected: 1}, sqltest.Response{Affected: 1})
+	objects := newObjectStore()
+	objects.objects[protocolKey] = "report"
+	var hooked blobfs.File
+	hook := data.OnDelete(func(hctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+		if hctx.Value(callerKey{}) != "caller" {
+			t.Error("the hook ran under another context than the call's")
+		}
+		hooked = f
+		_, err := tx.ExecContext(hctx, "DELETE FROM owner WHERE file_id = $1", f.ID)
+		return err
+	})
+	err := s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, data.AtVersion(2), hook)
+	if err != nil {
+		t.Fatalf("Remove = %v", err)
+	}
+	if hooked.ID != protocolFile || hooked.Status != blobfs.StatusDeleting || hooked.Version != 3 {
+		t.Errorf("the hook received %+v, want the row marked deleting", hooked)
+	}
+	// The hook's exec sits between the delete and its commit: a hook run
+	// on the pool, or after the commit, puts it past the commit.
+	if want := "begin query exec commit exec"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q", ops(rec), want)
+	}
+	if del := rec.Calls()[1]; !slices.Equal(del.Args, []any{protocolFile, int64(2)}) {
+		t.Errorf("the delete bound %v, want the file at the guarded version", del.Args)
+	}
+	if objects.stored() {
+		t.Error("the object outlived its remove")
+	}
+	wantDone(t, rec)
+}
+
+// TestRemoveOnDeleteRetried checks a retry, whose delete changes no row
+// because the file is already deleting, runs no hook and still deletes the
+// object and purges the row.
+func TestRemoveOnDeleteRetried(t *testing.T) {
+	ctx := context.Background()
+	responses := append(unchangedFile(single, protocolRow(blobfs.StatusDeleting, 3)), sqltest.Response{Affected: 1})
+	s, db, rec := openStore(t, single, responses...)
+	objects := newObjectStore()
+	objects.objects[protocolKey] = "report"
+	ran := 0
+	hook := data.OnDelete(func(context.Context, *sqlate.Tx, blobfs.File) error {
+		ran++
+		return nil
+	})
+	if err := s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, hook); err != nil {
+		t.Fatalf("Remove retried = %v", err)
+	}
+	if ran != 0 {
+		t.Errorf("the retry ran the hook %d times, want none", ran)
+	}
+	if want := "begin query query commit exec"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q", ops(rec), want)
+	}
+	if objects.stored() || !slices.Equal(objects.deletes, []string{protocolKey}) {
+		t.Errorf("deletes = %v, stored = %v, want the object deleted", objects.deletes, objects.stored())
+	}
+	wantDone(t, rec)
+}
+
+// TestRemoveOnDeleteRefuses checks a hook that fails rolls the delete's
+// transaction back with what it wrote, so the row is never marked, and
+// nothing is deleted or purged; the hook's error is returned, named.
+func TestRemoveOnDeleteRefuses(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusDeleting, 3), sqltest.Response{Affected: 1})
+	objects := newObjectStore()
+	objects.objects[protocolKey] = "report"
+	refused := errors.New("the consumer refuses")
+	hook := data.OnDelete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM owner WHERE file_id = $1", f.ID); err != nil {
+			return err
+		}
+		return refused
+	})
+	err := s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, hook)
+	if !errors.Is(err, refused) || !strings.HasPrefix(err.Error(), "data: remove file "+protocolFile+": the hook: ") {
+		t.Fatalf("Remove = %v, want the hook's error, named", err)
+	}
+	if want := "begin query exec rollback"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q: the delete rolled back, nothing purged", ops(rec), want)
+	}
+	if !objects.stored() || len(objects.deletes) != 0 {
+		t.Errorf("deletes = %v, stored = %v, want the object in place", objects.deletes, objects.stored())
+	}
+	wantDone(t, rec)
 }
 
 // TestRemoveFileID checks the delete of a file by id: the delete under the
