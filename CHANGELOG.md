@@ -7,33 +7,35 @@ the `postgres` sub-module keeps its own.
 
 ## [Unreleased]
 
+## [v0.7.0] - 2026-10-15
+
 ### Added
 
-- `data.OnComplete`, a `data.WriteOption` that `Store.WriteFile` and `Store.EnsureFile` take as
-  a trailing variadic argument. Its function runs in the completion's transaction, after `Files.Complete`, with the
-  call's context and the completed `File`, so a consumer's rows, such as its reference to the
-  file, commit exactly when the file does. An error from the function rolls the completion back
-  and abandons the write as a failed completion does, and the call returns it wrapped.
-  `EnsureFile` runs the function only when the call completes the file itself: never for a row
-  it finds available, or one another writer completed first. A caller that passes no option
-  compiles and behaves as before.
-- `data/datatest` checks the hook. The Protocols group checks that the hook's writes commit with
-  the row (`WriteOnComplete`) and that a hook's error rolls them back and leaves no file
+- `data.OnComplete`, the one `data.WriteOption`, which `Store.WriteFile` and `Store.EnsureFile`
+  take as a trailing variadic argument. Its function runs in the completion's transaction, after
+  `Files.Complete`, with the call's context and the completed `File`, so a consumer's rows, such
+  as its reference to the file, commit exactly when the file does. An error from the function
+  rolls the completion back and abandons the write as a failed completion does, and the call
+  returns it wrapped. `EnsureFile` runs the function only when the call completes the file
+  itself: never for a row it finds available, or one another writer completed first. A caller
+  that passes no option compiles and behaves as before.
+- `data.OnDelete`, a `data.RemoveOption` that `Store.RemoveFile` takes. Its function runs in the
+  transaction that runs `pick` and `Files.Delete`, after the file is marked deleting, with the
+  call's context and the `File` as marked, so a consumer's rows commit exactly when the delete
+  begins. A retry, whose delete finds the file already deleting, runs no function and finishes
+  the delete. An error from the function rolls the transaction back, so the file is not marked
+  and nothing is purged, and the call returns it wrapped.
+- `data/datatest` checks the completion hook. The Protocols group checks that the hook's writes
+  commit with the row (`WriteOnComplete`) and that its error rolls them back and leaves no file
   (`WriteOnCompleteRefuses`), and, for `EnsureFile`, that the hook runs once for the completing
   call (`EnsureOnComplete`), not at all over an available row
   (`EnsureOnCompleteOverAnAvailableRow`) or for a writer whose completion lost
   (`EnsureOnCompleteOnASharedRow`), and that its error, even one wrapping
   `query.ErrVersionMismatch`, rolls back and leaves no file (`EnsureOnCompleteRefuses`).
-
-- `data.OnDelete`, a `data.RemoveOption` that `Store.RemoveFile` takes. Its function runs in
-  the transaction that runs `pick` and `Files.Delete`, after the file is marked deleting, with
-  the call's context and the `File` as marked, so a consumer's rows commit exactly when the
-  delete begins. A retry, whose delete finds the file already deleting, runs no function and
-  finishes the delete. An error from the function rolls the transaction back, so the file is
-  not marked and nothing is purged, and the call returns it wrapped.
-- `data/datatest` checks the delete hook: it runs once and its writes commit (`RemoveOnDelete`),
-  a `RemoveFile` of a file already deleting runs none (`RemoveOnDeleteRetried`), and its error
-  leaves the file as it was with its object in place (`RemoveOnDeleteRefuses`).
+- `data/datatest` checks the delete hook. The Protocols group checks that it runs once and its
+  writes commit (`RemoveOnDelete`), that a `RemoveFile` of a file already deleting runs none
+  (`RemoveOnDeleteRetried`), and that its error leaves the file as it was with its object in
+  place (`RemoveOnDeleteRefuses`).
 
 ### Changed
 
@@ -48,6 +50,9 @@ the `postgres` sub-module keeps its own.
   abandon's own refusals rather than from the error it returns, so a hook's error that wraps
   `query.ErrVersionMismatch` or `blobfs.ErrInvalidTransition` is returned, not taken for that
   race. Without a hook its outcomes are unchanged.
+- The features and concepts documents state how a consumer that runs its own work in a branch
+  mark's transaction tells its mark from a retry: it reads the anchor's status under
+  `Directories.LockTree` before `Directories.MarkDeleting`.
 
 ## [v0.6.0] - 2026-10-09
 
@@ -281,7 +286,8 @@ library never calls.
 - `data/datatest`, the conformance suite: `Run` checks a store over any engine against the
   baseline on a live database, the hold's refusals and interleavings with a delete included.
 
-[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.7.0...HEAD
+[v0.7.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.7.0
 [v0.6.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.6.0
 [v0.5.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.5.0
 [v0.4.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.4.0
