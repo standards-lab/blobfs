@@ -11,19 +11,18 @@ the `postgres` sub-module keeps its own.
 
 - `data/datatest` checks a straggler that waits. The Sweeps group's `StragglerWaits` lands an
   upload in flight after the pass marked the branch again, and checks that the pass reports no
-  `More` and no error and leaves the upload and the branch, and that the next pass marks the
-  branch again and removes it with the upload, whether the upload is still in flight or has
-  completed since.
+  `More` and no error and leaves the upload and the branch, and that once the upload's row is
+  deleting the next pass removes the branch.
 
 ### Changed
 
 - `Store.Sweep` no longer reports `SweepResult.More` for a branch a straggler stops: an active
-  row, such as an upload in flight, met after the pass marked the branch again, or a
+  or mutable row, such as an upload in flight, met after the pass marked the branch again, or a
   directory refused as not empty again after that mark. The branch's walk still stops and the
   pass goes on to the other roots; the branch waits for a later pass, the consumer's next
-  interval or a nudge, which marks it again and removes it. `More` now means only that the
-  pass's bound left work, so `SweepUntilDone` and a general sweeper no longer run a pass back to
-  back for a straggler.
+  interval or a nudge. `More` now means only that the pass's bound left work a further pass can
+  make progress on, so `SweepUntilDone` and a general sweeper no longer run passes back to back
+  that do nothing until the straggler's row stops being mutable.
 
 ## [v0.7.0] - 2026-10-15
 

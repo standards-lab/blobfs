@@ -583,9 +583,10 @@ the directory itself. Each removal runs in a transaction of its own, guarded by 
 pass read the directory at. A straggler, an active row the walk meets or a directory refused as
 `ErrNotEmpty`, has the pass mark the branch again, in a transaction of its own, and walk the
 directory again; a straggler met after that mark stops the branch's walk without setting
-`More`, and the pass goes on to the other roots. The branch waits for a later pass, the
-consumer's next interval or a nudge, which marks it again, the straggler with it, whether an
-upload in flight or one completed since, and goes on.
+`More`, and the pass goes on to the other roots. A further pass could make no progress on the
+branch until the straggler's row stops being mutable, an upload in flight completing or the
+stale reclaim deleting it, so the branch waits for a later pass: the consumer's next interval,
+or a nudge.
 
 A pass's cost is bounded by `Batch`: it reads the roots, the pages of each directory, and the
 stale rows no further than the records its budget allows, plus the rows it leaves in place. A
@@ -932,9 +933,8 @@ retry at any version, its wait on a hold, a file move out of the branch racing t
 orders, every refusal a deleting directory makes, the listings' hiding, and `BranchRoots`'s
 roots; it runs after the other groups because the branches it marks stay in the tree. Sweeps
 runs last because its first pass removes them; it then checks a full sweep with its hook, a pass
-stopped between an object's delete and its row's purge, stragglers, one that lands after the
-pass marked the branch again and waits for the next pass, the batch bound, a hook that aborts a
-removal, a refused branch and a refused stale row that hold back nothing behind them,
+stopped between an object's delete and its row's purge, stragglers, the batch bound, a hook that
+aborts a removal, a refused branch and a refused stale row that hold back nothing behind them,
 at the default batch and at `Batch(1)`, the stale reclaim's age, and concurrent passes
 converging. Every check of a refusal of a deleting row also checks the `DeletingError`'s
 kind: the file's own for a file whose delete began, and the directory's for everything a mark
