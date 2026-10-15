@@ -39,6 +39,9 @@
 //   - WriteOption configures a write, Store.WriteFile's or
 //     Store.EnsureFile's: OnComplete runs the consumer's function in the
 //     transaction of the completion the call itself makes.
+//   - RemoveOption configures Store.RemoveFile: AtVersion, a VersionOption,
+//     names the version, and OnDelete runs the consumer's function in the
+//     transaction that marks the file deleting.
 //
 // The protocols, which run the steps end to end over the consumer's object
 // store:

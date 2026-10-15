@@ -25,8 +25,23 @@ the `postgres` sub-module keeps its own.
   (`EnsureOnCompleteOnASharedRow`), and that its error, even one wrapping
   `query.ErrVersionMismatch`, rolls back and leaves no file (`EnsureOnCompleteRefuses`).
 
+- `data.OnDelete`, a `data.RemoveOption` that `Store.RemoveFile` takes. Its function runs in
+  the transaction that runs `pick` and `Files.Delete`, after the file is marked deleting, with
+  the call's context and the `File` as marked, so a consumer's rows commit exactly when the
+  delete begins. A retry, whose delete finds the file already deleting, runs no function and
+  finishes the delete. An error from the function rolls the transaction back, so the file is
+  not marked and nothing is purged, and the call returns it wrapped.
+- `data/datatest` checks the delete hook: it runs once and its writes commit (`RemoveOnDelete`),
+  a `RemoveFile` of a file already deleting runs none (`RemoveOnDeleteRetried`), and its error
+  leaves the file as it was with its object in place (`RemoveOnDeleteRefuses`).
+
 ### Changed
 
+- **Breaking:** `Store.RemoveFile` takes a trailing `...data.RemoveOption` in place of
+  `...data.VersionOption`. `data.RemoveOption` is an interface that `data.VersionOption`, and so
+  `data.AtVersion`, satisfies, so a call passing no option or `AtVersion(v)` compiles unchanged;
+  only a caller spreading a `[]data.VersionOption` into `RemoveFile` must build a
+  `[]data.RemoveOption` instead.
 - `Store.WriteFile` and `Store.EnsureFile` complete the file in a transaction of their own on
   `db`, hooked or not, where they completed it on the pool. Their outcomes are unchanged.
 - `Store.EnsureFile` tells a completion another writer won from the completion's and the

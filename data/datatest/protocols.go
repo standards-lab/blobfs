@@ -43,6 +43,9 @@ func (s *suite) protocols(t *testing.T) {
 	t.Run("Remove", s.protocolRemove)
 	t.Run("RemoveFailedObjectDelete", s.protocolRemoveFailedDelete)
 	t.Run("RemoveRefusedPick", s.protocolRemoveRefusedPick)
+	t.Run("RemoveOnDelete", s.protocolRemoveOnDelete)
+	t.Run("RemoveOnDeleteRetried", s.protocolRemoveOnDeleteRetried)
+	t.Run("RemoveOnDeleteRefuses", s.protocolRemoveOnDeleteRefuses)
 	t.Run("Purge", s.protocolPurge)
 	t.Run("SweepUntilDone", s.protocolSweepUntilDone)
 	t.Run("SweepUntilDoneStopped", s.protocolSweepUntilDoneStopped)
@@ -95,6 +98,22 @@ func (s *suite) referencing(t *testing.T, ran *int) data.WriteOption {
 // pick naming the file.
 func (s *suite) removeFile(store *data.Store, objects data.ObjectDeleter, id string) error {
 	return store.RemoveFile(s.ctx, s.db, objects, func(*sqlate.Tx) (string, error) { return id, nil })
+}
+
+// unreferencing is a delete hook that removes the references to the file
+// in the delete's transaction, counts its runs in ran, and records the
+// file it received in hooked and the row it read there in read.
+func (s *suite) unreferencing(store *data.Store, ran *int, hooked, read *blobfs.File) data.RemoveOption {
+	return data.OnDelete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+		*ran++
+		*hooked = f
+		var err error
+		if *read, err = store.Files.Find(ctx, tx, f.ID); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, "DELETE FROM datatest_reference WHERE file_id = "+s.db.Dialect().Placeholder(1), f.ID)
+		return err
+	})
 }
 
 // wantWritten checks that got is the available row the database holds,
@@ -782,6 +801,126 @@ func (s *suite) protocolRemoveRefusedPick(t *testing.T) {
 			}
 			if after := s.file(t, before.ID); !equalFile(before, after) {
 				t.Errorf("the refused Remove changed the row to\n%+v\nfrom\n%+v", after, before)
+			}
+		})
+	}
+}
+
+// protocolRemoveOnDelete checks the delete hook runs once, in the
+// transaction that marks the file deleting: the File it receives and the
+// row it reads there are the deleting row, and the reference it removes
+// there commits, so the purge, which a reference refuses, finishes.
+func (s *suite) protocolRemoveOnDelete(t *testing.T) {
+	s.createFileReferences(t)
+	for _, tier := range s.storesUnder() {
+		t.Run(tier.name, func(t *testing.T) {
+			dir := s.mkdir(t, "remove-on-delete-"+t.Name())
+			objects := newObjectStore()
+			f, err := s.writeFile(tier.store, objects, dir.ID, "report.txt", "report")
+			if err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			s.reference(t, s.db, f.ID)
+			var ran int
+			var hooked, read blobfs.File
+			err = tier.store.RemoveFile(s.ctx, s.db, objects, func(*sqlate.Tx) (string, error) { return f.ID, nil },
+				s.unreferencing(tier.store, &ran, &hooked, &read))
+			if err != nil {
+				s.unreference(t, f.ID)
+				t.Fatalf("Remove with a hook: %v", err)
+			}
+			if ran != 1 {
+				t.Errorf("the hook ran %d times, want once", ran)
+			}
+			if hooked.ID != f.ID || hooked.Status != blobfs.StatusDeleting || hooked.Version != f.Version+1 || !equalFile(hooked, read) {
+				t.Errorf("the hook received\n%+v\nand read\n%+v\nin its transaction, want the row deleting at version %d", hooked, read, f.Version+1)
+			}
+			if n := s.references(t, f.ID); n != 0 {
+				t.Errorf("the hook's unreference left %d references, want it committed", n)
+			}
+			if _, ok := objects.objects[f.Key]; ok || objects.deleted[f.Key] != 1 {
+				t.Errorf("Remove deleted %v, want the row's key %s", objects.deleted, f.Key)
+			}
+			s.wantFilesGone(t, f.ID)
+		})
+	}
+}
+
+// protocolRemoveOnDeleteRetried checks a RemoveFile of a file already
+// deleting, the retry of one whose object delete failed, runs no hook and
+// finishes the delete: the hook ran once, with the delete that marked the
+// file.
+func (s *suite) protocolRemoveOnDeleteRetried(t *testing.T) {
+	s.createFileReferences(t)
+	for _, tier := range s.storesUnder() {
+		t.Run(tier.name, func(t *testing.T) {
+			dir := s.mkdir(t, "remove-on-delete-retried-"+t.Name())
+			objects := newObjectStore()
+			f, err := s.writeFile(tier.store, objects, dir.ID, "report.txt", "report")
+			if err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			var ran int
+			var hooked, read blobfs.File
+			hook := s.unreferencing(tier.store, &ran, &hooked, &read)
+			pick := func(*sqlate.Tx) (string, error) { return f.ID, nil }
+			objects.failAt = 1
+			if err := tier.store.RemoveFile(s.ctx, s.db, objects, pick, hook); !errors.Is(err, errObjectStore) {
+				t.Fatalf("Remove under a failing delete = %v, want the store's error", err)
+			}
+			if got := s.file(t, f.ID); got.Status != blobfs.StatusDeleting || ran != 1 {
+				t.Fatalf("the failed Remove left the row %s after %d hooks, want deleting after one", got.Status, ran)
+			}
+			if err := tier.store.RemoveFile(s.ctx, s.db, objects, pick, hook); err != nil {
+				t.Fatalf("the retried Remove: %v", err)
+			}
+			if ran != 1 {
+				t.Errorf("the hook ran %d times, want once: the retry runs none", ran)
+			}
+			if objects.deleted[f.Key] != 1 || objects.calls != 2 {
+				t.Errorf("the object was deleted %d times in %d calls, want once in two", objects.deleted[f.Key], objects.calls)
+			}
+			s.wantFilesGone(t, f.ID)
+		})
+	}
+}
+
+// protocolRemoveOnDeleteRefuses checks a hook that fails rolls the
+// delete's transaction back with what it wrote: the hook's error
+// returned, the row as it was, and its object neither deleted nor gone.
+func (s *suite) protocolRemoveOnDeleteRefuses(t *testing.T) {
+	s.createFileReferences(t)
+	refused := errors.New("datatest: the hook refuses")
+	for _, tier := range s.storesUnder() {
+		t.Run(tier.name, func(t *testing.T) {
+			dir := s.mkdir(t, "remove-on-delete-refuses-"+t.Name())
+			objects := newObjectStore()
+			f, err := s.writeFile(tier.store, objects, dir.ID, "report.txt", "report")
+			if err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			before := s.file(t, f.ID)
+			ran := 0
+			err = tier.store.RemoveFile(s.ctx, s.db, objects, func(*sqlate.Tx) (string, error) { return f.ID, nil },
+				data.OnDelete(func(_ context.Context, tx *sqlate.Tx, f blobfs.File) error {
+					ran++
+					s.reference(t, tx, f.ID)
+					return refused
+				}))
+			if !errors.Is(err, refused) {
+				t.Fatalf("Remove under a refusing hook = %v, want the hook's error", err)
+			}
+			if ran != 1 {
+				t.Fatalf("the hook ran %d times, want once", ran)
+			}
+			if n := s.references(t, f.ID); n != 0 {
+				t.Errorf("the hook's reference outlived the rollback %d times", n)
+			}
+			if after := s.file(t, f.ID); !equalFile(before, after) {
+				t.Errorf("the refused Remove changed the row to\n%+v\nfrom\n%+v", after, before)
+			}
+			if b, ok := objects.objects[f.Key]; !ok || b != "report" || objects.calls != 0 {
+				t.Errorf("the refused Remove made %d deletes and left %q, want the object in place", objects.calls, b)
 			}
 		})
 	}

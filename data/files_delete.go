@@ -48,21 +48,24 @@ func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...Vers
 // AtVersion. See Files in docs/features.md.
 func (f *Files) Delete(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) (_ blobfs.File, err error) {
 	defer wrap(&err, "delete file %s", id)
-	return f.deleteFile(ctx, tx, id, atVersion(opts))
+	file, _, err := f.deleteFile(ctx, tx, id, atVersion(opts))
+	return file, err
 }
 
 // deleteFile is Delete's body, at version when it is not nil, with its
-// errors bare for the sweep.
-func (f *Files) deleteFile(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (blobfs.File, error) {
-	file, _, err := f.remove.One(ctx, tx, withVersion(query.Args{"id": id}, version))
+// errors bare for the sweep. marked reports that this call moved the row
+// to deleting, as the statement's changed-row flag tells it; a row
+// returned unmarked was already deleting, the step's retry.
+func (f *Files) deleteFile(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (_ blobfs.File, marked bool, _ error) {
+	file, changed, err := f.remove.One(ctx, tx, withVersion(query.Args{"id": id}, version))
 	switch {
 	case err != nil:
-		return blobfs.File{}, notFound(err)
+		return blobfs.File{}, false, notFound(err)
 	case version != nil && file.Status.Mutable():
 		// The update matched nothing and the row is not deleting.
-		return blobfs.File{}, versionMismatch(*version, file.Version)
+		return blobfs.File{}, false, versionMismatch(*version, file.Version)
 	}
-	return file, nil
+	return file, changed, nil
 }
 
 // Purge is the last step of a file delete: it removes the deleting row of

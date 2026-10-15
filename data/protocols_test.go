@@ -864,6 +864,102 @@ func TestRemove(t *testing.T) {
 	}
 }
 
+// TestRemoveOnDelete checks the delete hook runs in the delete's first
+// transaction, after the row is marked deleting under the version guard
+// and before the commit, with the call's context and the marked File; the
+// object and the purge follow.
+func TestRemoveOnDelete(t *testing.T) {
+	ctx := context.WithValue(context.Background(), callerKey{}, "caller")
+	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusDeleting, 3), sqltest.Response{Affected: 1}, sqltest.Response{Affected: 1})
+	objects := newObjectStore()
+	objects.objects[protocolKey] = "report"
+	var hooked blobfs.File
+	hook := data.OnDelete(func(hctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+		if hctx.Value(callerKey{}) != "caller" {
+			t.Error("the hook ran under another context than the call's")
+		}
+		hooked = f
+		_, err := tx.ExecContext(hctx, "DELETE FROM owner WHERE file_id = $1", f.ID)
+		return err
+	})
+	err := s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, data.AtVersion(2), hook)
+	if err != nil {
+		t.Fatalf("Remove = %v", err)
+	}
+	if hooked.ID != protocolFile || hooked.Status != blobfs.StatusDeleting || hooked.Version != 3 {
+		t.Errorf("the hook received %+v, want the row marked deleting", hooked)
+	}
+	// The hook's exec sits between the delete and its commit: a hook run
+	// on the pool, or after the commit, puts it past the commit.
+	if want := "begin query exec commit exec"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q", ops(rec), want)
+	}
+	if del := rec.Calls()[1]; !slices.Equal(del.Args, []any{protocolFile, int64(2)}) {
+		t.Errorf("the delete bound %v, want the file at the guarded version", del.Args)
+	}
+	if objects.stored() {
+		t.Error("the object outlived its remove")
+	}
+	wantDone(t, rec)
+}
+
+// TestRemoveOnDeleteRetried checks a retry, whose delete changes no row
+// because the file is already deleting, runs no hook and still deletes the
+// object and purges the row.
+func TestRemoveOnDeleteRetried(t *testing.T) {
+	ctx := context.Background()
+	responses := append(unchangedFile(single, protocolRow(blobfs.StatusDeleting, 3)), sqltest.Response{Affected: 1})
+	s, db, rec := openStore(t, single, responses...)
+	objects := newObjectStore()
+	objects.objects[protocolKey] = "report"
+	ran := 0
+	hook := data.OnDelete(func(context.Context, *sqlate.Tx, blobfs.File) error {
+		ran++
+		return nil
+	})
+	if err := s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, hook); err != nil {
+		t.Fatalf("Remove retried = %v", err)
+	}
+	if ran != 0 {
+		t.Errorf("the retry ran the hook %d times, want none", ran)
+	}
+	if want := "begin query query commit exec"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q", ops(rec), want)
+	}
+	if objects.stored() || !slices.Equal(objects.deletes, []string{protocolKey}) {
+		t.Errorf("deletes = %v, stored = %v, want the object deleted", objects.deletes, objects.stored())
+	}
+	wantDone(t, rec)
+}
+
+// TestRemoveOnDeleteRefuses checks a hook that fails rolls the delete's
+// transaction back with what it wrote, so the row is never marked, and
+// nothing is deleted or purged; the hook's error is returned, named.
+func TestRemoveOnDeleteRefuses(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusDeleting, 3), sqltest.Response{Affected: 1})
+	objects := newObjectStore()
+	objects.objects[protocolKey] = "report"
+	refused := errors.New("the consumer refuses")
+	hook := data.OnDelete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM owner WHERE file_id = $1", f.ID); err != nil {
+			return err
+		}
+		return refused
+	})
+	err := s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, hook)
+	if !errors.Is(err, refused) || !strings.HasPrefix(err.Error(), "data: remove file "+protocolFile+": the hook: ") {
+		t.Fatalf("Remove = %v, want the hook's error, named", err)
+	}
+	if want := "begin query exec rollback"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q: the delete rolled back, nothing purged", ops(rec), want)
+	}
+	if !objects.stored() || len(objects.deletes) != 0 {
+		t.Errorf("deletes = %v, stored = %v, want the object in place", objects.deletes, objects.stored())
+	}
+	wantDone(t, rec)
+}
+
 // TestRemoveFileID checks the delete of a file by id: the delete under the
 // version guard in a transaction of its own, then the object, then the
 // purge; a retry after it finished finds no row, ErrNotFound.

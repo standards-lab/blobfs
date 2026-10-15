@@ -109,7 +109,10 @@ sweep finds.
 
 `data.Store.RemoveFile` runs the three steps end to end. It runs the first step in one
 transaction around a callback of the consumer's, in which the consumer removes its own
-references to the file; `data.Store.RemoveFileID` is the same delete of a file the caller names
+references to the file, and where `data.OnDelete` runs the consumer's function once the row is
+deleting, so its rows commit as the delete begins; a retry over a row already deleting runs no
+function, and the function's error rolls the step back. `data.Store.RemoveFileID` is the same
+delete of a file the caller names
 by id. `data.Store.PurgeFile` runs the last two steps, for a consumer that began the delete in a
 transaction of its own; see [the protocols](features.md#the-protocols).
 

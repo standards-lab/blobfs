@@ -192,12 +192,15 @@ func (s *Store) store(ctx context.Context, db *sqlate.DB, objects ObjectStore, b
 // RemoveFile runs the two-phase delete of the file pick names. pick and
 // Files.Delete under opts run in one transaction on db, where the caller
 // removes its own references to the file; RemoveFile then deletes the
-// object and purges the row, as PurgeFile does. A retry of an interrupted
-// RemoveFile finishes it; a retry of a finished one returns
-// blobfs.ErrNotFound. pick's error, or its transaction's, is returned as it
-// came. See The protocols in docs/features.md.
-func (s *Store) RemoveFile(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, pick func(*sqlate.Tx) (string, error), opts ...VersionOption) (err error) {
-	version := atVersion(opts)
+// object and purges the row, as PurgeFile does. OnDelete runs its hook in
+// that transaction, after the file is marked deleting; a hook error rolls
+// it back and nothing is purged. A retry of an interrupted RemoveFile,
+// which finds the file already deleting, runs no hook and finishes it; a
+// retry of a finished one returns blobfs.ErrNotFound. pick's error, or its
+// transaction's, is returned as it came. See The protocols in
+// docs/features.md.
+func (s *Store) RemoveFile(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, pick func(*sqlate.Tx) (string, error), opts ...RemoveOption) (err error) {
+	o := removeOpts(opts)
 	var id string
 	picked := false
 	file, err := db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
@@ -206,7 +209,16 @@ func (s *Store) RemoveFile(ctx context.Context, db *sqlate.DB, objects ObjectDel
 			return blobfs.File{}, err
 		}
 		picked = true
-		return s.Files.deleteFile(ctx, tx, id, version)
+		file, marked, err := s.Files.deleteFile(ctx, tx, id, o.at())
+		if err != nil || !marked || o.onDelete == nil {
+			// A row returned unmarked was already deleting: a retry, whose
+			// hook ran with the delete that marked it.
+			return file, err
+		}
+		if err := o.onDelete(ctx, tx, file); err != nil {
+			return blobfs.File{}, fmt.Errorf("the hook: %w", err)
+		}
+		return file, nil
 	})
 	if !picked {
 		return err
@@ -229,7 +241,8 @@ func (s *Store) RemoveFileID(ctx context.Context, db *sqlate.DB, objects ObjectD
 // nil, with its errors bare for the write's abandon.
 func (s *Store) remove(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, id string, version *int64) error {
 	file, err := db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
-		return s.Files.deleteFile(ctx, tx, id, version)
+		file, _, err := s.Files.deleteFile(ctx, tx, id, version)
+		return file, err
 	})
 	if err != nil {
 		return err

@@ -367,7 +367,7 @@ error once as `data: <op> file <id>: ...`.
 |---|---|---|
 | `WriteFile(ctx, db, objects, body, size, begin, opts...)` | Runs `begin`, which calls `Files.Create`, in one transaction, so the pending row commits before any byte; puts `body` under the row's `Key` outside any transaction, in the type the row declares; completes the row in a transaction of its own, with `OnComplete`'s hook in it, and returns it available. | `begin`'s; before any put, a `TransitionError` for a row that is not pending, wrapped in its `DeletingError` for a deleting one; the put's; `Complete`'s; the hook's |
 | `EnsureFile(ctx, db, objects, id, body, size, begin, opts...)` | The retry-safe `WriteFile` of the file under the fixed `id`, such as a seed's: `begin` calls `Files.Ensure` with `WithID(id)`. Returns the row and whether this call stored its object; `OnComplete`'s hook runs only in a completion this call makes. | `IDError` before any SQL; `begin`'s; `ErrNameTaken` for a pending or available row found under another id; an error naming both ids for a row `begin` created under another id; a `DeletingError` for a deleting row found, under `id` or another; `WriteFile`'s, the hook's among them |
-| `RemoveFile(ctx, db, objects, pick, opts...)` | Runs `pick`, which returns the file's id, and `Files.Delete` under `opts` in one transaction, then deletes the object and purges the row. | `pick`'s; `Files.Delete`'s; `PurgeFile`'s |
+| `RemoveFile(ctx, db, objects, pick, opts...)` | Runs `pick`, which returns the file's id, and `Files.Delete` under `opts` in one transaction, with `OnDelete`'s hook in it after the row is marked deleting, then deletes the object and purges the row. | `pick`'s; `Files.Delete`'s; the hook's, which leaves the row as it was; `PurgeFile`'s |
 | `RemoveFileID(ctx, db, objects, id, opts...)` | `RemoveFile` of the file with `id`, for a caller with no scope to check and no reference to remove in the delete's transaction. | `Files.Delete`'s; `PurgeFile`'s |
 | `PurgeFile(ctx, db, objects, file)` | The delete's last two steps, for a file whose `Files.Delete` the consumer ran itself: deletes the object under its `Key`, then purges the row. | the object delete's, which leaves the row deleting; `Files.Purge`'s |
 
@@ -434,6 +434,18 @@ any version is the retry of one already begun. A retry of an interrupted `Remove
 `PurgeFile` finishes it, while a retry of a `RemoveFile` that already finished finds no row and
 returns `ErrNotFound`. A `PurgeFile` that never runs leaves a deleting row the sweep's stale
 reclaim finishes.
+
+`RemoveFile` takes `RemoveOption`s: `AtVersion(v)`, the `VersionOption` the other guarded steps
+take, and `OnDelete(fn)`. `RemoveFile` runs `fn(ctx, tx, file)` in its first transaction, after
+`pick` and after `Files.Delete` has marked the row deleting, with the call's `ctx` and the row as
+marked, so what `fn` writes, such as the removal of the consumer's reference to the file or a
+record of the delete, commits exactly when the delete begins. An error from `fn` rolls that
+transaction back with whatever `pick` and `fn` wrote: the row is left as it was, not deleting,
+its object is not deleted, and the call returns the error wrapped as `data: remove file <id>:
+the hook: ...`. A retry, whose `Files.Delete` finds the row already deleting and changes
+nothing, runs no hook, since the call that marked the row ran its own; it finishes the delete as
+any retry does. `RemoveFile` tells the retry from the delete statement's own report of whether
+it changed the row, not from a read.
 
 ### Listings
 
@@ -896,7 +908,10 @@ one's put; an insert lost to a row a competing writer committed, which `EnsureFi
 and the completion hook running once for the call that completes the file, not at all over an
 available row or for the writer whose completion lost, and its error, even one wrapping a lost
 race's sentinel, rolling the completion back and leaving no row.
-It checks `Store.RemoveFile`, its retry once finished, and a refusing pick;
+It checks `Store.RemoveFile`, its retry once finished, and a refusing pick; the delete hook
+running once in the transaction that marks the file deleting, its writes committing, no hook
+for a retry over a row already deleting, and a hook's error rolling the delete back with the row
+as it was and its object in place;
 `Store.RemoveFileID`'s failed object delete and retry; `Store.PurgeFile` after the caller's own
 `Files.Delete`; and `SweepUntilDone` draining a backlog larger than one batch in counted passes,
 and running no pass once stopped. Protocols runs before any group marks a branch, and it sweeps

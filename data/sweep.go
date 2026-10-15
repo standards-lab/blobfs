@@ -407,7 +407,8 @@ func (w *sweep) reclaim(ctx context.Context, f blobfs.File) bool {
 	if f.Status == blobfs.StatusPending {
 		var err error
 		file, err = w.db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
-			return w.store.Files.deleteFile(ctx, tx, f.ID, &f.Version)
+			file, _, err := w.store.Files.deleteFile(ctx, tx, f.ID, &f.Version)
+			return file, err
 		})
 		switch {
 		case errors.Is(err, blobfs.ErrNotFound), errors.Is(err, query.ErrVersionMismatch):
