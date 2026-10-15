@@ -290,7 +290,10 @@ The mark is guarded like the other steps a caller takes on a row it read. `data.
 the branch only while its root is at the version the caller read, the directory its user saw and
 confirmed; a directory at another version is `query.ErrVersionMismatch`, and nothing is marked.
 A directory already deleting is the mark's retry and reports what it reached anew (see
-[deleting outranks the version](#deleting-outranks-the-version)).
+[deleting outranks the version](#deleting-outranks-the-version)), a straggler included, so a
+consumer that runs its own work in the mark's transaction tells its mark from a retry by reading
+the root's status under `Directories.LockTree` before the mark (see [deleting a
+branch](features.md#deleting-a-branch)).
 
 ### Stragglers and convergence
 

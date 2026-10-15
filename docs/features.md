@@ -535,6 +535,14 @@ The root is `ErrRootDirectory` before any SQL, and a directory that does not exi
 another version marks nothing and is `query.ErrVersionMismatch`, and a directory already
 deleting is the mark's retry at any version, after which the files' update runs.
 
+A consumer that runs its own work in the transaction of a branch's mark, `LockTree`, then `Find`
+of the anchor, then `MarkDeleting`, reads the anchor's status under `LockTree`, before the mark.
+`MarkDeleting` accepts an anchor already deleting, and a retry that reaches a straggler reports
+it in `Marked`, so neither the mark's error nor its counts tell the call that marks the branch
+from a retry. An anchor read active means this call marks the branch; one read deleting means a
+retry. Where `Serializes` reports false, the read holds only under the courses
+[moves](concepts.md#moves) gives.
+
 After the mark, a deleting directory refuses every operation that would add to the branch or
 take from it, with `ErrDeleting`:
 
