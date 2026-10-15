@@ -9,20 +9,30 @@ the `postgres` sub-module keeps its own.
 
 ### Added
 
-- `data.OnComplete`, a `data.WriteOption` that `Store.WriteFile` takes as a trailing variadic
-  argument. Its function runs in the completion's transaction, after `Files.Complete`, with the
+- `data.OnComplete`, a `data.WriteOption` that `Store.WriteFile` and `Store.EnsureFile` take as
+  a trailing variadic argument. Its function runs in the completion's transaction, after `Files.Complete`, with the
   call's context and the completed `File`, so a consumer's rows, such as its reference to the
   file, commit exactly when the file does. An error from the function rolls the completion back
-  and abandons the write as a failed completion does, and `WriteFile` returns it wrapped. A
-  caller that passes no option compiles and behaves as before.
+  and abandons the write as a failed completion does, and the call returns it wrapped.
+  `EnsureFile` runs the function only when the call completes the file itself: never for a row
+  it finds available, or one another writer completed first. A caller that passes no option
+  compiles and behaves as before.
 - `data/datatest` checks the hook. The Protocols group checks that the hook's writes commit with
   the row (`WriteOnComplete`) and that a hook's error rolls them back and leaves no file
-  (`WriteOnCompleteRefuses`).
+  (`WriteOnCompleteRefuses`), and, for `EnsureFile`, that the hook runs once for the completing
+  call (`EnsureOnComplete`), not at all over an available row
+  (`EnsureOnCompleteOverAnAvailableRow`) or for a writer whose completion lost
+  (`EnsureOnCompleteOnASharedRow`), and that its error, even one wrapping
+  `query.ErrVersionMismatch`, rolls back and leaves no file (`EnsureOnCompleteRefuses`).
 
 ### Changed
 
 - `Store.WriteFile` and `Store.EnsureFile` complete the file in a transaction of their own on
   `db`, hooked or not, where they completed it on the pool. Their outcomes are unchanged.
+- `Store.EnsureFile` tells a completion another writer won from the completion's and the
+  abandon's own refusals rather than from the error it returns, so a hook's error that wraps
+  `query.ErrVersionMismatch` or `blobfs.ErrInvalidTransition` is returned, not taken for that
+  race. Without a hook its outcomes are unchanged.
 
 ## [v0.6.0] - 2026-10-09
 

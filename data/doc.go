@@ -36,8 +36,9 @@
 //     OnRemoveDirectory runs the consumer's cleanup in each directory
 //     removal's transaction, and StaleOlderThan also reclaims the pending
 //     and deleting file rows older than an age.
-//   - WriteOption configures a write: OnComplete runs the consumer's
-//     function in the completion's transaction.
+//   - WriteOption configures a write, Store.WriteFile's or
+//     Store.EnsureFile's: OnComplete runs the consumer's function in the
+//     transaction of the completion the call itself makes.
 //
 // The protocols, which run the steps end to end over the consumer's object
 // store:

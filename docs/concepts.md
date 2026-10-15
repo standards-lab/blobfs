@@ -81,8 +81,9 @@ is removed through the delete steps, which a pending row accepts, or by a sweep 
 transaction around a callback of the consumer's, puts the object through the consumer's
 `data.ObjectStore` outside any transaction, and completes the row in a transaction of its own,
 where `data.OnComplete` runs the consumer's function so its rows commit with the file; when the
-put or the completion fails, the function's error among them, it abandons the write. `data.Store.EnsureFile` is the retry-safe form of
-`WriteFile` for a file under a fixed id. A consumer calls the steps itself only when its write
+put or the completion fails, the function's error among them, it abandons the write.
+`data.Store.EnsureFile` is the retry-safe form of `WriteFile` for a file under a fixed id, and
+runs the function only when the call itself completes the file. A consumer calls the steps itself only when its write
 does not fit that shape; see [the protocols](features.md#the-protocols).
 
 ## The two-phase delete

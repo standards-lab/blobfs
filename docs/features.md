@@ -366,7 +366,7 @@ error once as `data: <op> file <id>: ...`.
 | Method | What it does | Refusals |
 |---|---|---|
 | `WriteFile(ctx, db, objects, body, size, begin, opts...)` | Runs `begin`, which calls `Files.Create`, in one transaction, so the pending row commits before any byte; puts `body` under the row's `Key` outside any transaction, in the type the row declares; completes the row in a transaction of its own, with `OnComplete`'s hook in it, and returns it available. | `begin`'s; before any put, a `TransitionError` for a row that is not pending, wrapped in its `DeletingError` for a deleting one; the put's; `Complete`'s; the hook's |
-| `EnsureFile(ctx, db, objects, id, body, size, begin)` | The retry-safe `WriteFile` of the file under the fixed `id`, such as a seed's: `begin` calls `Files.Ensure` with `WithID(id)`. Returns the row and whether this call stored its object. | `IDError` before any SQL; `begin`'s; `ErrNameTaken` for a pending or available row found under another id; an error naming both ids for a row `begin` created under another id; a `DeletingError` for a deleting row found, under `id` or another; `WriteFile`'s |
+| `EnsureFile(ctx, db, objects, id, body, size, begin, opts...)` | The retry-safe `WriteFile` of the file under the fixed `id`, such as a seed's: `begin` calls `Files.Ensure` with `WithID(id)`. Returns the row and whether this call stored its object; `OnComplete`'s hook runs only in a completion this call makes. | `IDError` before any SQL; `begin`'s; `ErrNameTaken` for a pending or available row found under another id; an error naming both ids for a row `begin` created under another id; a `DeletingError` for a deleting row found, under `id` or another; `WriteFile`'s, the hook's among them |
 | `RemoveFile(ctx, db, objects, pick, opts...)` | Runs `pick`, which returns the file's id, and `Files.Delete` under `opts` in one transaction, then deletes the object and purges the row. | `pick`'s; `Files.Delete`'s; `PurgeFile`'s |
 | `RemoveFileID(ctx, db, objects, id, opts...)` | `RemoveFile` of the file with `id`, for a caller with no scope to check and no reference to remove in the delete's transaction. | `Files.Delete`'s; `PurgeFile`'s |
 | `PurgeFile(ctx, db, objects, file)` | The delete's last two steps, for a file whose `Files.Delete` the consumer ran itself: deletes the object under its `Key`, then purges the row. | the object delete's, which leaves the row deleting; `Files.Purge`'s |
@@ -388,14 +388,18 @@ completion refused with `ErrDeleting` or `ErrNotFound` means a sweep reached the
 put landed; `WriteFile` deletes the object it put, which that sweep could not have deleted, and
 leaves the row to the sweep.
 
-`OnComplete(fn)` is the one `WriteOption`. `WriteFile` runs `fn(ctx, tx, file)` in the
-completion's transaction, after `Files.Complete` has made the row available, with the call's
-`ctx` and the completed row, so what `fn` writes, such as the consumer's reference to the file,
-commits exactly when the file does. An error from `fn` rolls the completion back with whatever
-`fn` wrote and abandons the write as a failed completion does: the row is deleted at its pending
-version and its object with it, and `WriteFile` returns the error wrapped as `data: write file
-<id>: the hook: ...`. A completion refused before the hook runs, or a write refused before the
-put, never runs it.
+`OnComplete(fn)` is the one `WriteOption`, which `WriteFile` and `EnsureFile` both take. Each
+runs `fn(ctx, tx, file)` in the completion's transaction, after `Files.Complete` has made the
+row available, with the call's `ctx` and the completed row, so what `fn` writes, such as the
+consumer's reference to the file, commits exactly when the file does. An error from `fn` rolls
+the completion back with whatever `fn` wrote and abandons the write as a failed completion does:
+the row is deleted at its pending version and its object with it, and the call returns the
+error wrapped as `data: write file <id>: the hook: ...` or `data: ensure file <id>: the hook:
+...`. A completion refused before the hook runs, or a write refused before the put, never runs
+it. `EnsureFile` runs `fn` only when this call completes the file: a row it finds available, or
+one another writer completed first, runs no hook, since the write that completed it ran its
+own. A hook error is never taken for that race, whatever it wraps: it abandons the write and is
+returned.
 
 `EnsureFile` differs from `WriteFile` in what it finds:
 
@@ -416,7 +420,9 @@ put, never runs it.
   it holds, so it never removes a row the other writer completed. When the other writer
   completed the row first, `EnsureFile`'s completion, or its abandon, finds a stale version or a
   row already available; it then reads the row back and returns it as found, with `stored`
-  false. A completion refused as deleting or not found is no such race and is returned as it
+  false. `EnsureFile` tells the race from the completion's and the abandon's own refusals, never
+  from the error it returns, so a hook's error, or the abandon after it, is no such race. A
+  completion refused as deleting or not found is no such race either and is returned as it
   came. Both puts store the same bytes under the same key, so the object is whole whichever
   lands last.
 
@@ -882,10 +888,14 @@ Branches, and Sweeps.
 Protocols runs the protocols end to end over an in-memory object store. It checks
 `Store.WriteFile`'s success; a failed put, which frees the name; a completion refused by a mark
 made during the put, after which the write deletes the object it put and leaves the row to the
-sweep; a refusing begin; and the refusal of an available row. It checks `Store.EnsureFile`
+sweep; the completion hook's writes committing with the row, and a hook's error rolling them
+back; a refusing begin; and the refusal of an available row. It checks `Store.EnsureFile`
 creating, returning an available row, resuming a pending one, and refusing a name held under
 another id or a deleting row; a second `EnsureFile` completing the shared row during the first
-one's put; and an insert lost to a row a competing writer committed, which `EnsureFile` resumes.
+one's put; an insert lost to a row a competing writer committed, which `EnsureFile` resumes;
+and the completion hook running once for the call that completes the file, not at all over an
+available row or for the writer whose completion lost, and its error, even one wrapping a lost
+race's sentinel, rolling the completion back and leaving no row.
 It checks `Store.RemoveFile`, its retry once finished, and a refusing pick;
 `Store.RemoveFileID`'s failed object delete and retry; `Store.PurgeFile` after the caller's own
 `Files.Delete`; and `SweepUntilDone` draining a backlog larger than one batch in counted passes,

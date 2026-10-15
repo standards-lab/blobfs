@@ -688,6 +688,127 @@ func TestEnsureWriteRefusedCompletion(t *testing.T) {
 	}
 }
 
+// TestEnsureWriteOnComplete checks the completion hook runs inside the
+// completion's transaction when this call completes the file, after
+// Files.Complete and before the commit, with the call's context and the
+// completed File.
+func TestEnsureWriteOnComplete(t *testing.T) {
+	ctx := context.WithValue(context.Background(), callerKey{}, "caller")
+	s, db, rec := openStore(t, single, noFile(), protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2), sqltest.Response{Affected: 1})
+	objects := newObjectStore()
+	var hooked blobfs.File
+	hook := data.OnComplete(func(hctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+		if hctx.Value(callerKey{}) != "caller" {
+			t.Error("the hook ran under another context than the call's")
+		}
+		hooked = f
+		_, err := tx.ExecContext(hctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID)
+		return err
+	})
+	got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s), hook)
+	if err != nil || !stored || got.Status != blobfs.StatusAvailable || got.Version != 2 {
+		t.Fatalf("Ensure = %+v, %v, %v, want the file stored", got, stored, err)
+	}
+	if hooked.ID != protocolFile || hooked.Status != blobfs.StatusAvailable || hooked.Version != 2 {
+		t.Errorf("the hook received %+v, want the completed row", hooked)
+	}
+	// The hook's exec sits between the completion and its commit.
+	if want := "begin query query commit begin query exec commit"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q", ops(rec), want)
+	}
+	wantDone(t, rec)
+}
+
+// TestEnsureWriteOnCompleteNotThisCall checks the hook never runs for a
+// completion this call does not make: a row found available, returned as
+// it stands, and a row another writer completed first, read back. Each
+// script holds no response for the hook's exec, so a hook run there fails
+// the call as well as the test.
+func TestEnsureWriteOnCompleteNotThisCall(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		script []sqltest.Response
+		ops    string
+	}{
+		{"Present", []sqltest.Response{protocolRow(blobfs.StatusAvailable, 2)}, "begin query commit"},
+		{"Lost", []sqltest.Response{
+			noFile(), protocolRow(blobfs.StatusPending, 1), // created
+			noFile(), protocolRow(blobfs.StatusAvailable, 2), // the completion matches no pending row at 1
+			protocolRow(blobfs.StatusAvailable, 2), // the row read back
+		}, "begin query query commit begin query query rollback query"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			s, db, rec := openStore(t, single, c.script...)
+			ran := false
+			hook := data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+				ran = true
+				_, err := tx.ExecContext(ctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID)
+				return err
+			})
+			got, stored, err := s.EnsureFile(ctx, db, newObjectStore(), protocolFile, strings.NewReader("report"), 6, ensure(ctx, s), hook)
+			if err != nil || stored || got.Status != blobfs.StatusAvailable || got.Version != 2 {
+				t.Fatalf("Ensure = %+v, %v, %v, want the available row, not stored", got, stored, err)
+			}
+			if ran || ops(rec) != c.ops {
+				t.Errorf("the hook ran = %v, ops = %q, want no hook and %q", ran, ops(rec), c.ops)
+			}
+			wantDone(t, rec)
+		})
+	}
+}
+
+// TestEnsureWriteOnCompleteRefuses checks a hook that fails rolls the
+// completion back and abandons the write as WriteFile does, its error
+// returned, named. A hook error wrapping the sentinels of a lost race is
+// still the hook's: the write abandoned and no row read back as another
+// writer's.
+func TestEnsureWriteOnCompleteRefuses(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		refused error
+	}{
+		{"Plain", errors.New("the consumer refuses")},
+		{"WrappingVersionMismatch", fmt.Errorf("the consumer's row moved: %w", query.ErrVersionMismatch)},
+		{"WrappingInvalidTransition", fmt.Errorf("the consumer's state: %w", blobfs.ErrInvalidTransition)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			s, db, rec := openStore(t, single,
+				protocolRow(blobfs.StatusPending, 1),                                  // resumed
+				protocolRow(blobfs.StatusAvailable, 2), sqltest.Response{Affected: 1}, // completed, and the hook's exec
+				protocolRow(blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1}, // abandoned
+			)
+			objects := newObjectStore()
+			hook := data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+				if _, err := tx.ExecContext(ctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID); err != nil {
+					return err
+				}
+				return c.refused
+			})
+			got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s), hook)
+			if !errors.Is(err, c.refused) || !strings.HasPrefix(err.Error(), "data: ensure file "+protocolFile+": the hook: ") || stored || got.ID != "" {
+				t.Fatalf("Ensure = %+v, %v, %v, want the hook's error, named", got, stored, err)
+			}
+			if errors.Is(err, blobfs.ErrNotFound) {
+				t.Errorf("Ensure = %v, want no read back's refusal beside the hook's", err)
+			}
+			// A read back after the abandon's exec would mark the hook's
+			// error taken for a lost race.
+			if want := "begin query commit begin query exec rollback begin query commit exec"; ops(rec) != want {
+				t.Errorf("ops = %q, want %q: the completion rolled back, then the abandon", ops(rec), want)
+			}
+			if del := rec.Calls()[8]; !strings.HasPrefix(del.SQL, "UPDATE blobfs_file") || !slices.Equal(del.Args, []any{protocolFile, int64(1)}) {
+				t.Errorf("the delete is %q %v, want the pending row's, at its version", del.SQL, del.Args)
+			}
+			if objects.stored() || !slices.Equal(objects.deletes, []string{protocolKey}) {
+				t.Errorf("deletes = %v, stored = %v, want the put object deleted with the row", objects.deletes, objects.stored())
+			}
+			wantDone(t, rec)
+		})
+	}
+}
+
 // TestEnsureWriteRefusesAnID checks an id blobfs.ParseID refuses is
 // refused before any SQL.
 func TestEnsureWriteRefusesAnID(t *testing.T) {

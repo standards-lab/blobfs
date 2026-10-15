@@ -107,8 +107,8 @@ func IncludeDeleting() ListOption {
 	return func(o *listOptions) { o.includeDeleting = true }
 }
 
-// WriteOption configures one call of a write protocol, Store.WriteFile,
-// beyond its required arguments.
+// WriteOption configures one call of a write protocol, Store.WriteFile or
+// Store.EnsureFile, beyond its required arguments.
 type WriteOption func(*writeOptions)
 
 // writeOptions collects what the write options set.
@@ -131,6 +131,8 @@ func writeOpts(opts []WriteOption) writeOptions {
 // commit exactly when the file does. An error from fn rolls the completion
 // back and abandons the write as a failed completion does, the pending row
 // deleted with its object; the call returns an error wrapping fn's.
+// Store.EnsureFile runs fn only when the call completes the file itself:
+// never for a row it finds available, or one another writer completed.
 func OnComplete(fn func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error) WriteOption {
 	return func(o *writeOptions) { o.onComplete = fn }
 }

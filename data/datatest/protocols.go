@@ -3,11 +3,13 @@ package datatest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/standards-lab/sqlate"
+	"github.com/standards-lab/sqlate/query"
 
 	"github.com/standards-lab/blobfs"
 	"github.com/standards-lab/blobfs/data"
@@ -34,6 +36,10 @@ func (s *suite) protocols(t *testing.T) {
 	t.Run("EnsureDeleting", s.protocolEnsureDeleting)
 	t.Run("EnsureSharesARow", s.protocolEnsureShares)
 	t.Run("EnsureLostInsert", s.protocolEnsureLostInsert)
+	t.Run("EnsureOnComplete", s.protocolEnsureOnComplete)
+	t.Run("EnsureOnCompleteOverAnAvailableRow", s.protocolEnsureOnCompletePresent)
+	t.Run("EnsureOnCompleteOnASharedRow", s.protocolEnsureOnCompleteShared)
+	t.Run("EnsureOnCompleteRefuses", s.protocolEnsureOnCompleteRefuses)
 	t.Run("Remove", s.protocolRemove)
 	t.Run("RemoveFailedObjectDelete", s.protocolRemoveFailedDelete)
 	t.Run("RemoveRefusedPick", s.protocolRemoveRefusedPick)
@@ -66,10 +72,22 @@ func (s *suite) writeFile(store *data.Store, objects data.ObjectStore, dir, n, b
 }
 
 // ensureWrite runs Store.EnsureFile through store of body as the file n
-// in dir under id, its begin running Files.Ensure with WithID(id).
-func (s *suite) ensureWrite(store *data.Store, objects data.ObjectStore, dir, n, id, body string) (blobfs.File, bool, error) {
+// in dir under id, its begin running Files.Ensure with WithID(id), under
+// opts.
+func (s *suite) ensureWrite(store *data.Store, objects data.ObjectStore, dir, n, id, body string, opts ...data.WriteOption) (blobfs.File, bool, error) {
 	return store.EnsureFile(s.ctx, s.db, objects, id, strings.NewReader(body), int64(len(body)), func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
 		return store.Files.Ensure(s.ctx, tx, acceptAll{}, dir, n, "text/plain", data.WithID(id))
+	}, opts...)
+}
+
+// referencing is a completion hook that inserts a reference to the
+// completed file in the completion's transaction and counts its runs in
+// ran.
+func (s *suite) referencing(t *testing.T, ran *int) data.WriteOption {
+	return data.OnComplete(func(_ context.Context, tx *sqlate.Tx, f blobfs.File) error {
+		*ran++
+		s.reference(t, tx, f.ID)
+		return nil
 	})
 }
 
@@ -548,6 +566,148 @@ func (s *suite) protocolEnsureLostInsert(t *testing.T) {
 			}
 			s.wantWritten(t, objects, got, "seed")
 		})
+	}
+}
+
+// protocolEnsureOnComplete checks the completion hook of an Ensure that
+// completes the file runs once, in the completion's transaction: the row it
+// reads there is the completed one, and the reference it inserts there
+// commits with the row.
+func (s *suite) protocolEnsureOnComplete(t *testing.T) {
+	s.createFileReferences(t)
+	for _, tier := range s.storesUnder() {
+		t.Run(tier.name, func(t *testing.T) {
+			dir := s.mkdir(t, "ensure-on-complete-"+t.Name())
+			id := blobfs.NewID()
+			objects := newObjectStore()
+			var ran int
+			var hooked, read blobfs.File
+			got, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", id, "seed", data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+				ran++
+				hooked = f
+				var err error
+				if read, err = tier.store.Files.Find(ctx, tx, f.ID); err != nil {
+					return err
+				}
+				s.reference(t, tx, f.ID)
+				return nil
+			}))
+			if err != nil || !stored {
+				t.Fatalf("Ensure with a hook = %v, %v, want the file stored", stored, err)
+			}
+			defer s.unreference(t, id)
+			s.wantWritten(t, objects, got, "seed")
+			if ran != 1 || !equalFile(hooked, got) || !equalFile(read, got) {
+				t.Errorf("the hook ran %d times, received\n%+v\nand read\n%+v\nin its transaction, want once with the completed row\n%+v", ran, hooked, read, got)
+			}
+			if n := s.references(t, id); n != 1 {
+				t.Errorf("the hook's reference committed %d times, want once with the row", n)
+			}
+		})
+	}
+}
+
+// protocolEnsureOnCompletePresent checks an Ensure that finds the file
+// available, completed by an earlier write, runs no hook: nothing put,
+// stored false, and no reference inserted.
+func (s *suite) protocolEnsureOnCompletePresent(t *testing.T) {
+	s.createFileReferences(t)
+	for _, tier := range s.storesUnder() {
+		t.Run(tier.name, func(t *testing.T) {
+			dir := s.mkdir(t, "ensure-on-complete-present-"+t.Name())
+			id := blobfs.NewID()
+			written, _, err := s.ensureWrite(tier.store, newObjectStore(), dir.ID, "seed.txt", id, "seed")
+			if err != nil {
+				t.Fatalf("the earlier Ensure: %v", err)
+			}
+			objects := newObjectStore()
+			var ran int
+			got, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", id, "seed", s.referencing(t, &ran))
+			if err != nil || stored || !equalFile(got, written) || objects.puts != 0 {
+				t.Fatalf("Ensure over the available row = %+v, %v, %v after %d puts, want the row as it stands", got, stored, err, objects.puts)
+			}
+			if n := s.references(t, id); ran != 0 || n != 0 {
+				t.Errorf("the hook ran %d times and left %d references, want none", ran, n)
+			}
+		})
+	}
+}
+
+// protocolEnsureOnCompleteShared checks two hooked Ensures sharing one row
+// run the hook once, the completing writer's: a second Ensure inside the
+// first one's put completes the row and runs its hook, and the first, its
+// completion lost, returns the row as found and runs none.
+func (s *suite) protocolEnsureOnCompleteShared(t *testing.T) {
+	s.createFileReferences(t)
+	for _, tier := range s.storesUnder() {
+		t.Run(tier.name, func(t *testing.T) {
+			dir := s.mkdir(t, "ensure-on-complete-shared-"+t.Name())
+			id := blobfs.NewID()
+			first, second := newObjectStore(), newObjectStore()
+			var firstRan, secondRan int
+			first.beforePut = func(string) {
+				if _, stored, err := s.ensureWrite(tier.store, second, dir.ID, "seed.txt", id, "seed", s.referencing(t, &secondRan)); err != nil || !stored {
+					t.Errorf("the second Ensure inside the put = %v, %v, want the row resumed and stored", stored, err)
+				}
+			}
+			_, stored, err := s.ensureWrite(tier.store, first, dir.ID, "seed.txt", id, "seed", s.referencing(t, &firstRan))
+			defer s.unreference(t, id)
+			if err != nil || stored {
+				t.Fatalf("the first Ensure = %v, %v, want the second's row found, stored false", stored, err)
+			}
+			if n := s.references(t, id); firstRan != 0 || secondRan != 1 || n != 1 {
+				t.Errorf("the hooks ran %d and %d times and left %d references, want only the completing writer's, once", firstRan, secondRan, n)
+			}
+		})
+	}
+}
+
+// protocolEnsureOnCompleteRefuses checks a hook that fails rolls the
+// completion back with the reference it inserted and abandons the write:
+// the hook's error returned, the object deleted, and no row left under the
+// id. A hook error wrapping query.ErrVersionMismatch, a lost race's
+// sentinel, is still the hook's, not another writer's win.
+func (s *suite) protocolEnsureOnCompleteRefuses(t *testing.T) {
+	s.createFileReferences(t)
+	for _, c := range []struct {
+		name    string
+		refused error
+	}{
+		{"Plain", errors.New("datatest: the hook refuses")},
+		{"WrappingVersionMismatch", fmt.Errorf("datatest: the hook's row moved: %w", query.ErrVersionMismatch)},
+	} {
+		refused := c.refused
+		for _, tier := range s.storesUnder() {
+			t.Run(c.name+"/"+tier.name, func(t *testing.T) {
+				dir := s.mkdir(t, "ensure-on-complete-refuses-"+t.Name())
+				id := blobfs.NewID()
+				objects := newObjectStore()
+				var key string
+				_, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", id, "seed", data.OnComplete(func(_ context.Context, tx *sqlate.Tx, f blobfs.File) error {
+					key = f.Key
+					s.reference(t, tx, f.ID)
+					return refused
+				}))
+				if !errors.Is(err, refused) || stored {
+					t.Fatalf("Ensure under a refusing hook = %v, %v, want the hook's error", stored, err)
+				}
+				if errors.Is(err, blobfs.ErrNotFound) {
+					t.Errorf("Ensure under a refusing hook = %v, want no read back's refusal beside the hook's", err)
+				}
+				if key == "" {
+					t.Fatal("the hook never ran")
+				}
+				if n := s.references(t, id); n != 0 {
+					t.Errorf("the hook's reference outlived the rollback %d times", n)
+				}
+				if _, ok := objects.objects[key]; ok || objects.deleted[key] != 1 || len(objects.deleted) != 1 {
+					t.Errorf("the abandon deleted %v, want the row's key %q once", objects.deleted, key)
+				}
+				if f, err := tier.store.Files.Find(s.ctx, s.db, id); !errors.Is(err, blobfs.ErrNotFound) {
+					t.Errorf("the refused hook left %+v, %v, want no row", f, err)
+				}
+			})
+		}
 	}
 }
 
