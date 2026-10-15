@@ -7,6 +7,21 @@ changelog covers this sub-module only; the base module keeps its own.
 
 ## [Unreleased]
 
+## [v0.5.0] - 2026-10-15
+
+### Changed
+
+- **Breaking:** The `blobfs` requirement is v0.7.0, whose conformance suite it runs. The
+  suite's Protocols group now covers the `data.OnComplete` and `data.OnDelete` hooks on
+  `Store.WriteFile`, `Store.EnsureFile`, and `Store.RemoveFile` against PostgreSQL: that a hook
+  runs and its writes commit with the file, that it is skipped where the call does not complete
+  or begin the delete itself, and that its error rolls the transaction back. The requirement
+  pulls blobfs v0.7.0's breaking change into an importer's build: `Store.RemoveFile` takes a
+  trailing `...data.RemoveOption` in place of `...data.VersionOption`, so a call passing no
+  option or `data.AtVersion(v)` compiles unchanged, and only a caller spreading a
+  `[]data.VersionOption` into it must build a `[]data.RemoveOption` instead.
+- The engine's migrations and statements are unchanged.
+
 ## [v0.4.0] - 2026-10-09
 
 ### Changed
