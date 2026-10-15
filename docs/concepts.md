@@ -306,9 +306,8 @@ rows already deleting. The sweep walks each branch without marking it, and marks
 when the walk meets a straggler, an active row or a directory refused as not empty, since a
 mark walks the whole branch and on the PostgreSQL engine holds the tree lock while it does. It
 marks a branch again at most once a pass; a straggler that lands after that mark stops the
-branch's walk without `More`, since a further pass could make no progress while the row stays
-mutable, an upload in flight among them. The branch waits for a later pass, the consumer's next
-interval or a nudge, which marks it and goes on.
+branch's walk without `More`. The branch waits for a later pass, the consumer's next interval or
+a nudge, which marks it again, the straggler with it, and goes on.
 
 `Files.Ensure` and `Directories.Ensure` return an active row they find by name, even one that
 landed in a deleting directory as a straggler, without reading the directory: the read would

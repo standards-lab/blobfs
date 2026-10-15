@@ -24,8 +24,7 @@ type ObjectDeleter interface {
 // the stale rows reclaimed, each row once. More reports work a spent
 // budget left, which a further pass can make progress on; a caller runs
 // passes while it is true. A branch a straggler stops does not set More:
-// no pass can finish it until the straggler's row stops being mutable, so
-// a later pass picks it up.
+// it waits for a later pass, which marks it again and goes on.
 type SweepResult struct {
 	Files       int
 	Directories int
@@ -194,10 +193,9 @@ func (w *sweep) refuse(err error) {
 // directory empties and removes dir, files first, then child directories.
 // A straggler has the branch marked again, once a pass, and dir walked
 // again, once more after that; a straggler left then stops the branch
-// without setting More. Until the straggler's row stops being mutable, an
-// upload in flight completing or the stale reclaim deleting it, a further
-// pass would meet it again and make no progress, so the branch waits for
-// a later pass: the caller's next interval, or a nudge.
+// without setting More. The branch waits for a later pass, the caller's
+// next interval or a nudge, which marks it again, the straggler with it,
+// and goes on.
 func (w *sweep) directory(ctx context.Context, dir blobfs.Directory) (walk, error) {
 	for again := false; ; again = true {
 		end, err := w.contents(ctx, dir)
