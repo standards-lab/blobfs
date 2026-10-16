@@ -14,8 +14,11 @@ policy a consumer may not want, or waits for a second consumer to show its shape
   `blobfs_file (key)`; it needs a key prefix blobfs owns, since today's `<id>/<name>` keys share
   the container with whatever else the consumer stores, and an age gate on the object's
   last-modified time, since a put may precede the commit of its row. It lists the whole
-  container, so it is a reconciliation run now and then, not part of `Store.Sweep`. Trigger:
-  `v1.messaging`.
+  container, so it is a reconciliation run now and then, not part of `Store.Sweep`; it lands as a
+  reclaimer on `go-database`'s general sweeper, whose `sweep` contract
+  `Pass(ctx, budget int) (more bool, err error)` the reconciler satisfies structurally, so blobfs
+  does not import `go-database`. Trigger: an orphaned object observed, or a consumer storing at
+  volume.
 - **A directory rename that skips the tree lock.** A rename cannot form a cycle, so it needs no
   lock; unmeasured, and worth adding only for a consumer that renames directories at volume.
 - **A serializing standard-tier variant.** A root-row update held to commit would serialize moves
