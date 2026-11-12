@@ -50,14 +50,14 @@ func TestListFiles(t *testing.T) {
 		Filters: []query.Filter{{Field: "status", Op: query.OpEq, Value: string(blobfs.StatusAvailable)}},
 		Sort:    []query.Sort{{Field: "updated_at"}},
 	}
-	first, err := s.Files.List(ctx, db, parentID, req, query.Page{Number: 1, Size: 2})
+	first, err := s.Files.List(ctx, db, parentID, req, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if got := fileNames(first); !slices.Equal(got, []string{"a", "b"}) || first.Total != 3 || !first.More || first.Next == "" {
 		t.Errorf("page 1 = %v total %d more %v, want [a b] of 3 with a cursor", got, first.Total, first.More)
 	}
-	next, err := s.Files.Continue(ctx, db, parentID, req, first.Next, 2)
+	next, err := s.Files.Continue(ctx, db, parentID, req, data.CursorPage{After: first.Next, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("Continue: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestListFiles(t *testing.T) {
 func TestListFilesEmptyPage(t *testing.T) {
 	ctx := context.Background()
 	s, db, _ := openStore(t, fallback, sqltest.WithTotal(filesIn(parentID), 0), listed())
-	empty, err := s.Files.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 1, Size: 2})
+	empty, err := s.Files.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List page 1: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestListFilesEmptyPage(t *testing.T) {
 	}
 
 	s, db, _ = openStore(t, fallback, sqltest.WithTotal(filesIn(parentID), 0), listed())
-	past, err := s.Files.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 2, Size: 2})
+	past, err := s.Files.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 2, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List page 2: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestFilesNullableSort(t *testing.T) {
 		t.Run(field, func(t *testing.T) {
 			s, db, _ := openStore(t, fallback, filesIn(parentID, "a", "b", "c"), listed())
 			req := query.Directives{Sort: []query.Sort{{Field: field}}, Total: query.TotalNone}
-			page, err := s.Files.List(context.Background(), db, parentID, req, query.Page{Number: 1, Size: 2})
+			page, err := s.Files.List(context.Background(), db, parentID, req, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
@@ -132,7 +132,7 @@ func TestListFilesRefusesUndeclaredFields(t *testing.T) {
 		{Sort: []query.Sort{{Field: "key"}}},
 		{Filters: []query.Filter{{Field: "key", Op: query.OpLike, Value: "x%"}}},
 	} {
-		_, err := s.Files.List(context.Background(), db, parentID, req, query.Page{Number: 1, Size: 10})
+		_, err := s.Files.List(context.Background(), db, parentID, req, query.Page{Number: 1, Size: 10}, data.ListOptions{})
 		var unknown *query.UnknownFieldError
 		if !errors.As(err, &unknown) || unknown.Field != "key" {
 			t.Errorf("List(%+v) = %v, want an UnknownFieldError for key", req, err)
@@ -152,12 +152,12 @@ func TestListFilesDeleting(t *testing.T) {
 		filesIn(parentID, "a"),
 	)
 	none := query.Directives{Total: query.TotalNone}
-	c, err := s.Files.List(ctx, db, parentID, none, query.Page{Number: 1, Size: 2})
+	c, err := s.Files.List(ctx, db, parentID, none, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 	if !errors.Is(err, blobfs.ErrDeleting) || len(c.Items) != 0 {
 		t.Errorf("List in a deleting directory = %+v, %v, want no rows and ErrDeleting", c, err)
 	}
 	req := query.Directives{Total: query.TotalNone, Filters: []query.Filter{{Field: "status", Op: query.OpEq, Value: string(blobfs.StatusDeleting)}}}
-	if _, err := s.Files.List(ctx, db, parentID, req, query.Page{Number: 1, Size: 2}, data.IncludeDeleting()); err != nil {
+	if _, err := s.Files.List(ctx, db, parentID, req, query.Page{Number: 1, Size: 2}, data.ListOptions{IncludeDeleting: true}); err != nil {
 		t.Fatalf("List with IncludeDeleting: %v", err)
 	}
 	calls := queries(rec)

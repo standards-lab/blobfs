@@ -14,9 +14,9 @@ import (
 // directoryIDs lists the directories under parentID through store, called
 // with opts, in one page of up to 100, and returns their ids in name order
 // and the total.
-func (s *suite) directoryIDs(t *testing.T, store *data.Store, parentID string, opts ...data.ListOption) ([]string, int) {
+func (s *suite) directoryIDs(t *testing.T, store *data.Store, parentID string, opts data.ListOptions) ([]string, int) {
 	t.Helper()
-	c, err := store.Directories.List(s.ctx, s.db, parentID, listAll(), firstPage(100), opts...)
+	c, err := store.Directories.List(s.ctx, s.db, parentID, listAll(), firstPage(100), opts)
 	if err != nil {
 		t.Fatalf("Directories.List(%s): %v", parentID, err)
 	}
@@ -29,9 +29,9 @@ func (s *suite) directoryIDs(t *testing.T, store *data.Store, parentID string, o
 
 // fileIDs lists the files in dir through store, called with opts, in one
 // page of up to 100, and returns their ids in name order and the total.
-func (s *suite) fileIDs(t *testing.T, store *data.Store, dir string, opts ...data.ListOption) ([]string, int) {
+func (s *suite) fileIDs(t *testing.T, store *data.Store, dir string, opts data.ListOptions) ([]string, int) {
 	t.Helper()
-	c, err := store.Files.List(s.ctx, s.db, dir, listAll(), firstPage(100), opts...)
+	c, err := store.Files.List(s.ctx, s.db, dir, listAll(), firstPage(100), opts)
 	if err != nil {
 		t.Fatalf("Files.List(%s): %v", dir, err)
 	}
@@ -61,7 +61,7 @@ func (s *suite) listingsHideTheBranch(t *testing.T) {
 	b := s.newBranchUnder(t, holder.ID, "marked")
 	loose := s.insertFile(t, holder.ID, "loose.txt", blobfs.StatusAvailable)
 	deleted := s.insertFile(t, holder.ID, "deleted.txt", blobfs.StatusAvailable)
-	if ids, total := s.directoryIDs(t, s.store, holder.ID); !slices.Equal(ids, []string{keep.ID, b.top.ID}) || total != 2 {
+	if ids, total := s.directoryIDs(t, s.store, holder.ID, data.ListOptions{}); !slices.Equal(ids, []string{keep.ID, b.top.ID}) || total != 2 {
 		t.Fatalf("before the mark the listing is %v of %d, want keep and marked", ids, total)
 	}
 	if _, err := s.mark(s.store, b.top.ID, data.VersionOptions{}); err != nil {
@@ -70,23 +70,23 @@ func (s *suite) listingsHideTheBranch(t *testing.T) {
 	s.deleteFile(t, deleted)
 
 	for _, store := range []*data.Store{s.store, s.baseline} {
-		if ids, total := s.directoryIDs(t, store, holder.ID); !slices.Equal(ids, []string{keep.ID}) || total != 1 {
+		if ids, total := s.directoryIDs(t, store, holder.ID, data.ListOptions{}); !slices.Equal(ids, []string{keep.ID}) || total != 1 {
 			t.Errorf("after the mark the listing is %v of %d, want keep alone", ids, total)
 		}
-		if ids, total := s.directoryIDs(t, store, holder.ID, data.IncludeDeleting()); !slices.Equal(ids, []string{keep.ID, b.top.ID}) || total != 2 {
+		if ids, total := s.directoryIDs(t, store, holder.ID, data.ListOptions{IncludeDeleting: true}); !slices.Equal(ids, []string{keep.ID, b.top.ID}) || total != 2 {
 			t.Errorf("with IncludeDeleting the listing is %v of %d, want keep and marked", ids, total)
 		}
-		if ids, total := s.fileIDs(t, store, holder.ID); !slices.Equal(ids, []string{loose}) || total != 1 {
+		if ids, total := s.fileIDs(t, store, holder.ID, data.ListOptions{}); !slices.Equal(ids, []string{loose}) || total != 1 {
 			t.Errorf("after the file's delete began the listing is %v of %d, want loose.txt alone", ids, total)
 		}
-		if ids, total := s.fileIDs(t, store, holder.ID, data.IncludeDeleting()); !slices.Equal(ids, []string{deleted, loose}) || total != 2 {
+		if ids, total := s.fileIDs(t, store, holder.ID, data.ListOptions{IncludeDeleting: true}); !slices.Equal(ids, []string{deleted, loose}) || total != 2 {
 			t.Errorf("with IncludeDeleting the file listing is %v of %d, want deleted.txt and loose.txt", ids, total)
 		}
-		dirs, err := store.Directories.List(s.ctx, s.db, b.top.ID, listAll(), firstPage(10), data.IncludeDeleting())
+		dirs, err := store.Directories.List(s.ctx, s.db, b.top.ID, listAll(), firstPage(10), data.ListOptions{IncludeDeleting: true})
 		if err != nil || len(dirs.Items) != 1 || dirs.Items[0].ID != b.mid.ID || dirs.Items[0].Status != blobfs.DirectoryStatusDeleting {
 			t.Errorf("the marked top's children with IncludeDeleting = %+v, %v, want mid, deleting", dirs, err)
 		}
-		files, err := store.Files.List(s.ctx, s.db, b.mid.ID, listAll(), firstPage(10), data.IncludeDeleting())
+		files, err := store.Files.List(s.ctx, s.db, b.mid.ID, listAll(), firstPage(10), data.ListOptions{IncludeDeleting: true})
 		if err != nil || len(files.Items) != 2 || files.Total != 2 {
 			t.Errorf("the marked mid's files with IncludeDeleting = %+v, %v, want its two files", files, err)
 		}
@@ -105,11 +105,11 @@ func (s *suite) listingADeletingDirectory(t *testing.T) {
 	b := s.newBranch(t, "list-deleting-"+t.Name())
 	s.mkdirUnder(t, b.top.ID, "second")
 	s.insertFile(t, b.top.ID, "second.txt", blobfs.StatusAvailable)
-	dirs, err := s.store.Directories.List(s.ctx, s.db, b.top.ID, listAll(), firstPage(1))
+	dirs, err := s.store.Directories.List(s.ctx, s.db, b.top.ID, listAll(), firstPage(1), data.ListOptions{})
 	if err != nil || dirs.Next == "" {
 		t.Fatalf("Directories.List before the mark = %+v, %v, want a cursor", dirs, err)
 	}
-	files, err := s.store.Files.List(s.ctx, s.db, b.top.ID, listAll(), firstPage(1))
+	files, err := s.store.Files.List(s.ctx, s.db, b.top.ID, listAll(), firstPage(1), data.ListOptions{})
 	if err != nil || files.Next == "" {
 		t.Fatalf("Files.List before the mark = %+v, %v, want a cursor", files, err)
 	}
@@ -124,21 +124,21 @@ func (s *suite) listingADeletingDirectory(t *testing.T) {
 	for _, dir := range []blobfs.Directory{b.top, b.leaf} {
 		cases = append(cases,
 			listing{"Directories.List of " + dir.Name, func(store *data.Store) error {
-				_, err := store.Directories.List(s.ctx, s.db, dir.ID, listAll(), firstPage(10))
+				_, err := store.Directories.List(s.ctx, s.db, dir.ID, listAll(), firstPage(10), data.ListOptions{})
 				return err
 			}},
 			listing{"Files.List of " + dir.Name, func(store *data.Store) error {
-				_, err := store.Files.List(s.ctx, s.db, dir.ID, listAll(), firstPage(10))
+				_, err := store.Files.List(s.ctx, s.db, dir.ID, listAll(), firstPage(10), data.ListOptions{})
 				return err
 			}})
 	}
 	cases = append(cases,
 		listing{"Directories.Continue", func(store *data.Store) error {
-			_, err := store.Directories.Continue(s.ctx, s.db, b.top.ID, listAll(), dirs.Next, 10)
+			_, err := store.Directories.Continue(s.ctx, s.db, b.top.ID, listAll(), data.CursorPage{After: dirs.Next, Size: 10}, data.ListOptions{})
 			return err
 		}},
 		listing{"Files.Continue", func(store *data.Store) error {
-			_, err := store.Files.Continue(s.ctx, s.db, b.top.ID, listAll(), files.Next, 10)
+			_, err := store.Files.Continue(s.ctx, s.db, b.top.ID, listAll(), data.CursorPage{After: files.Next, Size: 10}, data.ListOptions{})
 			return err
 		}})
 	for _, c := range cases {
@@ -149,10 +149,10 @@ func (s *suite) listingADeletingDirectory(t *testing.T) {
 		wantSameError(t, err, c.run(s.baseline))
 	}
 	for _, store := range []*data.Store{s.store, s.baseline} {
-		if ids, total := s.directoryIDs(t, store, b.top.ID, data.IncludeDeleting()); len(ids) != 2 || total != 2 {
+		if ids, total := s.directoryIDs(t, store, b.top.ID, data.ListOptions{IncludeDeleting: true}); len(ids) != 2 || total != 2 {
 			t.Errorf("the deleting top's children with IncludeDeleting = %v of %d, want mid and second", ids, total)
 		}
-		if ids, total := s.fileIDs(t, store, b.top.ID, data.IncludeDeleting()); len(ids) != 3 || total != 3 {
+		if ids, total := s.fileIDs(t, store, b.top.ID, data.ListOptions{IncludeDeleting: true}); len(ids) != 3 || total != 3 {
 			t.Errorf("the deleting top's files with IncludeDeleting = %v of %d, want its three", ids, total)
 		}
 	}
@@ -168,11 +168,11 @@ func (s *suite) cursorAcrossAMark(t *testing.T) {
 		dirs[n] = s.mkdirUnder(t, holder.ID, n).ID
 		files[n] = s.insertFile(t, holder.ID, n, blobfs.StatusAvailable)
 	}
-	firstDirs, err := s.store.Directories.List(s.ctx, s.db, holder.ID, listAll(), firstPage(2))
+	firstDirs, err := s.store.Directories.List(s.ctx, s.db, holder.ID, listAll(), firstPage(2), data.ListOptions{})
 	if err != nil || firstDirs.Next == "" {
 		t.Fatalf("Directories.List = %+v, %v, want a cursor", firstDirs, err)
 	}
-	firstFiles, err := s.store.Files.List(s.ctx, s.db, holder.ID, listAll(), firstPage(2))
+	firstFiles, err := s.store.Files.List(s.ctx, s.db, holder.ID, listAll(), firstPage(2), data.ListOptions{})
 	if err != nil || firstFiles.Next == "" {
 		t.Fatalf("Files.List = %+v, %v, want a cursor", firstFiles, err)
 	}
@@ -181,11 +181,11 @@ func (s *suite) cursorAcrossAMark(t *testing.T) {
 	}
 	s.deleteFile(t, files["c"])
 	for _, store := range []*data.Store{s.store, s.baseline} {
-		d, err := store.Directories.Continue(s.ctx, s.db, holder.ID, listAll(), firstDirs.Next, 10)
+		d, err := store.Directories.Continue(s.ctx, s.db, holder.ID, listAll(), data.CursorPage{After: firstDirs.Next, Size: 10}, data.ListOptions{})
 		if err != nil || len(d.Items) != 1 || d.Items[0].ID != dirs["d"] || d.Total != 3 || d.More {
 			t.Errorf("Directories.Continue past a mark = %+v, %v, want d alone of 3", d, err)
 		}
-		f, err := store.Files.Continue(s.ctx, s.db, holder.ID, listAll(), firstFiles.Next, 10)
+		f, err := store.Files.Continue(s.ctx, s.db, holder.ID, listAll(), data.CursorPage{After: firstFiles.Next, Size: 10}, data.ListOptions{})
 		if err != nil || len(f.Items) != 1 || f.Items[0].ID != files["d"] || f.Total != 3 || f.More {
 			t.Errorf("Files.Continue past a delete = %+v, %v, want d alone of 3", f, err)
 		}
@@ -194,10 +194,10 @@ func (s *suite) cursorAcrossAMark(t *testing.T) {
 		t.Fatalf("MarkDeleting of the listed directory: %v", err)
 	}
 	for _, store := range []*data.Store{s.store, s.baseline} {
-		if _, err := store.Directories.Continue(s.ctx, s.db, holder.ID, listAll(), firstDirs.Next, 10); !errors.Is(err, blobfs.ErrDeleting) {
+		if _, err := store.Directories.Continue(s.ctx, s.db, holder.ID, listAll(), data.CursorPage{After: firstDirs.Next, Size: 10}, data.ListOptions{}); !errors.Is(err, blobfs.ErrDeleting) {
 			t.Errorf("Directories.Continue once the listed directory is marked = %v, want ErrDeleting", err)
 		}
-		if _, err := store.Files.Continue(s.ctx, s.db, holder.ID, listAll(), firstFiles.Next, 10); !errors.Is(err, blobfs.ErrDeleting) {
+		if _, err := store.Files.Continue(s.ctx, s.db, holder.ID, listAll(), data.CursorPage{After: firstFiles.Next, Size: 10}, data.ListOptions{}); !errors.Is(err, blobfs.ErrDeleting) {
 			t.Errorf("Files.Continue once the listed directory is marked = %v, want ErrDeleting", err)
 		}
 	}

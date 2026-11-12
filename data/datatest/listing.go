@@ -131,13 +131,13 @@ var fileFilters = []struct {
 type listingMode struct {
 	label string
 	hides bool
-	opts  []data.ListOption
+	opts  data.ListOptions
 }
 
 // listingModes are the two ways a listing is called.
 var listingModes = []listingMode{
-	{"by default", true, nil},
-	{"with IncludeDeleting", false, []data.ListOption{data.IncludeDeleting()}},
+	{"by default", true, data.ListOptions{}},
+	{"with IncludeDeleting", false, data.ListOptions{IncludeDeleting: true}},
 }
 
 // plain is the predicate the plain query over alias adds in the mode:
@@ -173,13 +173,13 @@ func (s *suite) filesMatchAPlainQuery(t *testing.T, f listingFixture) {
 					want := s.column(t, text+" ORDER BY "+sort.orderBy, args...)
 					req := query.Directives{Sort: sort.sort, Filters: filter.filters}
 					for _, size := range []int{1, 2, 3, 10} {
-						got, total := s.fileOffsetWalk(t, dir, req, size, mode.opts...)
+						got, total := s.fileOffsetWalk(t, dir, req, size, mode.opts)
 						if !slices.Equal(got, want) || total != len(want) {
 							t.Errorf("/%s %s, %s by %s, size %d: the listing %v with total %d, the plain query %v", path, mode.label, filter.label, sort.label, size, got, total, want)
 						}
 					}
 					req.Total = query.TotalNone
-					if got, total := s.fileOffsetWalk(t, dir, req, 2, mode.opts...); !slices.Equal(got, want) || total != query.NoTotal {
+					if got, total := s.fileOffsetWalk(t, dir, req, 2, mode.opts); !slices.Equal(got, want) || total != query.NoTotal {
 						t.Errorf("/%s %s, %s by %s without the total: the listing %v with total %d, the plain query %v", path, mode.label, filter.label, sort.label, got, total, want)
 					}
 				}
@@ -228,7 +228,7 @@ func (s *suite) directoriesUnder(t *testing.T, mode listingMode, path, dir strin
 				var got []string
 				total := query.NoTotal
 				for n := 1; n <= 100; n++ {
-					c, err := s.store.Directories.List(s.ctx, s.db, dir, query.Directives{Sort: sort.sort, Filters: filters}, query.Page{Number: n, Size: size}, mode.opts...)
+					c, err := s.store.Directories.List(s.ctx, s.db, dir, query.Directives{Sort: sort.sort, Filters: filters}, query.Page{Number: n, Size: size}, mode.opts)
 					if err != nil {
 						t.Fatalf("Directories.List: %v", err)
 					}
@@ -256,12 +256,12 @@ func (s *suite) directoriesUnder(t *testing.T, mode listingMode, path, dir strin
 // fileOffsetWalk reads the file listing of dir page by page until no More,
 // checking each page's rows and total, and returns the ids and the total,
 // query.NoTotal when the pages carried none.
-func (s *suite) fileOffsetWalk(t *testing.T, dir string, req query.Directives, size int, opts ...data.ListOption) ([]string, int) {
+func (s *suite) fileOffsetWalk(t *testing.T, dir string, req query.Directives, size int, opts data.ListOptions) ([]string, int) {
 	t.Helper()
 	var ids []string
 	total := query.NoTotal
 	for n := 1; n <= 100; n++ {
-		c, err := s.store.Files.List(s.ctx, s.db, dir, req, query.Page{Number: n, Size: size}, opts...)
+		c, err := s.store.Files.List(s.ctx, s.db, dir, req, query.Page{Number: n, Size: size}, opts)
 		if err != nil {
 			t.Fatalf("page %d of size %d: %v", n, size, err)
 		}
@@ -306,7 +306,7 @@ func (s *suite) pageBoundaries(t *testing.T) {
 	}
 	list := func(dir string, req query.Directives, number, size int) query.Collection[blobfs.File] {
 		t.Helper()
-		c, err := s.store.Files.List(s.ctx, s.db, dir, req, query.Page{Number: number, Size: size})
+		c, err := s.store.Files.List(s.ctx, s.db, dir, req, query.Page{Number: number, Size: size}, data.ListOptions{})
 		if err != nil {
 			t.Fatalf("Files.List: %v", err)
 		}
@@ -329,7 +329,7 @@ func (s *suite) pageBoundaries(t *testing.T) {
 	first := list(three, listAll(), 1, 2)
 	checkFiles("three at size 2, page 1", first, 2, 3, true, true)
 	checkFiles("three at size 2, page 2", list(three, listAll(), 2, 2), 1, 3, false, false)
-	next, err := s.store.Files.Continue(s.ctx, s.db, three, listAll(), first.Next, 2)
+	next, err := s.store.Files.Continue(s.ctx, s.db, three, listAll(), data.CursorPage{After: first.Next, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("Files.Continue: %v", err)
 	}
@@ -340,17 +340,17 @@ func (s *suite) pageBoundaries(t *testing.T) {
 	checkFiles("three by size, page 1", list(three, bySize, 1, 2), 2, 3, true, false)
 	checkFiles("three by size, page 2", list(three, bySize, 2, 2), 1, 3, false, false)
 
-	dirs, err := s.store.Directories.List(s.ctx, s.db, top.ID, listAll(), firstPage(2))
+	dirs, err := s.store.Directories.List(s.ctx, s.db, top.ID, listAll(), firstPage(2), data.ListOptions{})
 	if err != nil {
 		t.Fatalf("Directories.List: %v", err)
 	}
 	check("directories at size 2", 2, 3, true, true, len(dirs.Items), dirs.Total, dirs.More, dirs.Next)
-	rest, err := s.store.Directories.Continue(s.ctx, s.db, top.ID, listAll(), dirs.Next, 2)
+	rest, err := s.store.Directories.Continue(s.ctx, s.db, top.ID, listAll(), data.CursorPage{After: dirs.Next, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("Directories.Continue: %v", err)
 	}
 	check("directories past the cursor", 1, 3, false, false, len(rest.Items), rest.Total, rest.More, rest.Next)
-	dirs, err = s.store.Directories.List(s.ctx, s.db, top.ID, query.Directives{Sort: []query.Sort{{Field: "parent_id"}}}, firstPage(2))
+	dirs, err = s.store.Directories.List(s.ctx, s.db, top.ID, query.Directives{Sort: []query.Sort{{Field: "parent_id"}}}, firstPage(2), data.ListOptions{})
 	if err != nil {
 		t.Fatalf("Directories.List by parent_id: %v", err)
 	}
@@ -361,7 +361,7 @@ func (s *suite) pageBoundaries(t *testing.T) {
 // the last, and an empty continued page, and a continued page's total.
 func (s *suite) emptyPages(t *testing.T) {
 	dir := s.mkdir(t, "empty-pages-"+t.Name())
-	empty, err := s.store.Files.List(s.ctx, s.db, dir.ID, listAll(), firstPage(5))
+	empty, err := s.store.Files.List(s.ctx, s.db, dir.ID, listAll(), firstPage(5), data.ListOptions{})
 	if err != nil || len(empty.Items) != 0 || empty.Total != 0 || empty.More || empty.Next != "" {
 		t.Errorf("an empty first page = %+v, %v; want no rows, the exact total 0, no More", empty, err)
 	}
@@ -370,24 +370,24 @@ func (s *suite) emptyPages(t *testing.T) {
 		s.insertFile(t, dir.ID, "b", blobfs.StatusAvailable),
 		s.insertFile(t, dir.ID, "c", blobfs.StatusAvailable),
 	}
-	past, err := s.store.Files.List(s.ctx, s.db, dir.ID, listAll(), query.Page{Number: 3, Size: 5})
+	past, err := s.store.Files.List(s.ctx, s.db, dir.ID, listAll(), query.Page{Number: 3, Size: 5}, data.ListOptions{})
 	if err != nil || len(past.Items) != 0 || past.Total != query.NoTotal || past.More || past.Next != "" {
 		t.Errorf("a page past the last = %+v, %v; want no rows, NoTotal, no More", past, err)
 	}
-	filtered, err := s.store.Files.List(s.ctx, s.db, dir.ID, query.Directives{Filters: []query.Filter{{Field: "name", Op: query.OpEq, Value: "none"}}}, firstPage(5))
+	filtered, err := s.store.Files.List(s.ctx, s.db, dir.ID, query.Directives{Filters: []query.Filter{{Field: "name", Op: query.OpEq, Value: "none"}}}, firstPage(5), data.ListOptions{})
 	if err != nil || len(filtered.Items) != 0 || filtered.Total != 0 || filtered.More {
 		t.Errorf("an empty first page under a filter = %+v, %v; want no rows and the exact total 0", filtered, err)
 	}
-	first, err := s.store.Files.List(s.ctx, s.db, dir.ID, listAll(), firstPage(1))
+	first, err := s.store.Files.List(s.ctx, s.db, dir.ID, listAll(), firstPage(1), data.ListOptions{})
 	if err != nil || first.Next == "" {
 		t.Fatalf("page 1 at size 1 = %+v, %v; want a cursor", first, err)
 	}
-	continued, err := s.store.Files.Continue(s.ctx, s.db, dir.ID, listAll(), first.Next, 1)
+	continued, err := s.store.Files.Continue(s.ctx, s.db, dir.ID, listAll(), data.CursorPage{After: first.Next, Size: 1}, data.ListOptions{})
 	if err != nil || len(continued.Items) != 1 || continued.Total != 3 || !continued.More {
 		t.Errorf("a continued page = %d rows, total %d, more %v, %v; want one row, the whole listing's total 3, and More", len(continued.Items), continued.Total, continued.More, err)
 	}
 	s.exec(t, "DELETE FROM blobfs_file WHERE id IN ("+s.db.Dialect().Placeholder(1)+", "+s.db.Dialect().Placeholder(2)+")", ids[1], ids[2])
-	gone, err := s.store.Files.Continue(s.ctx, s.db, dir.ID, listAll(), first.Next, 1)
+	gone, err := s.store.Files.Continue(s.ctx, s.db, dir.ID, listAll(), data.CursorPage{After: first.Next, Size: 1}, data.ListOptions{})
 	if err != nil || len(gone.Items) != 0 || gone.Total != query.NoTotal || gone.More || gone.Next != "" {
 		t.Errorf("an empty continued page = %+v, %v; want no rows, NoTotal, no More", gone, err)
 	}
@@ -403,7 +403,7 @@ func (s *suite) totalUnderConcurrentInserts(t *testing.T) {
 	}
 	list := func(sess sqlate.Session, number, size int) query.Collection[blobfs.File] {
 		t.Helper()
-		c, err := s.store.Files.List(s.ctx, sess, dir, listAll(), query.Page{Number: number, Size: size})
+		c, err := s.store.Files.List(s.ctx, sess, dir, listAll(), query.Page{Number: number, Size: size}, data.ListOptions{})
 		if err != nil {
 			t.Fatalf("Files.List page %d: %v", number, err)
 		}

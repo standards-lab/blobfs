@@ -27,8 +27,8 @@
 //
 // The options:
 //
-//   - ListOption configures a listing; IncludeDeleting lists deleting rows
-//     too.
+//   - ListOptions configures a listing; its IncludeDeleting lists deleting
+//     rows too. CursorPage names the page a Continue reads past a cursor.
 //   - CreateOptions configures a create; its ID supplies the row's id.
 //   - VersionOptions configures a guarded step; its Version names the
 //     version.

@@ -54,7 +54,7 @@ func (s *suite) directoryReadsInUTC(t *testing.T) {
 		t.Fatalf("Ensure: %v", err)
 	}
 	wantUTC(t, "Ensure", ensured.CreatedAt, ensured.UpdatedAt)
-	c, err := s.store.Directories.List(s.ctx, s.db, parent.ID, listAll(), firstPage(10))
+	c, err := s.store.Directories.List(s.ctx, s.db, parent.ID, listAll(), firstPage(10), data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -78,7 +78,7 @@ func (s *suite) root(t *testing.T) {
 	}
 	s.wantPath(t, blobfs.RootID, "/")
 	s.mkdir(t, "listed-"+t.Name())
-	c, err := s.store.Directories.List(s.ctx, s.db, blobfs.RootID, listAll(), firstPage(1000))
+	c, err := s.store.Directories.List(s.ctx, s.db, blobfs.RootID, listAll(), firstPage(1000), data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List(root): %v", err)
 	}

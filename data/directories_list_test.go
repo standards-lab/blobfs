@@ -79,7 +79,7 @@ func pages(t *testing.T, rec *sqltest.Recorder) []sqltest.Call {
 }
 
 // hideDeleting is the predicate the listing appends after the caller's
-// filters when IncludeDeleting is not given, at placeholder n.
+// filters when IncludeDeleting is not set, at placeholder n.
 func hideDeleting(n int) string {
 	return "q.status <> CAST($" + strconv.Itoa(n) + " AS text)"
 }
@@ -115,21 +115,21 @@ func TestListDirectories(t *testing.T) {
 	)
 	req := query.Directives{Filters: []query.Filter{{Field: "version", Op: query.OpGe, Value: 1}}}
 
-	first, err := s.Directories.List(ctx, db, parentID, req, query.Page{Number: 1, Size: 2})
+	first, err := s.Directories.List(ctx, db, parentID, req, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List page 1: %v", err)
 	}
 	if got := directoryNames(first); !slices.Equal(got, []string{"a", "b"}) || first.Total != 3 || !first.More || first.Next == "" {
 		t.Errorf("page 1 = %v total %d more %v next %q, want [a b] of 3 with more and a cursor", got, first.Total, first.More, first.Next)
 	}
-	last, err := s.Directories.List(ctx, db, parentID, req, query.Page{Number: 2, Size: 2})
+	last, err := s.Directories.List(ctx, db, parentID, req, query.Page{Number: 2, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List page 2: %v", err)
 	}
 	if got := directoryNames(last); !slices.Equal(got, []string{"c"}) || last.Total != 3 || last.More || last.Next != "" {
 		t.Errorf("page 2 = %v total %d more %v next %q, want [c] of 3, no more, no cursor", got, last.Total, last.More, last.Next)
 	}
-	untotalled, err := s.Directories.List(ctx, db, parentID, query.Directives{Total: query.TotalNone}, query.Page{Number: 1, Size: 2})
+	untotalled, err := s.Directories.List(ctx, db, parentID, query.Directives{Total: query.TotalNone}, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List under TotalNone: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestListDirectories(t *testing.T) {
 func TestListDirectoriesEmptyPage(t *testing.T) {
 	ctx := context.Background()
 	s, db, _ := openStore(t, fallback, sqltest.WithTotal(children(parentID), 0), listed())
-	empty, err := s.Directories.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 1, Size: 2})
+	empty, err := s.Directories.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List page 1: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestListDirectoriesEmptyPage(t *testing.T) {
 	}
 
 	s, db, _ = openStore(t, fallback, sqltest.WithTotal(children(parentID), 0), listed())
-	past, err := s.Directories.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 2, Size: 2})
+	past, err := s.Directories.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 2, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List page 2: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestListDirectoriesEmptyPage(t *testing.T) {
 // TestListRoot checks the listing of RootID is the depth-one directories.
 func TestListRoot(t *testing.T) {
 	s, db, rec := openStore(t, fallback, sqltest.WithTotal(children(blobfs.RootID, "docs"), 1), directoryResponse(blobfs.RootID, "", "/", 1))
-	c, err := s.Directories.List(context.Background(), db, blobfs.RootID, query.Directives{}, query.Page{Number: 1, Size: 10})
+	c, err := s.Directories.List(context.Background(), db, blobfs.RootID, query.Directives{}, query.Page{Number: 1, Size: 10}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List(root): %v", err)
 	}
@@ -205,11 +205,11 @@ func TestContinueDirectories(t *testing.T) {
 		children(parentID, "e", "d", "c"), listed(),
 		children(parentID, "c", "b"), listed(),
 	)
-	first, err := s.Directories.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 1, Size: 2})
+	first, err := s.Directories.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	next, err := s.Directories.Continue(ctx, db, parentID, query.Directives{}, first.Next, 2)
+	next, err := s.Directories.Continue(ctx, db, parentID, query.Directives{}, data.CursorPage{After: first.Next, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("Continue: %v", err)
 	}
@@ -223,11 +223,11 @@ func TestContinueDirectories(t *testing.T) {
 	}
 
 	desc := query.Directives{Sort: []query.Sort{{Field: "name", Descending: true}}, Total: query.TotalNone}
-	down, err := s.Directories.List(ctx, db, parentID, desc, query.Page{Number: 1, Size: 2})
+	down, err := s.Directories.List(ctx, db, parentID, desc, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List descending: %v", err)
 	}
-	if _, err := s.Directories.Continue(ctx, db, parentID, desc, down.Next, 2); err != nil {
+	if _, err := s.Directories.Continue(ctx, db, parentID, desc, data.CursorPage{After: down.Next, Size: 2}, data.ListOptions{}); err != nil {
 		t.Fatalf("Continue descending: %v", err)
 	}
 	calls = pages(t, rec)
@@ -250,16 +250,16 @@ func TestListDirectoriesRefusesDirectives(t *testing.T) {
 		{"sort", query.Directives{Sort: []query.Sort{{Field: "path"}}}, query.FieldUseSort},
 		{"filter", query.Directives{Filters: []query.Filter{{Field: "key", Op: query.OpEq, Value: "x"}}}, query.FieldUseFilter},
 	} {
-		_, err := s.Directories.List(ctx, db, parentID, c.req, query.Page{Number: 1, Size: 10})
+		_, err := s.Directories.List(ctx, db, parentID, c.req, query.Page{Number: 1, Size: 10}, data.ListOptions{})
 		var unknown *query.UnknownFieldError
 		if !errors.As(err, &unknown) || unknown.Use != c.use || !errors.Is(err, query.ErrDirectives) {
 			t.Errorf("%s on an undeclared field = %v, want an UnknownFieldError for its %s", c.name, err, c.use)
 		}
 	}
-	if _, err := s.Directories.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 0, Size: 10}); !errors.Is(err, query.ErrDirectives) {
+	if _, err := s.Directories.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 0, Size: 10}, data.ListOptions{}); !errors.Is(err, query.ErrDirectives) {
 		t.Errorf("page 0 = %v, want ErrDirectives", err)
 	}
-	if _, err := s.Directories.Continue(ctx, db, parentID, query.Directives{}, "", 10); !errors.Is(err, query.ErrDirectives) {
+	if _, err := s.Directories.Continue(ctx, db, parentID, query.Directives{}, data.CursorPage{After: "", Size: 10}, data.ListOptions{}); !errors.Is(err, query.ErrDirectives) {
 		t.Errorf("Continue without a cursor = %v, want ErrDirectives", err)
 	}
 	if n := len(rec.Calls()); n != 0 {
@@ -281,19 +281,19 @@ func TestDirectoriesNonContinuableSort(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s, db, rec := openStore(t, fallback, children(parentID, "a", "b", "c"), listed(), children(parentID, "a", "b", "c"), listed())
 			req := query.Directives{Sort: c.sort, Total: query.TotalNone}
-			page, err := s.Directories.List(ctx, db, parentID, req, query.Page{Number: 1, Size: 2})
+			page, err := s.Directories.List(ctx, db, parentID, req, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
 			if !page.More || page.Next != "" {
 				t.Errorf("page = more %v next %q, want More without a cursor", page.More, page.Next)
 			}
-			byName, err := s.Directories.List(ctx, db, parentID, query.Directives{Total: query.TotalNone}, query.Page{Number: 1, Size: 2})
+			byName, err := s.Directories.List(ctx, db, parentID, query.Directives{Total: query.TotalNone}, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 			if err != nil || byName.Next == "" {
 				t.Fatalf("List by name = %v, %v, want a cursor", byName, err)
 			}
 			calls := len(rec.Calls())
-			_, err = s.Directories.Continue(ctx, db, parentID, req, byName.Next, 2)
+			_, err = s.Directories.Continue(ctx, db, parentID, req, data.CursorPage{After: byName.Next, Size: 2}, data.ListOptions{})
 			var cur *query.CursorError
 			if !errors.As(err, &cur) || cur.Reason != query.CursorUnsupported {
 				t.Errorf("Continue under %s = %v, want CursorUnsupported", c.name, err)
@@ -326,11 +326,11 @@ func TestDirectoriesCursorRefusals(t *testing.T) {
 		filesIn(parentID, "a", "b", "c"), listed(),
 	)
 	none := query.Directives{Total: query.TotalNone}
-	dirs, err := s.Directories.List(ctx, db, parentID, none, query.Page{Number: 1, Size: 2})
+	dirs, err := s.Directories.List(ctx, db, parentID, none, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List directories: %v", err)
 	}
-	files, err := s.Files.List(ctx, db, parentID, none, query.Page{Number: 1, Size: 2})
+	files, err := s.Files.List(ctx, db, parentID, none, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List files: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestDirectoriesCursorRefusals(t *testing.T) {
 		{"other sort", query.Directives{Sort: []query.Sort{{Field: "created_at"}}}, dirs.Next, query.CursorMismatch},
 		{"other direction", query.Directives{Sort: []query.Sort{{Field: "name", Descending: true}}}, dirs.Next, query.CursorMismatch},
 	} {
-		_, err := s.Directories.Continue(ctx, db, parentID, c.req, c.after, 2)
+		_, err := s.Directories.Continue(ctx, db, parentID, c.req, data.CursorPage{After: c.after, Size: 2}, data.ListOptions{})
 		var cur *query.CursorError
 		if !errors.As(err, &cur) || cur.Reason != c.reason || !errors.Is(err, query.ErrDirectives) {
 			t.Errorf("%s cursor = %v, want CursorError %s", c.name, err, c.reason)
@@ -361,8 +361,8 @@ func TestDirectoriesCursorRefusals(t *testing.T) {
 }
 
 // TestListDirectoriesDeleting checks the hiding filter, the refusal of a
-// deleting parent, IncludeDeleting, and the cursor's binding to the
-// option; the caller's filters are never appended to in place.
+// deleting parent, IncludeDeleting, and the cursor's binding to it;
+// the caller's filters are never appended to in place.
 func TestListDirectoriesDeleting(t *testing.T) {
 	ctx := context.Background()
 	none := query.Directives{Total: query.TotalNone}
@@ -373,19 +373,19 @@ func TestListDirectoriesDeleting(t *testing.T) {
 		children(parentID), deleting,
 		children(parentID), noDirectory(),
 	)
-	first, err := s.Directories.List(ctx, db, parentID, none, query.Page{Number: 1, Size: 2})
+	first, err := s.Directories.List(ctx, db, parentID, none, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 	if err != nil || first.Next == "" {
 		t.Fatalf("List = %+v, %v, want a cursor", first, err)
 	}
-	c, err := s.Directories.Continue(ctx, db, parentID, none, first.Next, 2)
+	c, err := s.Directories.Continue(ctx, db, parentID, none, data.CursorPage{After: first.Next, Size: 2}, data.ListOptions{})
 	if !errors.Is(err, blobfs.ErrDeleting) || len(c.Items) != 0 {
 		t.Errorf("Continue under a parent marked since = %+v, %v, want no rows and ErrDeleting", c, err)
 	}
-	c, err = s.Directories.List(ctx, db, parentID, none, query.Page{Number: 1, Size: 2})
+	c, err = s.Directories.List(ctx, db, parentID, none, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 	if !errors.Is(err, blobfs.ErrDeleting) || len(c.Items) != 0 {
 		t.Errorf("List under a deleting parent = %+v, %v, want no rows and ErrDeleting", c, err)
 	}
-	c, err = s.Directories.List(ctx, db, parentID, none, query.Page{Number: 1, Size: 2})
+	c, err = s.Directories.List(ctx, db, parentID, none, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 	if err != nil || len(c.Items) != 0 || c.More {
 		t.Errorf("List under a missing parent = %+v, %v, want an empty page", c, err)
 	}
@@ -397,11 +397,11 @@ func TestListDirectoriesDeleting(t *testing.T) {
 		sqltest.WithTotal(children(parentID, "a", "b", "c"), 3),
 		sqltest.WithTotal(children(parentID, "c"), 3),
 	)
-	all, err := s.Directories.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 1, Size: 2}, data.IncludeDeleting())
+	all, err := s.Directories.List(ctx, db, parentID, query.Directives{}, query.Page{Number: 1, Size: 2}, data.ListOptions{IncludeDeleting: true})
 	if err != nil || all.Next == "" {
 		t.Fatalf("List with IncludeDeleting = %+v, %v, want a cursor", all, err)
 	}
-	if _, err := s.Directories.Continue(ctx, db, parentID, query.Directives{}, all.Next, 2, data.IncludeDeleting()); err != nil {
+	if _, err := s.Directories.Continue(ctx, db, parentID, query.Directives{}, data.CursorPage{After: all.Next, Size: 2}, data.ListOptions{IncludeDeleting: true}); err != nil {
 		t.Fatalf("Continue with IncludeDeleting: %v", err)
 	}
 	calls := queries(rec)
@@ -412,12 +412,12 @@ func TestListDirectoriesDeleting(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		after query.Cursor
-		opts  []data.ListOption
+		opts  data.ListOptions
 	}{
-		{"a cursor issued with IncludeDeleting, continued without it", all.Next, nil},
-		{"a cursor issued without IncludeDeleting, continued with it", first.Next, []data.ListOption{data.IncludeDeleting()}},
+		{"a cursor issued with IncludeDeleting, continued without it", all.Next, data.ListOptions{}},
+		{"a cursor issued without IncludeDeleting, continued with it", first.Next, data.ListOptions{IncludeDeleting: true}},
 	} {
-		_, err := s.Directories.Continue(ctx, db, parentID, none, c.after, 2, c.opts...)
+		_, err := s.Directories.Continue(ctx, db, parentID, none, data.CursorPage{After: c.after, Size: 2}, c.opts)
 		var cur *query.CursorError
 		if !errors.As(err, &cur) || cur.Reason != query.CursorMismatch {
 			t.Errorf("%s = %v, want CursorMismatch", c.name, err)
@@ -430,7 +430,7 @@ func TestListDirectoriesDeleting(t *testing.T) {
 	s, db, _ = openStore(t, fallback, children(parentID, "a"), listed())
 	filters := make([]query.Filter, 1, 2)
 	filters[0] = query.Filter{Field: "version", Op: query.OpGe, Value: 1}
-	if _, err := s.Directories.List(ctx, db, parentID, query.Directives{Filters: filters, Total: query.TotalNone}, query.Page{Number: 1, Size: 2}); err != nil {
+	if _, err := s.Directories.List(ctx, db, parentID, query.Directives{Filters: filters, Total: query.TotalNone}, query.Page{Number: 1, Size: 2}, data.ListOptions{}); err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if spare := filters[:2][1]; spare != (query.Filter{}) {

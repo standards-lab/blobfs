@@ -63,22 +63,29 @@ func withVersion(args query.Args, version *int64) query.Args {
 	return args.With("version", *version)
 }
 
-// ListOption configures one call of a listing beyond its required
+// ListOptions configures one call of a listing beyond its required
 // arguments: Directories.List, Directories.Continue, Files.List, or
 // Files.Continue.
-type ListOption func(*listOptions)
-
-// listOptions collects what the list options set.
-type listOptions struct {
-	includeDeleting bool
+type ListOptions struct {
+	// IncludeDeleting makes the listing show deleting rows and list a
+	// deleting directory, which is how the work of a delete is found. A
+	// cursor continues only a listing called the same way, with
+	// IncludeDeleting set or without it. The zero value hides deleting
+	// rows and refuses a deleting directory. See Listings in
+	// docs/features.md.
+	IncludeDeleting bool
 }
 
-// IncludeDeleting makes a listing show deleting rows and list a deleting
-// directory, which is how the work of a delete is found. A cursor
-// continues only a listing called the same way, with the option or
-// without it. See Listings in docs/features.md.
-func IncludeDeleting() ListOption {
-	return func(o *listOptions) { o.includeDeleting = true }
+// CursorPage names the page Continue reads past a cursor, as query.Page
+// names one by number.
+type CursorPage struct {
+	// After is the Next of an earlier page of the listing called the same
+	// way; an empty After is refused before any SQL.
+	After query.Cursor
+
+	// Size is the number of rows the page reads; a Size below 1 is refused
+	// before any SQL.
+	Size int
 }
 
 // WriteOption configures one call of a write protocol, Store.WriteFile or

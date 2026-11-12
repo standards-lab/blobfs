@@ -30,28 +30,28 @@ func (s *suite) listingRefusals(t *testing.T) {
 		{"page 0", listAll(), query.Page{Number: 0, Size: 2}},
 		{"size 0", listAll(), query.Page{Number: 1, Size: 0}},
 	} {
-		if _, err := s.store.Files.List(s.ctx, s.db, dir.ID, c.req, c.page); !errors.Is(err, query.ErrDirectives) {
+		if _, err := s.store.Files.List(s.ctx, s.db, dir.ID, c.req, c.page, data.ListOptions{}); !errors.Is(err, query.ErrDirectives) {
 			t.Errorf("Files.List with %s = %v, want ErrDirectives", c.label, err)
 		}
 	}
-	if _, err := s.store.Directories.List(s.ctx, s.db, dir.ID, query.Directives{Sort: []query.Sort{{Field: "directory_id"}}}, firstPage(2)); !errors.Is(err, query.ErrDirectives) {
+	if _, err := s.store.Directories.List(s.ctx, s.db, dir.ID, query.Directives{Sort: []query.Sort{{Field: "directory_id"}}}, firstPage(2), data.ListOptions{}); !errors.Is(err, query.ErrDirectives) {
 		t.Errorf("Directories.List sorted by a file field = %v, want ErrDirectives", err)
 	}
-	_, err := s.store.Files.List(s.ctx, s.db, dir.ID, query.Directives{Filters: []query.Filter{{Field: "id", Op: query.OpEq, Value: "not a uuid"}}}, firstPage(1))
+	_, err := s.store.Files.List(s.ctx, s.db, dir.ID, query.Directives{Filters: []query.Filter{{Field: "id", Op: query.OpEq, Value: "not a uuid"}}}, firstPage(1), data.ListOptions{})
 	var invalid *query.InvalidValueError
 	if !errors.As(err, &invalid) || !errors.Is(err, query.ErrDirectives) {
 		t.Errorf("a filter on a malformed id = %v, want an InvalidValueError under ErrDirectives", err)
 	}
 
-	files, err := s.store.Files.List(s.ctx, s.db, dir.ID, listAll(), firstPage(1))
+	files, err := s.store.Files.List(s.ctx, s.db, dir.ID, listAll(), firstPage(1), data.ListOptions{})
 	if err != nil || files.Next == "" {
 		t.Fatalf("Files.List = %+v, %v; want a cursor", files, err)
 	}
-	dirs, err := s.store.Directories.List(s.ctx, s.db, dir.ID, listAll(), firstPage(1))
+	dirs, err := s.store.Directories.List(s.ctx, s.db, dir.ID, listAll(), firstPage(1), data.ListOptions{})
 	if err != nil || dirs.Next == "" {
 		t.Fatalf("Directories.List = %+v, %v; want a cursor", dirs, err)
 	}
-	all, err := s.store.Files.List(s.ctx, s.db, dir.ID, listAll(), firstPage(1), data.IncludeDeleting())
+	all, err := s.store.Files.List(s.ctx, s.db, dir.ID, listAll(), firstPage(1), data.ListOptions{IncludeDeleting: true})
 	if err != nil || all.Next == "" {
 		t.Fatalf("Files.List with IncludeDeleting = %+v, %v; want a cursor", all, err)
 	}
@@ -63,30 +63,30 @@ func (s *suite) listingRefusals(t *testing.T) {
 		req   query.Directives
 		after query.Cursor
 		files bool
-		opts  []data.ListOption
+		opts  data.ListOptions
 	}{
-		{"an edited cursor", listAll(), files.Next[:len(files.Next)-2] + "xx", true, nil},
-		{"garbage", listAll(), "not-a-cursor", true, nil},
-		{"the directory listing's cursor", listAll(), dirs.Next, true, nil},
-		{"the file listing's cursor", listAll(), files.Next, false, nil},
-		{"another sort", desc, files.Next, true, nil},
-		{"other filters", filtered, files.Next, true, nil},
-		{"a sort that cannot be continued", bySize, files.Next, true, nil},
-		{"a cursor issued with IncludeDeleting", listAll(), all.Next, true, nil},
-		{"a cursor issued without IncludeDeleting", listAll(), files.Next, true, []data.ListOption{data.IncludeDeleting()}},
+		{"an edited cursor", listAll(), files.Next[:len(files.Next)-2] + "xx", true, data.ListOptions{}},
+		{"garbage", listAll(), "not-a-cursor", true, data.ListOptions{}},
+		{"the directory listing's cursor", listAll(), dirs.Next, true, data.ListOptions{}},
+		{"the file listing's cursor", listAll(), files.Next, false, data.ListOptions{}},
+		{"another sort", desc, files.Next, true, data.ListOptions{}},
+		{"other filters", filtered, files.Next, true, data.ListOptions{}},
+		{"a sort that cannot be continued", bySize, files.Next, true, data.ListOptions{}},
+		{"a cursor issued with IncludeDeleting", listAll(), all.Next, true, data.ListOptions{}},
+		{"a cursor issued without IncludeDeleting", listAll(), files.Next, true, data.ListOptions{IncludeDeleting: true}},
 	} {
 		var err error
 		if c.files {
-			_, err = s.store.Files.Continue(s.ctx, s.db, dir.ID, c.req, c.after, 1, c.opts...)
+			_, err = s.store.Files.Continue(s.ctx, s.db, dir.ID, c.req, data.CursorPage{After: c.after, Size: 1}, c.opts)
 		} else {
-			_, err = s.store.Directories.Continue(s.ctx, s.db, dir.ID, c.req, c.after, 1, c.opts...)
+			_, err = s.store.Directories.Continue(s.ctx, s.db, dir.ID, c.req, data.CursorPage{After: c.after, Size: 1}, c.opts)
 		}
 		var ce *query.CursorError
 		if !errors.As(err, &ce) || !errors.Is(err, query.ErrDirectives) {
 			t.Errorf("Continue with %s = %v, want a CursorError under ErrDirectives", c.label, err)
 		}
 	}
-	if _, err := s.store.Files.Continue(s.ctx, s.db, dir.ID, listAll(), "", 1); !errors.Is(err, query.ErrDirectives) {
+	if _, err := s.store.Files.Continue(s.ctx, s.db, dir.ID, listAll(), data.CursorPage{After: "", Size: 1}, data.ListOptions{}); !errors.Is(err, query.ErrDirectives) {
 		t.Errorf("Continue with an empty cursor = %v, want ErrDirectives", err)
 	}
 }
@@ -95,11 +95,11 @@ func (s *suite) listingRefusals(t *testing.T) {
 // and not the directory: a cursor from one directory's listing continues
 // a sibling's from the same name on, its deleting files hidden.
 func (s *suite) cursorIsAPosition(t *testing.T, f listingFixture) {
-	first, err := s.store.Files.List(s.ctx, s.db, f.dirs["d1"], listAll(), firstPage(2))
+	first, err := s.store.Files.List(s.ctx, s.db, f.dirs["d1"], listAll(), firstPage(2), data.ListOptions{})
 	if err != nil || first.Next == "" {
 		t.Fatalf("page 1 of d1 = %+v, %v; want a cursor", first, err)
 	}
-	other, err := s.store.Files.Continue(s.ctx, s.db, f.dirs["d2"], listAll(), first.Next, 10)
+	other, err := s.store.Files.Continue(s.ctx, s.db, f.dirs["d2"], listAll(), data.CursorPage{After: first.Next, Size: 10}, data.ListOptions{})
 	if err != nil {
 		t.Fatalf("the d1 cursor on d2: %v", err)
 	}

@@ -304,11 +304,11 @@ func (w *sweep) children(ctx context.Context, dir string, after query.Cursor) (q
 // order past after, or the first page when after is empty.
 func walkPage[T any](ctx context.Context, l listing[T], sess sqlate.Session, id string, after query.Cursor, size int) (query.Collection[T], error) {
 	req := query.Directives{Total: query.TotalNone}
-	include := []ListOption{IncludeDeleting()}
+	include := ListOptions{IncludeDeleting: true}
 	if after == "" {
 		return l.list(ctx, sess, id, req, query.Page{Number: 1, Size: size}, include)
 	}
-	return l.cont(ctx, sess, id, req, after, size, include)
+	return l.cont(ctx, sess, id, req, CursorPage{After: after, Size: size}, include)
 }
 
 // remark marks the branch again after a straggler, in a transaction of its

@@ -7,6 +7,7 @@ import (
 	"github.com/standards-lab/sqlate/query"
 
 	"github.com/standards-lab/blobfs"
+	"github.com/standards-lab/blobfs/data"
 )
 
 // files checks the Files handle's reads and the file move.
@@ -32,7 +33,7 @@ func (s *suite) fileReadsInUTC(t *testing.T) {
 		t.Fatalf("FindByName: %v", err)
 	}
 	wantUTC(t, "FindByName", byName.CreatedAt, byName.UpdatedAt)
-	c, err := s.store.Files.List(s.ctx, s.db, dir.ID, listAll(), firstPage(10))
+	c, err := s.store.Files.List(s.ctx, s.db, dir.ID, listAll(), firstPage(10), data.ListOptions{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
