@@ -18,6 +18,25 @@ type Options struct {
 	Engine Engine
 }
 
+// FileSpec names the file Files.Create or Files.Ensure writes: where it
+// goes, under what name, and the content type it declares. Every field is
+// required; the call refuses what it refuses for the positional values,
+// with the same errors.
+type FileSpec struct {
+	// DirectoryID is the directory the file is created in, as
+	// blobfs.File's. A directory that is missing or deleting is the
+	// call's blobfs.ErrNotFound or blobfs.DeletingError.
+	DirectoryID string
+
+	// Name is the file's name in DirectoryID, normalized and checked with
+	// blobfs's name rules before any SQL; an invalid one, the empty name
+	// included, is a blobfs.NameError.
+	Name string
+
+	// ContentType is the content type the row declares for the object.
+	ContentType string
+}
+
 // CreateOptions configures one call of an operation that creates a row,
 // Create or Ensure, beyond its required arguments.
 type CreateOptions struct {
@@ -61,6 +80,42 @@ func withVersion(args query.Args, version *int64) query.Args {
 		return args.With("version", nil)
 	}
 	return args.With("version", *version)
+}
+
+// FileMove names where Files.Move puts the file and the version it
+// expects. Every field is required.
+type FileMove struct {
+	// DirectoryID is the directory the file moves into, as blobfs.File's;
+	// its own directory renames the file in place.
+	DirectoryID string
+
+	// Name is the file's name in DirectoryID, normalized and checked with
+	// blobfs's name rules before any SQL.
+	Name string
+
+	// Version guards the move: a row at another version is
+	// query.ErrVersionMismatch and is left as it is. Unlike
+	// VersionOptions.Version, a zero Version is not unguarded: row
+	// versions start at 1, so it matches no row and the call returns
+	// query.ErrVersionMismatch.
+	Version int64
+}
+
+// DirectoryMove names where Directories.Move puts the directory and the
+// version it expects. Every field is required.
+type DirectoryMove struct {
+	// ParentID is the directory the directory moves under, as
+	// blobfs.Directory's; its own parent renames it in place.
+	ParentID string
+
+	// Name is the directory's name under ParentID, normalized and checked
+	// with blobfs's name rules before any SQL.
+	Name string
+
+	// Version guards the move as FileMove.Version guards Files.Move: a
+	// zero Version matches no row and the call returns
+	// query.ErrVersionMismatch.
+	Version int64
 }
 
 // ListOptions configures one call of a listing beyond its required

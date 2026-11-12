@@ -28,7 +28,7 @@ func TestCreateOptionsMints(t *testing.T) {
 		}
 	}
 	s, db, frec := openStore(t, single, protocolRow(blobfs.StatusPending, 1))
-	if _, err := s.Files.Create(ctx, db, accepting{}, protocolDir, "report.txt", "text/plain", data.CreateOptions{}); err != nil {
+	if _, err := s.Files.Create(ctx, db, accepting{}, data.FileSpec{DirectoryID: protocolDir, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{}); err != nil {
 		t.Fatalf("Files.Create with no id: %v", err)
 	}
 	calls := append(rec.Calls(), frec.Calls()...)
@@ -61,7 +61,7 @@ func TestCreateOptionsEnsureFoundKeepsItsID(t *testing.T) {
 	}
 
 	s, db, rec = openStore(t, single, protocolRow(blobfs.StatusAvailable, 2))
-	f, outcome, err := s.Files.Ensure(ctx, db, accepting{}, protocolDir, "report.txt", "text/plain", data.CreateOptions{ID: blobfs.NewID()})
+	f, outcome, err := s.Files.Ensure(ctx, db, accepting{}, data.FileSpec{DirectoryID: protocolDir, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{ID: blobfs.NewID()})
 	if err != nil || outcome != data.WritePresent || f.ID != protocolFile {
 		t.Errorf("Files.Ensure of a held name = %+v, %v, %v; want the row found under its own id", f, outcome, err)
 	}
@@ -349,4 +349,83 @@ func TestSweepOptionsOnRemoveDirectory(t *testing.T) {
 		}
 		wantDone(t, rec)
 	}
+}
+
+// TestFileSpec checks Files.Create and Files.Ensure bind FileSpec's
+// DirectoryID, normalized Name, and ContentType into the insert, and
+// Ensure's lookup the directory and the normalized name.
+func TestFileSpec(t *testing.T) {
+	ctx := context.Background()
+	id := blobfs.NewID()
+	spec := data.FileSpec{DirectoryID: "P", Name: nfdName, ContentType: "application/pdf"}
+	row := fileIn(id, "P", nfcName, blobfs.StatusPending, 1)
+	insert := []any{id, nfcName, id + "/" + nfcName, "application/pdf", "P"}
+
+	s, db, rec := openStore(t, single, row)
+	if f, err := s.Files.Create(ctx, db, accepting{}, spec, data.CreateOptions{ID: id}); err != nil || f.ID != id {
+		t.Fatalf("Files.Create = %+v, %v, want the pending row", f, err)
+	}
+	if got := callsTo(rec, "INSERT INTO blobfs_file"); len(got) != 1 || !slices.Equal(got[0].Args, insert) {
+		t.Errorf("Files.Create's insert = %v, want %v bound", got, insert)
+	}
+
+	s, db, rec = openStore(t, single, noFile(), row)
+	if f, outcome, err := s.Files.Ensure(ctx, db, accepting{}, spec, data.CreateOptions{ID: id}); err != nil || outcome != data.WriteCreated || f.ID != id {
+		t.Fatalf("Files.Ensure = %+v, %v, %v, want the pending row created", f, outcome, err)
+	}
+	calls := rec.Calls()
+	if len(calls) != 2 || !slices.Equal(calls[0].Args, []any{"P", nfcName}) || !slices.Equal(calls[1].Args, insert) {
+		t.Errorf("Files.Ensure ran %v, want the lookup of P and %q, then the insert of %v", calls, nfcName, insert)
+	}
+}
+
+// TestFileMove checks Files.Move binds FileMove's DirectoryID, normalized
+// Name, and Version into the update, and a zero Version, which no row
+// has, is query.ErrVersionMismatch rather than unguarded.
+func TestFileMove(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, single, fileIn("F", "P", nfcName, blobfs.StatusAvailable, 8))
+	if f, err := s.Files.Move(ctx, db, "F", data.FileMove{DirectoryID: "P", Name: nfdName, Version: 7}); err != nil || f.Version != 8 {
+		t.Fatalf("Files.Move = %+v, %v, want the moved row", f, err)
+	}
+	if got, want := callsTo(rec, "UPDATE blobfs_file")[0].Args, []any{"P", nfcName, "F", int64(7)}; !slices.Equal(got, want) {
+		t.Errorf("the update bound %v, want %v", got, want)
+	}
+
+	s, db, rec = openStore(t, single, noFile(), fileResponse("F", "a", blobfs.StatusAvailable, 1),
+		directoryResponse(blobfs.RootID, "", "/", 1), directoryResponse("P", blobfs.RootID, "p", 1))
+	_, err := s.Files.Move(ctx, db, "F", data.FileMove{DirectoryID: "P", Name: "a"})
+	if !errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "expected 0, current 1") {
+		t.Errorf("Files.Move at a zero Version = %v, want ErrVersionMismatch", err)
+	}
+	if got, want := callsTo(rec, "UPDATE blobfs_file")[0].Args, []any{"P", "a", "F", int64(0)}; !slices.Equal(got, want) {
+		t.Errorf("the update at a zero Version bound %v, want %v: guarded, not unguarded", got, want)
+	}
+	wantDone(t, rec)
+}
+
+// TestDirectoryMove checks Directories.Move binds DirectoryMove's
+// ParentID, normalized Name, and Version into the update, and a zero
+// Version, which no row has, is query.ErrVersionMismatch rather than
+// unguarded.
+func TestDirectoryMove(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, single, within(0), directoryResponse("D", "P", nfcName, 8))
+	if d, err := s.Directories.Move(ctx, begin(t, db), "D", data.DirectoryMove{ParentID: "P", Name: nfdName, Version: 7}); err != nil || d.Version != 8 {
+		t.Fatalf("Directories.Move = %+v, %v, want the moved row", d, err)
+	}
+	if got, want := callsTo(rec, "UPDATE blobfs_directory")[0].Args, []any{"P", nfcName, "D", int64(7)}; !slices.Equal(got, want) {
+		t.Errorf("the update bound %v, want %v", got, want)
+	}
+
+	s, db, rec = openStore(t, single, within(0), noDirectory(), directoryResponse("D", blobfs.RootID, "d", 1),
+		directoryResponse(blobfs.RootID, "", "/", 1), directoryResponse("P", blobfs.RootID, "p", 1))
+	_, err := s.Directories.Move(ctx, begin(t, db), "D", data.DirectoryMove{ParentID: "P", Name: "d"})
+	if !errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "expected 0, current 1") {
+		t.Errorf("Directories.Move at a zero Version = %v, want ErrVersionMismatch", err)
+	}
+	if got, want := callsTo(rec, "UPDATE blobfs_directory")[0].Args, []any{"P", "d", "D", int64(0)}; !slices.Equal(got, want) {
+		t.Errorf("the update at a zero Version bound %v, want %v: guarded, not unguarded", got, want)
+	}
+	wantDone(t, rec)
 }

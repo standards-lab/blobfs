@@ -29,11 +29,11 @@ func TestMoveRefusesBeforeSQL(t *testing.T) {
 	s, db, rec := openStore(t, fallback)
 	tx := begin(t, db)
 	for _, root := range rootSpellings {
-		if _, err := s.Directories.Move(ctx, tx, root, "P", "root", 1); !errors.Is(err, blobfs.ErrRootDirectory) {
+		if _, err := s.Directories.Move(ctx, tx, root, data.DirectoryMove{ParentID: "P", Name: "root", Version: 1}); !errors.Is(err, blobfs.ErrRootDirectory) {
 			t.Errorf("Move(%s) = %v, want ErrRootDirectory", root, err)
 		}
 	}
-	if _, err := s.Directories.Move(ctx, tx, "D", "P", "a/b", 1); !errors.Is(err, blobfs.ErrInvalidName) {
+	if _, err := s.Directories.Move(ctx, tx, "D", data.DirectoryMove{ParentID: "P", Name: "a/b", Version: 1}); !errors.Is(err, blobfs.ErrInvalidName) {
 		t.Errorf("Move with a slash in the name = %v, want ErrInvalidName", err)
 	}
 	if got := ops(rec); got != "begin" {
@@ -55,7 +55,7 @@ func TestMoveIsThreeStepsUnderOneLock(t *testing.T) {
 			}
 			rec.Queue(directoryResponse("D", "P", nfcName, 2))
 			tx := begin(t, db)
-			d, err := s.Directories.Move(ctx, tx, "D", "P", nfdName, 1)
+			d, err := s.Directories.Move(ctx, tx, "D", data.DirectoryMove{ParentID: "P", Name: nfdName, Version: 1})
 			if err != nil {
 				t.Fatalf("Move: %v", err)
 			}
@@ -84,7 +84,7 @@ func TestMoveIsThreeStepsUnderOneLock(t *testing.T) {
 
 	s, db, rec := openStore(t, fallback, within(1))
 	tx := begin(t, db)
-	if _, err := s.Directories.Move(ctx, tx, "D", "D", "d", 1); !errors.Is(err, blobfs.ErrCycle) {
+	if _, err := s.Directories.Move(ctx, tx, "D", data.DirectoryMove{ParentID: "D", Name: "d", Version: 1}); !errors.Is(err, blobfs.ErrCycle) {
 		t.Errorf("Move into itself = %v, want ErrCycle", err)
 	}
 	if execs := rec.SQL(sqltest.OpExec); len(execs) != 0 {
@@ -108,7 +108,7 @@ func TestMoveClassifies(t *testing.T) {
 			}
 			move := func(responses ...sqltest.Response) error {
 				s, db, _ := openStore(t, f, append([]sqltest.Response{within(0)}, responses...)...)
-				_, err := s.Directories.Move(ctx, begin(t, db), "D", "P", "d", 1)
+				_, err := s.Directories.Move(ctx, begin(t, db), "D", data.DirectoryMove{ParentID: "P", Name: "d", Version: 1})
 				return err
 			}
 
@@ -174,7 +174,7 @@ func TestMoveClassifies(t *testing.T) {
 				changed = []sqltest.Response{{Affected: 1}, directoryResponse("D", "P", "d", 2)}
 			}
 			s, db, rec := openStore(t, f, append(append([]sqltest.Response{within(0)}, unexplained...), changed...)...)
-			if dir, err := s.Directories.Move(ctx, begin(t, db), "D", "P", "d", 1); err != nil || dir.Version != 2 {
+			if dir, err := s.Directories.Move(ctx, begin(t, db), "D", data.DirectoryMove{ParentID: "P", Name: "d", Version: 1}); err != nil || dir.Version != 2 {
 				t.Errorf("Move whose rerun changed the row = %+v, %v, want the row", dir, err)
 			}
 			if updates := callsTo(rec, "UPDATE blobfs_directory"); len(updates) != 2 {

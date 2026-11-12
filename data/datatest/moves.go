@@ -110,7 +110,7 @@ func (s *suite) moveIntoOwnSubtree(t *testing.T) {
 			t.Errorf("Move of a under %s = %v, want ErrCycle", target.Name, err)
 		}
 		_, base := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
-			return s.baseline.Directories.Move(s.ctx, tx, a.ID, target.ID, "a", a.Version)
+			return s.baseline.Directories.Move(s.ctx, tx, a.ID, data.DirectoryMove{ParentID: target.ID, Name: "a", Version: a.Version})
 		}, nil)
 		wantSameError(t, err, base)
 		if within, err := s.store.Directories.IsWithin(s.ctx, s.db, target.ID, a.ID); err != nil || !within {
@@ -163,7 +163,7 @@ func (s *suite) moveSubtree(t *testing.T) {
 	}
 	baseDir := s.mkdirUnder(t, src.ID, "base")
 	base, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
-		return s.baseline.Directories.Move(s.ctx, tx, baseDir.ID, dst.ID, "base", baseDir.Version)
+		return s.baseline.Directories.Move(s.ctx, tx, baseDir.ID, data.DirectoryMove{ParentID: dst.ID, Name: "base", Version: baseDir.Version})
 	}, nil)
 	if err != nil || *base.ParentID != dst.ID || base.Version != moved.Version {
 		t.Errorf("the baseline's Move = %+v, %v, want the same shape as %+v", base, err, moved)
@@ -237,7 +237,7 @@ func (s *suite) moveDirectoryRefusals(t *testing.T) {
 				t.Errorf("Move = %v, want no ErrNameTaken", err)
 			}
 			_, base := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
-				return s.baseline.Directories.Move(s.ctx, tx, c.id, c.parent, c.dir, c.version)
+				return s.baseline.Directories.Move(s.ctx, tx, c.id, data.DirectoryMove{ParentID: c.parent, Name: c.dir, Version: c.version})
 			}, nil)
 			wantSameError(t, err, base)
 			if after := s.directory(t, d.ID); !equalDirectory(after, d) {
@@ -255,6 +255,6 @@ func (s *suite) moveDirectoryRefusals(t *testing.T) {
 func (s *suite) move(t *testing.T, id, parentID, n string, version int64) (blobfs.Directory, error) {
 	t.Helper()
 	return s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
-		return s.store.Directories.Move(s.ctx, tx, id, parentID, n, version)
+		return s.store.Directories.Move(s.ctx, tx, id, data.DirectoryMove{ParentID: parentID, Name: n, Version: version})
 	}, nil)
 }

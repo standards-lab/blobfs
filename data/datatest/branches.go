@@ -285,7 +285,7 @@ func (s *suite) markRacesAFileMove(t *testing.T) {
 		outside := s.mkdir(t, fmt.Sprintf("moved-out-%d-%s", i, t.Name()))
 		moved := s.file(t, b.files[0])
 		mover := s.beginTx(t, nil)
-		if _, err := store.Files.Move(s.ctx, mover, moved.ID, outside.ID, moved.Name, moved.Version); err != nil {
+		if _, err := store.Files.Move(s.ctx, mover, moved.ID, data.FileMove{DirectoryID: outside.ID, Name: moved.Name, Version: moved.Version}); err != nil {
 			_ = mover.Rollback()
 			t.Fatalf("Files.Move: %v", err)
 		}
@@ -314,7 +314,7 @@ func (s *suite) markRacesAFileMove(t *testing.T) {
 			t.Fatalf("MarkDeleting: %v", err)
 		}
 		go func() {
-			_, err := store.Files.Move(s.ctx, s.db, kept.ID, outside.ID, kept.Name, kept.Version)
+			_, err := store.Files.Move(s.ctx, s.db, kept.ID, data.FileMove{DirectoryID: outside.ID, Name: kept.Name, Version: kept.Version})
 			done <- err
 		}()
 		wantBlocked(t, done, "the move returned while the mark's transaction was open")
@@ -368,27 +368,27 @@ func (s *suite) deletingRefuses(t *testing.T) {
 	}
 	createFile := func(dir, n string) func(*data.Store) error {
 		return func(store *data.Store) error {
-			_, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir, n, "text/plain", data.CreateOptions{})
+			_, err := store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir, Name: n, ContentType: "text/plain"}, data.CreateOptions{})
 			return err
 		}
 	}
 	ensureFile := func(dir, n string) func(*data.Store) error {
 		return func(store *data.Store) error {
-			_, _, err := store.Files.Ensure(s.ctx, s.db, acceptAll{}, dir, n, "text/plain", data.CreateOptions{})
+			_, _, err := store.Files.Ensure(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir, Name: n, ContentType: "text/plain"}, data.CreateOptions{})
 			return err
 		}
 	}
 	moveDir := func(id, parent, n string, version int64) func(*data.Store) error {
 		return func(store *data.Store) error {
 			_, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
-				return store.Directories.Move(s.ctx, tx, id, parent, n, version)
+				return store.Directories.Move(s.ctx, tx, id, data.DirectoryMove{ParentID: parent, Name: n, Version: version})
 			}, nil)
 			return err
 		}
 	}
 	moveFile := func(id, dir, n string, version int64) func(*data.Store) error {
 		return func(store *data.Store) error {
-			_, err := store.Files.Move(s.ctx, s.db, id, dir, n, version)
+			_, err := store.Files.Move(s.ctx, s.db, id, data.FileMove{DirectoryID: dir, Name: n, Version: version})
 			return err
 		}
 	}
@@ -430,7 +430,7 @@ func (s *suite) deletingRefuses(t *testing.T) {
 			wantSameError(t, err, c.run(s.baseline))
 		})
 	}
-	if f, outcome, err := s.store.Files.Ensure(s.ctx, s.db, acceptAll{}, b.mid.ID, "mid.txt", "text/plain", data.CreateOptions{}); err != nil ||
+	if f, outcome, err := s.store.Files.Ensure(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: b.mid.ID, Name: "mid.txt", ContentType: "text/plain"}, data.CreateOptions{}); err != nil ||
 		outcome != data.WritePresent || f.Status != blobfs.StatusDeleting {
 		t.Errorf("Ensure of a marked file = %+v, %s, %v, want it present and deleting", f, outcome, err)
 	}

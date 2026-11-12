@@ -570,7 +570,7 @@ func (s *suite) sweepStale(t *testing.T) {
 		for _, id := range []string{abandoned, young, available, stopped, starting} {
 			before[id] = s.file(t, id)
 		}
-		_, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "stopped.txt", "text/plain", data.CreateOptions{})
+		_, err := store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "stopped.txt", ContentType: "text/plain"}, data.CreateOptions{})
 		if errors.Is(err, blobfs.ErrNameTaken) {
 			t.Errorf("Create over the stopped delete's name = %v, want its DeletingError and not ErrNameTaken", err)
 		}
@@ -598,7 +598,7 @@ func (s *suite) sweepStale(t *testing.T) {
 				t.Errorf("the reclaim changed %s to\n%+v\nfrom\n%+v", f.Name, f, before[id])
 			}
 		}
-		if f, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "stopped.txt", "text/plain", data.CreateOptions{}); err != nil || f.Status != blobfs.StatusPending {
+		if f, err := store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "stopped.txt", ContentType: "text/plain"}, data.CreateOptions{}); err != nil || f.Status != blobfs.StatusPending {
 			t.Errorf("Create over the finished delete's name = %+v, %v, want a new pending row", f, err)
 		}
 	}

@@ -110,7 +110,7 @@ func create(ctx context.Context, s *data.Store, own func(*sqlate.Tx) error) func
 		if err := own(tx); err != nil {
 			return blobfs.File{}, err
 		}
-		return s.Files.Create(ctx, tx, accepting{}, protocolDir, "report.txt", "text/plain", data.CreateOptions{})
+		return s.Files.Create(ctx, tx, accepting{}, data.FileSpec{DirectoryID: protocolDir, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{})
 	}
 }
 
@@ -347,7 +347,7 @@ func TestWriteOnCompleteRefuses(t *testing.T) {
 // may find a row that is no longer pending.
 func found(ctx context.Context, s *data.Store) func(*sqlate.Tx) (blobfs.File, error) {
 	return func(tx *sqlate.Tx) (blobfs.File, error) {
-		f, _, err := s.Files.Ensure(ctx, tx, accepting{}, protocolDir, "report.txt", "text/plain", data.CreateOptions{})
+		f, _, err := s.Files.Ensure(ctx, tx, accepting{}, data.FileSpec{DirectoryID: protocolDir, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{})
 		return f, err
 	}
 }
@@ -450,7 +450,7 @@ func TestWriteCleansUpAfterCancellation(t *testing.T) {
 // file under the fixed id.
 func ensure(ctx context.Context, s *data.Store) func(*sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
 	return func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
-		return s.Files.Ensure(ctx, tx, accepting{}, protocolDir, "report.txt", "text/plain", data.CreateOptions{ID: protocolFile})
+		return s.Files.Ensure(ctx, tx, accepting{}, data.FileSpec{DirectoryID: protocolDir, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{ID: protocolFile})
 	}
 }
 
@@ -557,7 +557,7 @@ func TestEnsureWriteUnderAnotherID(t *testing.T) {
 		)
 		objects := newObjectStore()
 		minted := func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
-			return s.Files.Ensure(ctx, tx, accepting{}, protocolDir, "report.txt", "text/plain", data.CreateOptions{})
+			return s.Files.Ensure(ctx, tx, accepting{}, data.FileSpec{DirectoryID: protocolDir, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{})
 		}
 		got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, minted)
 		if err == nil || errors.Is(err, blobfs.ErrNameTaken) || stored || got.ID != "" ||

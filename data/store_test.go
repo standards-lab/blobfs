@@ -441,7 +441,7 @@ func TestConsumerEngineSwapsOneMethod(t *testing.T) {
 	s = newStore(t, fallback, data.Options{Engine: failing})
 	pool, rec = sqltest.Open(t)
 	tx = begin(t, sqlate.Wrap(pool, sqltest.Dialect{}))
-	if _, err := s.Directories.Move(ctx, tx, "D", "P", "d", 1); !errors.Is(err, errLock) {
+	if _, err := s.Directories.Move(ctx, tx, "D", data.DirectoryMove{ParentID: "P", Name: "d", Version: 1}); !errors.Is(err, errLock) {
 		t.Errorf("Move under a failing lock = %v, want the lock's error", err)
 	}
 	if got := ops(rec); got != "begin" {
@@ -521,7 +521,7 @@ func TestErrorsNamedOnce(t *testing.T) {
 	_ = tx.Rollback()
 	_, err = s.Directories.Create(ctx, db, blobfs.RootID, "a/b", data.CreateOptions{})
 	check(t, "Directories.Create of a refused name", err, blobfs.ErrInvalidName)
-	_, _, err = s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "", "text/plain", data.CreateOptions{})
+	_, _, err = s.Files.Ensure(ctx, db, accepting{}, data.FileSpec{DirectoryID: blobfs.RootID, Name: "", ContentType: "text/plain"}, data.CreateOptions{})
 	check(t, "Files.Ensure of an empty name", err, blobfs.ErrInvalidName)
 	_, err = s.Directories.FindByPath(ctx, db, blobfs.RootID, "/a")
 	check(t, "FindByPath of an absolute path", err, blobfs.ErrInvalidPath)
@@ -536,14 +536,14 @@ func TestErrorsNamedOnce(t *testing.T) {
 	}})
 	pool, _ := sqltest.Open(t)
 	tx = begin(t, sqlate.Wrap(pool, sqltest.Dialect{}))
-	_, err = failing.Directories.Move(ctx, tx, "D", "P", "d", 1)
+	_, err = failing.Directories.Move(ctx, tx, "D", data.DirectoryMove{ParentID: "P", Name: "d", Version: 1})
 	check(t, "Move under a failing lock", err, errLock)
 	_, err = failing.Directories.MarkDeleting(ctx, tx, "D", data.VersionOptions{})
 	check(t, "MarkDeleting under a failing lock", err, errLock)
 	check(t, "LockTree that fails", failing.Directories.LockTree(ctx, tx), errLock)
 
 	s, db, _ = openStore(t, fallback, within(1))
-	_, err = s.Directories.Move(ctx, begin(t, db), "D", "P", "d", 1)
+	_, err = s.Directories.Move(ctx, begin(t, db), "D", data.DirectoryMove{ParentID: "P", Name: "d", Version: 1})
 	check(t, "Move under a descendant", err, blobfs.ErrCycle)
 
 	errEngine := errors.New("no native statements")

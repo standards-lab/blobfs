@@ -41,7 +41,7 @@ func (s *suite) fileReadsInUTC(t *testing.T) {
 		t.Fatalf("List returned %d files, want the one row", len(c.Items))
 	}
 	wantUTC(t, "List", c.Items[0].CreatedAt, c.Items[0].UpdatedAt)
-	moved, err := s.store.Files.Move(s.ctx, s.db, id, dst.ID, "a.txt", found.Version)
+	moved, err := s.store.Files.Move(s.ctx, s.db, id, data.FileMove{DirectoryID: dst.ID, Name: "a.txt", Version: found.Version})
 	if err != nil {
 		t.Fatalf("Move: %v", err)
 	}
@@ -96,7 +96,7 @@ func (s *suite) moveFile(t *testing.T) {
 	dst := s.mkdir(t, "move-dst-"+t.Name())
 	id := s.insertFile(t, src.ID, "a.txt", blobfs.StatusAvailable)
 	before := s.file(t, id)
-	moved, err := s.store.Files.Move(s.ctx, s.db, id, dst.ID, "a.txt", before.Version)
+	moved, err := s.store.Files.Move(s.ctx, s.db, id, data.FileMove{DirectoryID: dst.ID, Name: "a.txt", Version: before.Version})
 	if err != nil {
 		t.Fatalf("Move into dst: %v", err)
 	}
@@ -110,7 +110,7 @@ func (s *suite) moveFile(t *testing.T) {
 	if _, err := s.store.Files.FindByName(s.ctx, s.db, src.ID, "a.txt"); !errors.Is(err, blobfs.ErrNotFound) {
 		t.Errorf("the file is still found in src: %v", err)
 	}
-	renamed, err := s.store.Files.Move(s.ctx, s.db, id, dst.ID, decomposed, moved.Version)
+	renamed, err := s.store.Files.Move(s.ctx, s.db, id, data.FileMove{DirectoryID: dst.ID, Name: decomposed, Version: moved.Version})
 	if err != nil {
 		t.Fatalf("Move as a rename: %v", err)
 	}
@@ -119,7 +119,7 @@ func (s *suite) moveFile(t *testing.T) {
 	}
 
 	baseID := s.insertFile(t, src.ID, "b.txt", blobfs.StatusAvailable)
-	base, err := s.baseline.Files.Move(s.ctx, s.db, baseID, dst.ID, "b.txt", 1)
+	base, err := s.baseline.Files.Move(s.ctx, s.db, baseID, data.FileMove{DirectoryID: dst.ID, Name: "b.txt", Version: 1})
 	if err != nil {
 		t.Fatalf("the baseline's Move: %v", err)
 	}
@@ -128,12 +128,12 @@ func (s *suite) moveFile(t *testing.T) {
 	}
 
 	pending := s.insertFile(t, src.ID, "pending.txt", blobfs.StatusPending)
-	if f, err := s.store.Files.Move(s.ctx, s.db, pending, dst.ID, "pending.txt", 1); err != nil || f.Status != blobfs.StatusPending || f.DirectoryID != dst.ID {
+	if f, err := s.store.Files.Move(s.ctx, s.db, pending, data.FileMove{DirectoryID: dst.ID, Name: "pending.txt", Version: 1}); err != nil || f.Status != blobfs.StatusPending || f.DirectoryID != dst.ID {
 		t.Errorf("Move of a pending row = %+v, %v; want it moved and still pending", f, err)
 	}
 	s.mkdirUnder(t, dst.ID, "shared")
 	shared := s.insertFile(t, src.ID, "shared", blobfs.StatusAvailable)
-	if _, err := s.store.Files.Move(s.ctx, s.db, shared, dst.ID, "shared", 1); err != nil {
+	if _, err := s.store.Files.Move(s.ctx, s.db, shared, data.FileMove{DirectoryID: dst.ID, Name: "shared", Version: 1}); err != nil {
 		t.Errorf("Move under the name of a directory = %v, want the move to succeed", err)
 	}
 }
@@ -183,7 +183,7 @@ func (s *suite) moveFileRefusals(t *testing.T) {
 			if c.id != missing {
 				before = s.file(t, c.id)
 			}
-			_, err := s.store.Files.Move(s.ctx, s.db, c.id, c.dir, c.file, c.version)
+			_, err := s.store.Files.Move(s.ctx, s.db, c.id, data.FileMove{DirectoryID: c.dir, Name: c.file, Version: c.version})
 			if c.constraint != "" {
 				wantViolation(t, err, c.want, c.constraint)
 			} else if !errors.Is(err, c.want) || (c.not != nil && errors.Is(err, c.not)) {
@@ -196,7 +196,7 @@ func (s *suite) moveFileRefusals(t *testing.T) {
 				}
 				wantDeletingKind(t, err, false, id)
 			}
-			_, base := s.baseline.Files.Move(s.ctx, s.db, c.id, c.dir, c.file, c.version)
+			_, base := s.baseline.Files.Move(s.ctx, s.db, c.id, data.FileMove{DirectoryID: c.dir, Name: c.file, Version: c.version})
 			wantSameError(t, err, base)
 			if c.id != missing {
 				if after := s.file(t, c.id); !equalFile(before, after) {

@@ -70,7 +70,7 @@ func (s *suite) storesUnder() []struct {
 // dir, its begin creating the pending row with Files.Create.
 func (s *suite) writeFile(store *data.Store, objects data.ObjectStore, dir, n, body string) (blobfs.File, error) {
 	return store.WriteFile(s.ctx, s.db, objects, strings.NewReader(body), int64(len(body)), func(tx *sqlate.Tx) (blobfs.File, error) {
-		return store.Files.Create(s.ctx, tx, acceptAll{}, dir, n, "text/plain", data.CreateOptions{})
+		return store.Files.Create(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir, Name: n, ContentType: "text/plain"}, data.CreateOptions{})
 	})
 }
 
@@ -79,7 +79,7 @@ func (s *suite) writeFile(store *data.Store, objects data.ObjectStore, dir, n, b
 // CreateOptions{ID: id}, under opts.
 func (s *suite) ensureWrite(store *data.Store, objects data.ObjectStore, dir, n, id, body string, opts ...data.WriteOption) (blobfs.File, bool, error) {
 	return store.EnsureFile(s.ctx, s.db, objects, id, strings.NewReader(body), int64(len(body)), func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
-		return store.Files.Ensure(s.ctx, tx, acceptAll{}, dir, n, "text/plain", data.CreateOptions{ID: id})
+		return store.Files.Ensure(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir, Name: n, ContentType: "text/plain"}, data.CreateOptions{ID: id})
 	}, opts...)
 }
 
@@ -238,7 +238,7 @@ func (s *suite) protocolWriteOnComplete(t *testing.T) {
 			objects := newObjectStore()
 			var hooked, read blobfs.File
 			got, err := tier.store.WriteFile(s.ctx, s.db, objects, strings.NewReader("report"), 6, func(tx *sqlate.Tx) (blobfs.File, error) {
-				return tier.store.Files.Create(s.ctx, tx, acceptAll{}, dir.ID, "report.txt", "text/plain", data.CreateOptions{})
+				return tier.store.Files.Create(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{})
 			}, data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
 				hooked = f
 				var err error
@@ -276,7 +276,7 @@ func (s *suite) protocolWriteOnCompleteRefuses(t *testing.T) {
 			objects := newObjectStore()
 			var id, key string
 			_, err := tier.store.WriteFile(s.ctx, s.db, objects, strings.NewReader("report"), 6, func(tx *sqlate.Tx) (blobfs.File, error) {
-				return tier.store.Files.Create(s.ctx, tx, acceptAll{}, dir.ID, "report.txt", "text/plain", data.CreateOptions{})
+				return tier.store.Files.Create(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{})
 			}, data.OnComplete(func(_ context.Context, tx *sqlate.Tx, f blobfs.File) error {
 				id, key = f.ID, f.Key
 				s.reference(t, tx, f.ID)
@@ -309,7 +309,7 @@ func (s *suite) protocolWriteRefusedBegin(t *testing.T) {
 			dir := s.mkdir(t, "write-refused-begin-"+t.Name())
 			objects := newObjectStore()
 			_, err := tier.store.WriteFile(s.ctx, s.db, objects, strings.NewReader("report"), 6, func(tx *sqlate.Tx) (blobfs.File, error) {
-				if _, err := tier.store.Files.Create(s.ctx, tx, acceptAll{}, dir.ID, "report.txt", "text/plain", data.CreateOptions{}); err != nil {
+				if _, err := tier.store.Files.Create(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{}); err != nil {
 					return blobfs.File{}, err
 				}
 				return blobfs.File{}, errBegin
@@ -340,7 +340,7 @@ func (s *suite) protocolWriteRefusesAvailable(t *testing.T) {
 				t.Fatalf("Write: %v", err)
 			}
 			_, err = tier.store.WriteFile(s.ctx, s.db, objects, strings.NewReader("other"), 5, func(tx *sqlate.Tx) (blobfs.File, error) {
-				f, _, err := tier.store.Files.Ensure(s.ctx, tx, acceptAll{}, dir.ID, "report.txt", "text/plain", data.CreateOptions{})
+				f, _, err := tier.store.Files.Ensure(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{})
 				return f, err
 			})
 			var te *blobfs.TransitionError
@@ -370,7 +370,7 @@ func (s *suite) protocolWriteUnderADeletingName(t *testing.T) {
 			objects := newObjectStore()
 			var after error
 			_, err := tier.store.WriteFile(s.ctx, s.db, objects, strings.NewReader("report"), 6, func(tx *sqlate.Tx) (blobfs.File, error) {
-				f, err := tier.store.Files.Create(s.ctx, tx, acceptAll{}, dir.ID, "report.txt", "text/plain", data.CreateOptions{})
+				f, err := tier.store.Files.Create(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{})
 				if err == nil {
 					return f, nil
 				}
@@ -424,7 +424,7 @@ func (s *suite) protocolEnsureResumes(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			dir := s.mkdir(t, "ensure-resume-"+t.Name())
 			id := blobfs.NewID()
-			pending, err := tier.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "seed.txt", "text/plain", data.CreateOptions{ID: id})
+			pending, err := tier.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "seed.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id})
 			if err != nil {
 				t.Fatalf("Create: %v", err)
 			}
@@ -499,7 +499,7 @@ func (s *suite) protocolEnsureDeleting(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			dir := s.mkdir(t, "ensure-deleting-"+t.Name())
 			id := blobfs.NewID()
-			if _, err := tier.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "seed.txt", "text/plain", data.CreateOptions{ID: id}); err != nil {
+			if _, err := tier.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "seed.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id}); err != nil {
 				t.Fatalf("Create: %v", err)
 			}
 			deleting := s.beginDelete(t, id)
@@ -568,15 +568,15 @@ func (s *suite) protocolEnsureLostInsert(t *testing.T) {
 			var competing blobfs.File
 			begin := func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
 				if begun++; begun > 1 {
-					return tier.store.Files.Ensure(s.ctx, tx, acceptAll{}, dir.ID, "seed.txt", "text/plain", data.CreateOptions{ID: id})
+					return tier.store.Files.Ensure(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "seed.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id})
 				}
 				// The competing writer commits between this writer's lookup,
 				// which found nothing, and its insert.
 				var err error
-				if competing, err = tier.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "seed.txt", "text/plain", data.CreateOptions{ID: id}); err != nil {
+				if competing, err = tier.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "seed.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id}); err != nil {
 					t.Errorf("the competing Create: %v", err)
 				}
-				f, err := tier.store.Files.Create(s.ctx, tx, acceptAll{}, dir.ID, "seed.txt", "text/plain", data.CreateOptions{ID: id})
+				f, err := tier.store.Files.Create(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "seed.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id})
 				return f, data.WriteCreated, err
 			}
 			got, stored, err := tier.store.EnsureFile(s.ctx, s.db, objects, id, strings.NewReader("seed"), 4, begin)

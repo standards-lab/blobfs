@@ -306,7 +306,7 @@ func (s *suite) startMove(store *data.Store, id, parentID string, version int64,
 			m.done <- err
 			return
 		}
-		_, err = store.Directories.Move(s.ctx, tx, id, parentID, "moved", version)
+		_, err = store.Directories.Move(s.ctx, tx, id, data.DirectoryMove{ParentID: parentID, Name: "moved", Version: version})
 		m.moved <- err
 		if err != nil {
 			m.done <- tx.Rollback()
