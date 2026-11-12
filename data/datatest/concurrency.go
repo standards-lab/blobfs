@@ -26,9 +26,9 @@ func (s *suite) opposingMoves(t *testing.T) {
 	y := s.mkdir(t, "y-"+t.Name())
 	g, store := s.gatedStore(t)
 
-	a := s.startMove(store, x.ID, y.ID, x.Version)
+	a := s.startMove(store, x.ID, y.ID, x.Version, nil)
 	releaseA := g.await(t, "A")
-	b := s.startMove(store, y.ID, x.ID, y.Version)
+	b := s.startMove(store, y.ID, x.ID, y.Version, nil)
 
 	if s.store.Directories.Serializes() {
 		g.wantNotArrived(t, "B")
@@ -157,7 +157,7 @@ func (s *suite) opposingSerializableMoves(t *testing.T) {
 	x := s.mkdir(t, "sx-"+t.Name())
 	y := s.mkdir(t, "sy-"+t.Name())
 	g, store := s.gatedStore(t)
-	serializable := sqlate.Isolation(sql.LevelSerializable)
+	serializable := &sql.TxOptions{Isolation: sql.LevelSerializable}
 
 	a := s.startMove(store, x.ID, y.ID, x.Version, serializable)
 	releaseA := g.await(t, "A")
@@ -297,10 +297,10 @@ type mover struct {
 // startMove begins a transaction under opts on a goroutine, runs
 // Directories.Move through store in it, renaming the directory to moved,
 // and waits for the suite before committing.
-func (s *suite) startMove(store *data.Store, id, parentID string, version int64, opts ...sqlate.TxOption) *mover {
+func (s *suite) startMove(store *data.Store, id, parentID string, version int64, opts *sql.TxOptions) *mover {
 	m := &mover{moved: make(chan error, 1), commit: make(chan struct{}), done: make(chan error, 1)}
 	go func() {
-		tx, err := s.db.Begin(s.ctx, opts...)
+		tx, err := s.db.Begin(s.ctx, opts)
 		if err != nil {
 			m.moved <- err
 			m.done <- err

@@ -79,7 +79,7 @@ func (s *suite) holdRefusals(t *testing.T, dir string) {
 			}
 			_, base := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (struct{}, error) {
 				return struct{}{}, s.baseline.Files.Hold(s.ctx, tx, c.id, c.opts...)
-			})
+			}, nil)
 			wantSameError(t, err, base)
 		})
 	}
@@ -96,7 +96,7 @@ func (s *suite) holdRefusals(t *testing.T, dir string) {
 func (s *suite) holdThenDelete(t *testing.T, dir string) {
 	s.createFileReferences(t)
 	id := s.insertFile(t, dir, "held-then-deleted.txt", blobfs.StatusAvailable)
-	holder := s.beginTx(t)
+	holder := s.beginTx(t, nil)
 	ended := false
 	defer func() {
 		if !ended {
@@ -156,7 +156,7 @@ func (s *suite) deleteThenHold(t *testing.T, dir string) {
 	} {
 		t.Run(end.name, func(t *testing.T) {
 			id := s.insertFile(t, dir, "deleted-then-held-"+end.name+".txt", blobfs.StatusAvailable)
-			deleter := s.beginTx(t)
+			deleter := s.beginTx(t, nil)
 			ended := false
 			defer func() {
 				if !ended {
@@ -166,7 +166,7 @@ func (s *suite) deleteThenHold(t *testing.T, dir string) {
 			if _, err := s.store.Files.Delete(s.ctx, deleter, id); err != nil {
 				t.Fatalf("Delete: %v", err)
 			}
-			holder := s.beginTx(t)
+			holder := s.beginTx(t, nil)
 			defer func() { _ = holder.Rollback() }()
 			held := make(chan error, 1)
 			go func() { held <- s.store.Files.Hold(s.ctx, holder, id) }()
@@ -202,6 +202,6 @@ type deleteResult struct {
 func (s *suite) holdIn(id string, opts ...data.VersionOption) error {
 	_, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (struct{}, error) {
 		return struct{}{}, s.store.Files.Hold(s.ctx, tx, id, opts...)
-	})
+	}, nil)
 	return err
 }

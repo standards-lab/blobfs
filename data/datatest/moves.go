@@ -36,12 +36,12 @@ func (s *suite) lockTree(t *testing.T) {
 		return
 	}
 	t.Run("NoOpNeverBlocks", func(t *testing.T) {
-		first := s.beginTx(t)
+		first := s.beginTx(t, nil)
 		defer func() { _ = first.Rollback() }()
 		if err := s.store.Directories.LockTree(s.ctx, first); err != nil {
 			t.Fatalf("the first LockTree: %v", err)
 		}
-		second := s.beginTx(t)
+		second := s.beginTx(t, nil)
 		defer func() { _ = second.Rollback() }()
 		if err := awaitOrFail(t, s.lockIn(second), "the second LockTree blocked while the first transaction held the lock; a variant that does not serialize must not block"); err != nil {
 			t.Fatalf("the second LockTree: %v", err)
@@ -52,7 +52,7 @@ func (s *suite) lockTree(t *testing.T) {
 // heldUntil proves a second transaction's LockTree blocks while the first
 // holds the lock and returns once the first ends through end.
 func (s *suite) heldUntil(t *testing.T, end func(*sqlate.Tx) error) {
-	first := s.beginTx(t)
+	first := s.beginTx(t, nil)
 	ended := false
 	defer func() {
 		if !ended {
@@ -62,7 +62,7 @@ func (s *suite) heldUntil(t *testing.T, end func(*sqlate.Tx) error) {
 	if err := s.store.Directories.LockTree(s.ctx, first); err != nil {
 		t.Fatalf("the first LockTree: %v", err)
 	}
-	second := s.beginTx(t)
+	second := s.beginTx(t, nil)
 	defer func() { _ = second.Rollback() }()
 	done := s.lockIn(second)
 	wantBlocked(t, done, "the second LockTree returned while the first transaction held the lock")
@@ -110,7 +110,7 @@ func (s *suite) moveIntoOwnSubtree(t *testing.T) {
 		}
 		_, base := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
 			return s.baseline.Directories.Move(s.ctx, tx, a.ID, target.ID, "a", a.Version)
-		})
+		}, nil)
 		wantSameError(t, err, base)
 		if within, err := s.store.Directories.IsWithin(s.ctx, s.db, target.ID, a.ID); err != nil || !within {
 			t.Errorf("IsWithin(%s, a) = %v, %v, want true", target.Name, within, err)
@@ -163,7 +163,7 @@ func (s *suite) moveSubtree(t *testing.T) {
 	baseDir := s.mkdirUnder(t, src.ID, "base")
 	base, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
 		return s.baseline.Directories.Move(s.ctx, tx, baseDir.ID, dst.ID, "base", baseDir.Version)
-	})
+	}, nil)
 	if err != nil || *base.ParentID != dst.ID || base.Version != moved.Version {
 		t.Errorf("the baseline's Move = %+v, %v, want the same shape as %+v", base, err, moved)
 	}
@@ -237,7 +237,7 @@ func (s *suite) moveDirectoryRefusals(t *testing.T) {
 			}
 			_, base := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
 				return s.baseline.Directories.Move(s.ctx, tx, c.id, c.parent, c.dir, c.version)
-			})
+			}, nil)
 			wantSameError(t, err, base)
 			if after := s.directory(t, d.ID); !equalDirectory(after, d) {
 				t.Errorf("the refused move changed the row to %+v from %+v", after, d)
@@ -255,5 +255,5 @@ func (s *suite) move(t *testing.T, id, parentID, n string, version int64) (blobf
 	t.Helper()
 	return s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
 		return s.store.Directories.Move(s.ctx, tx, id, parentID, n, version)
-	})
+	}, nil)
 }

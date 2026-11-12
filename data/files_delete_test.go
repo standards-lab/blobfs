@@ -27,7 +27,7 @@ func TestHoldFile(t *testing.T) {
 		s, db, rec := openStore(t, fallback, responses...)
 		_, err := db.Transact(ctx, func(tx *sqlate.Tx) (struct{}, error) {
 			return struct{}{}, s.Files.Hold(ctx, tx, "F", opts...)
-		})
+		}, nil)
 		return rec, err
 	}
 

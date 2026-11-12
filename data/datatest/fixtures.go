@@ -1,6 +1,7 @@
 package datatest
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -187,9 +188,9 @@ func (s *suite) column(t *testing.T, text string, args ...any) []string {
 
 // beginTx opens a transaction on the pool, failing the test when it
 // cannot.
-func (s *suite) beginTx(t *testing.T, opts ...sqlate.TxOption) *sqlate.Tx {
+func (s *suite) beginTx(t *testing.T, opts *sql.TxOptions) *sqlate.Tx {
 	t.Helper()
-	tx, err := s.db.Begin(s.ctx, opts...)
+	tx, err := s.db.Begin(s.ctx, opts)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}

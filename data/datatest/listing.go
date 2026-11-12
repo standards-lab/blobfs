@@ -416,7 +416,7 @@ func (s *suite) totalUnderConcurrentInserts(t *testing.T) {
 	if after := list(s.db, 1, 10); after.Total != 4 || len(after.Items) != 4 {
 		t.Errorf("after the insert: total %d, %d rows; want 4 and 4", after.Total, len(after.Items))
 	}
-	tx := s.beginTx(t, sqlate.ReadOnly(), sqlate.Isolation(sql.LevelRepeatableRead))
+	tx := s.beginTx(t, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	defer func() { _ = tx.Rollback() }()
 	first := list(tx, 1, 2)
 	s.insertFile(t, dir, "aa", blobfs.StatusAvailable)

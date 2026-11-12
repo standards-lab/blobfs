@@ -70,7 +70,7 @@ func openStore(t *testing.T, f form, responses ...sqltest.Response) (*data.Store
 // the test commits it first.
 func begin(t *testing.T, db *sqlate.DB) *sqlate.Tx {
 	t.Helper()
-	tx, err := db.Begin(context.Background())
+	tx, err := db.Begin(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}

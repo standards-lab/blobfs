@@ -940,7 +940,7 @@ func (s *suite) protocolPurge(t *testing.T) {
 			}
 			deleting, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 				return tier.store.Files.Delete(s.ctx, tx, f.ID)
-			})
+			}, nil)
 			if err != nil {
 				t.Fatalf("Files.Delete: %v", err)
 			}

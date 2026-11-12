@@ -73,7 +73,7 @@ func (s *suite) newBranchUnder(t *testing.T, parentID, n string) branch {
 func (s *suite) mark(store *data.Store, id string, opts ...data.VersionOption) (data.Marked, error) {
 	return s.db.Transact(s.ctx, func(tx *sqlate.Tx) (data.Marked, error) {
 		return store.Directories.MarkDeleting(s.ctx, tx, id, opts...)
-	})
+	}, nil)
 }
 
 // markCounts checks a mark of a three-level branch against the baseline:
@@ -243,7 +243,7 @@ func (s *suite) markWaitsOnHold(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("held-%d-%s", i, t.Name()))
 		held := b.files[3]
-		holder := s.beginTx(t)
+		holder := s.beginTx(t, nil)
 		ended := false
 		defer func() {
 			if !ended {
@@ -284,7 +284,7 @@ func (s *suite) markRacesAFileMove(t *testing.T) {
 		b := s.newBranch(t, fmt.Sprintf("move-then-mark-%d-%s", i, t.Name()))
 		outside := s.mkdir(t, fmt.Sprintf("moved-out-%d-%s", i, t.Name()))
 		moved := s.file(t, b.files[0])
-		mover := s.beginTx(t)
+		mover := s.beginTx(t, nil)
 		if _, err := store.Files.Move(s.ctx, mover, moved.ID, outside.ID, moved.Name, moved.Version); err != nil {
 			_ = mover.Rollback()
 			t.Fatalf("Files.Move: %v", err)
@@ -308,7 +308,7 @@ func (s *suite) markRacesAFileMove(t *testing.T) {
 		b = s.newBranch(t, fmt.Sprintf("mark-then-move-%d-%s", i, t.Name()))
 		outside = s.mkdir(t, fmt.Sprintf("kept-in-%d-%s", i, t.Name()))
 		kept := s.file(t, b.files[0])
-		marker := s.beginTx(t)
+		marker := s.beginTx(t, nil)
 		if _, err := store.Directories.MarkDeleting(s.ctx, marker, b.top.ID); err != nil {
 			_ = marker.Rollback()
 			t.Fatalf("MarkDeleting: %v", err)
@@ -382,7 +382,7 @@ func (s *suite) deletingRefuses(t *testing.T) {
 		return func(store *data.Store) error {
 			_, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
 				return store.Directories.Move(s.ctx, tx, id, parent, n, version)
-			})
+			}, nil)
 			return err
 		}
 	}
@@ -411,7 +411,7 @@ func (s *suite) deletingRefuses(t *testing.T) {
 		{"HoldAMarkedFile", func(store *data.Store) error {
 			_, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (struct{}, error) {
 				return struct{}{}, store.Files.Hold(s.ctx, tx, b.files[2])
-			})
+			}, nil)
 			return err
 		}},
 		{"CompleteAMarkedFile", func(store *data.Store) error {

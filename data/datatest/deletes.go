@@ -41,7 +41,7 @@ func (s *suite) deleteReturnsTheRow(t *testing.T, dir string) {
 		baseID := s.insertFile(t, dir, "baseline-"+status.String()+".txt", status)
 		base, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 			return s.baseline.Files.Delete(s.ctx, tx, baseID)
-		})
+		}, nil)
 		if err != nil || !sameFileShape(got, base) {
 			t.Errorf("the baseline's Delete = %+v, %v, want the same shape as\n%+v", base, err, got)
 		}
@@ -78,7 +78,7 @@ func (s *suite) deleteRetryConverges(t *testing.T, dir string) {
 func (s *suite) deleteRollback(t *testing.T, dir string) {
 	id := s.insertFile(t, dir, "rolled-back.txt", blobfs.StatusAvailable)
 	before := s.file(t, id)
-	tx := s.beginTx(t)
+	tx := s.beginTx(t, nil)
 	got, err := s.store.Files.Delete(s.ctx, tx, id)
 	if err != nil {
 		_ = tx.Rollback()
@@ -102,7 +102,7 @@ func (s *suite) deleteAtVersion(t *testing.T, dir string) {
 	before := s.file(t, id)
 	_, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 		return s.store.Files.Delete(s.ctx, tx, id, data.AtVersion(before.Version+1))
-	})
+	}, nil)
 	if !errors.Is(err, query.ErrVersionMismatch) {
 		t.Errorf("Delete at a stale version = %v, want ErrVersionMismatch", err)
 	}
@@ -111,21 +111,21 @@ func (s *suite) deleteAtVersion(t *testing.T, dir string) {
 	}
 	got, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 		return s.store.Files.Delete(s.ctx, tx, id, data.AtVersion(before.Version))
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Delete at the current version: %v", err)
 	}
 	wantDeleting(t, before, got)
 	again, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 		return s.store.Files.Delete(s.ctx, tx, id, data.AtVersion(before.Version))
-	})
+	}, nil)
 	if err != nil || !equalFile(got, again) {
 		t.Errorf("the retried guarded Delete = %+v, %v, want the deleting row\n%+v", again, err, got)
 	}
 	s.purge(t, id)
 	if _, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 		return s.store.Files.Delete(s.ctx, tx, id, data.AtVersion(before.Version))
-	}); !errors.Is(err, blobfs.ErrNotFound) {
+	}, nil); !errors.Is(err, blobfs.ErrNotFound) {
 		t.Errorf("a guarded Delete after the Purge = %v, want ErrNotFound", err)
 	}
 }
@@ -140,7 +140,7 @@ func (s *suite) deleteMissing(t *testing.T) {
 	}
 	_, base := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 		return s.baseline.Files.Delete(s.ctx, tx, id)
-	})
+	}, nil)
 	wantSameError(t, err, base)
 }
 
@@ -201,7 +201,7 @@ func (s *suite) beginDelete(t *testing.T, id string) blobfs.File {
 func (s *suite) deleteIn(id string) (blobfs.File, error) {
 	return s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 		return s.store.Files.Delete(s.ctx, tx, id)
-	})
+	}, nil)
 }
 
 // purge runs Purge on the pool and fails the test on any error.

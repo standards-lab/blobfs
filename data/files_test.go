@@ -454,7 +454,7 @@ func TestEnsureFile(t *testing.T) {
 			_, err = db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 				file, _, err := s.Files.Ensure(ctx, tx, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.WithID(id))
 				return file, err
-			})
+			}, nil)
 			if !errors.Is(err, blobfs.ErrIDTaken) {
 				t.Errorf("Ensure under a taken id inside a transaction = %v, want ErrIDTaken", err)
 			}
@@ -470,7 +470,7 @@ func TestEnsureFile(t *testing.T) {
 			_, err = db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 				file, _, err := s.Files.Ensure(ctx, tx, accepting{}, blobfs.RootID, "a.txt", "text/plain")
 				return file, err
-			})
+			}, nil)
 			if !errors.Is(err, blobfs.ErrNameTaken) {
 				t.Errorf("Ensure under a concurrent writer inside a transaction = %v, want ErrNameTaken", err)
 			}
@@ -504,7 +504,7 @@ func TestEnsureFile(t *testing.T) {
 					var e ensured
 					var err error
 					if inTx {
-						e, err = db.Transact(ctx, func(tx *sqlate.Tx) (ensured, error) { return run(tx) })
+						e, err = db.Transact(ctx, func(tx *sqlate.Tx) (ensured, error) { return run(tx) }, nil)
 					} else {
 						e, err = run(db)
 					}

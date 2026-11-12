@@ -310,7 +310,7 @@ func TestEnsure(t *testing.T) {
 			_, err = db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
 				d, _, err := s.Directories.Ensure(ctx, tx, blobfs.RootID, "docs")
 				return d, err
-			})
+			}, nil)
 			if !errors.Is(err, blobfs.ErrNameTaken) {
 				t.Errorf("Ensure under a concurrent creator inside a transaction = %v, want ErrNameTaken", err)
 			}
@@ -356,7 +356,7 @@ func TestEnsure(t *testing.T) {
 			_, err = db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
 				d, _, err := s.Directories.Ensure(ctx, tx, blobfs.RootID, "docs", data.WithID(id))
 				return d, err
-			})
+			}, nil)
 			if !errors.Is(err, blobfs.ErrIDTaken) {
 				t.Errorf("Ensure under a taken id inside a transaction = %v, want ErrIDTaken", err)
 			}
@@ -386,7 +386,7 @@ func TestEnsureFindsADeletingDirectory(t *testing.T) {
 	_, err := db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
 		dir, _, err := s.Directories.Ensure(ctx, tx, blobfs.RootID, "docs")
 		return dir, err
-	})
+	}, nil)
 	wantDeleting(t, "Ensure under a concurrent deleting directory", err, true, "D")
 	if strings.Contains(err.Error(), "holds the name") {
 		t.Errorf("Ensure under a concurrent deleting directory = %v, want the found directory's refusal", err)

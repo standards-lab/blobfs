@@ -48,7 +48,7 @@ func (s *suite) deleteFile(t *testing.T, id string) {
 	t.Helper()
 	if _, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 		return s.store.Files.Delete(s.ctx, tx, id)
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("Files.Delete: %v", err)
 	}
 }
@@ -265,7 +265,7 @@ func (s *suite) branchRootsFindsTheRoots(t *testing.T) {
 // suite's database holds marked branches by now, so the check runs in a
 // transaction that makes every directory active again and rolls back.
 func (s *suite) branchRootsFindsNone(t *testing.T) {
-	tx := s.beginTx(t)
+	tx := s.beginTx(t, nil)
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(s.ctx, "UPDATE blobfs_directory SET status = 'active' WHERE status = 'deleting'"); err != nil {
 		t.Fatalf("reactivate the marked directories: %v", err)

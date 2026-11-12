@@ -263,7 +263,7 @@ func (s *suite) ensureDirectory(t *testing.T) {
 					return found, errors.New("the lookup created a second row")
 				}
 				return found, err
-			})
+			}, nil)
 			if err != nil || !equalDirectory(created, inTx) {
 				t.Errorf("Ensure inside a transaction = %+v, %v; want the row found", inTx, err)
 			}

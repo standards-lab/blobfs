@@ -343,7 +343,7 @@ func (s *suite) writeInTransaction(t *testing.T) {
 				return blobfs.File{}, abort
 			}
 			return f, nil
-		})
+		}, nil)
 	}
 	if _, err := write(true); !errors.Is(err, abort) {
 		t.Fatalf("the aborted transaction = %v, want the consumer's error", err)

@@ -318,7 +318,7 @@ func (w *sweep) remark(ctx context.Context) (bool, error) {
 	w.remarked = true
 	_, err := w.db.Transact(ctx, func(tx *sqlate.Tx) (Marked, error) {
 		return w.store.Directories.markDeleting(ctx, tx, w.root.ID, nil)
-	})
+	}, nil)
 	switch {
 	case errors.Is(err, blobfs.ErrNotFound):
 		return true, nil
@@ -340,7 +340,7 @@ func (w *sweep) remove(ctx context.Context, dir blobfs.Directory) (walk, error) 
 			}
 		}
 		return struct{}{}, w.store.Directories.deleteDirectory(ctx, tx, dir.ID, &dir.Version)
-	})
+	}, nil)
 	switch {
 	case hookErr != nil:
 		w.refuse(fmt.Errorf("remove directory %s: the hook: %w", dir.ID, err))
@@ -409,7 +409,7 @@ func (w *sweep) reclaim(ctx context.Context, f blobfs.File) bool {
 		file, err = w.db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 			file, _, err := w.store.Files.deleteFile(ctx, tx, f.ID, &f.Version)
 			return file, err
-		})
+		}, nil)
 		switch {
 		case errors.Is(err, blobfs.ErrNotFound), errors.Is(err, query.ErrVersionMismatch):
 			return true

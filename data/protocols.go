@@ -40,7 +40,7 @@ type ObjectStore interface {
 // docs/features.md.
 func (s *Store) WriteFile(ctx context.Context, db *sqlate.DB, objects ObjectStore, body io.Reader, size int64, begin func(*sqlate.Tx) (blobfs.File, error), opts ...WriteOption) (_ blobfs.File, err error) {
 	o := writeOpts(opts)
-	file, err := db.Transact(ctx, begin)
+	file, err := db.Transact(ctx, begin, nil)
 	if err != nil {
 		return blobfs.File{}, err
 	}
@@ -72,12 +72,12 @@ func (s *Store) EnsureFile(ctx context.Context, db *sqlate.DB, objects ObjectSto
 		file, outcome, err := begin(tx)
 		return ensured{file, outcome}, err
 	}
-	e, err := db.Transact(ctx, first)
+	e, err := db.Transact(ctx, first, nil)
 	if errors.Is(err, blobfs.ErrNameTaken) || errors.Is(err, blobfs.ErrIDTaken) {
 		// A concurrent writer's insert won, and the violation aborted the
 		// transaction, which Files.Ensure cannot recover inside; a fresh
 		// one finds the row. An id held under another name fails again.
-		e, err = db.Transact(ctx, first)
+		e, err = db.Transact(ctx, first, nil)
 	}
 	if err != nil {
 		return blobfs.File{}, false, err
@@ -173,7 +173,7 @@ func (s *Store) store(ctx context.Context, db *sqlate.DB, objects ObjectStore, b
 			}
 		}
 		return done, nil
-	})
+	}, nil)
 	switch {
 	case errors.Is(refused, blobfs.ErrDeleting), errors.Is(refused, blobfs.ErrNotFound):
 		// Checked first, since a DeletingError wraps its TransitionError.
@@ -219,7 +219,7 @@ func (s *Store) RemoveFile(ctx context.Context, db *sqlate.DB, objects ObjectDel
 			return blobfs.File{}, fmt.Errorf("the hook: %w", err)
 		}
 		return file, nil
-	})
+	}, nil)
 	if !picked {
 		return err
 	}
@@ -243,7 +243,7 @@ func (s *Store) remove(ctx context.Context, db *sqlate.DB, objects ObjectDeleter
 	file, err := db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 		file, _, err := s.Files.deleteFile(ctx, tx, id, version)
 		return file, err
-	})
+	}, nil)
 	if err != nil {
 		return err
 	}
