@@ -34,15 +34,15 @@ func TestHoldWritesNoTuple(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)
 	}
-	store, err := data.New(c, db.Dialect(), data.WithEngine(postgres.Engine))
+	store, err := data.New(c, db.Dialect(), data.Options{Engine: postgres.Engine})
 	if err != nil {
 		t.Fatalf("data.New: %v", err)
 	}
-	baseline, err := data.New(c, db.Dialect())
+	baseline, err := data.New(c, db.Dialect(), data.Options{})
 	if err != nil {
 		t.Fatalf("data.New over the baseline: %v", err)
 	}
-	dir, err := store.Directories.Create(ctx, db, blobfs.RootID, "hold-writes-no-tuple")
+	dir, err := store.Directories.Create(ctx, db, blobfs.RootID, "hold-writes-no-tuple", data.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -67,15 +67,15 @@ func TestHoldWritesNoTuple(t *testing.T) {
 
 	for _, c := range []struct {
 		name string
-		opts []data.VersionOption
-	}{{"Plain", nil}, {"AtVersion", []data.VersionOption{data.AtVersion(1)}}} {
+		opts data.VersionOptions
+	}{{"Plain", data.VersionOptions{}}, {"Guarded", data.VersionOptions{Version: 1}}} {
 		t.Run(c.name, func(t *testing.T) {
 			id, err := insertFile(ctx, db, dir.ID, "held-"+c.name+".txt", "available")
 			if err != nil {
 				t.Fatalf("insert: %v", err)
 			}
 			before := version(id)
-			holder, err := db.Begin(ctx)
+			holder, err := db.Begin(ctx, nil)
 			if err != nil {
 				t.Fatalf("Begin: %v", err)
 			}
@@ -85,7 +85,7 @@ func TestHoldWritesNoTuple(t *testing.T) {
 					_ = holder.Rollback()
 				}
 			}()
-			if err := store.Files.Hold(ctx, holder, id, c.opts...); err != nil {
+			if err := store.Files.Hold(ctx, holder, id, c.opts); err != nil {
 				t.Fatalf("Hold: %v", err)
 			}
 			if got := version(id); got != before {
@@ -94,8 +94,8 @@ func TestHoldWritesNoTuple(t *testing.T) {
 			deleted := make(chan error, 1)
 			go func() {
 				_, err := db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
-					return store.Files.Delete(ctx, tx, id)
-				})
+					return store.Files.Delete(ctx, tx, id, data.VersionOptions{})
+				}, nil)
 				deleted <- err
 			}()
 			select {
@@ -131,8 +131,8 @@ func TestHoldWritesNoTuple(t *testing.T) {
 		}
 		before := version(id)
 		if _, err := db.Transact(ctx, func(tx *sqlate.Tx) (struct{}, error) {
-			return struct{}{}, baseline.Files.Hold(ctx, tx, id)
-		}); err != nil {
+			return struct{}{}, baseline.Files.Hold(ctx, tx, id, data.VersionOptions{})
+		}, nil); err != nil {
 			t.Fatalf("the baseline's Hold: %v", err)
 		}
 		if got := version(id); got == before {
@@ -145,12 +145,12 @@ func TestHoldWritesNoTuple(t *testing.T) {
 		if err != nil {
 			t.Fatalf("insert: %v", err)
 		}
-		holder, err := db.Begin(ctx)
+		holder, err := db.Begin(ctx, nil)
 		if err != nil {
 			t.Fatalf("Begin: %v", err)
 		}
 		defer func() { _ = holder.Rollback() }()
-		if err := store.Files.Hold(ctx, holder, id); !errors.Is(err, blobfs.ErrDeleting) {
+		if err := store.Files.Hold(ctx, holder, id, data.VersionOptions{}); !errors.Is(err, blobfs.ErrDeleting) {
 			t.Fatalf("Hold of a deleting row = %v, want ErrDeleting", err)
 		}
 		// The refused hold locked nothing, so a Purge on another session
