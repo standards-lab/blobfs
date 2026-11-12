@@ -48,7 +48,7 @@ var (
 	_ data.Variant = (*variant)(nil)
 )
 
-// Engine is the PostgreSQL engine for data.WithEngine: it compiles the
+// Engine is the PostgreSQL engine for data.Options.Engine: it compiles the
 // variant's three statements against catalog for dialect, with no I/O,
 // and returns the PostgreSQL variant over base. The catalog must carry the
 // blobfs namespace, since resolve_path includes the published directory
