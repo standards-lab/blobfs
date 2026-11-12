@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/standards-lab/sqlate"
@@ -143,34 +144,104 @@ type CursorPage struct {
 	Size int
 }
 
-// WriteOption configures one call of a write protocol, Store.WriteFile or
-// Store.EnsureFile, beyond its required arguments.
-type WriteOption func(*writeOptions)
+// WriteFileRequest names the write Store.WriteFile runs: the database, the
+// object store, the body, and the begin that creates the pending row, with
+// the hook its completion runs. DB, Objects, Body, and Begin are required:
+// WriteFile panics before any I/O when one is nil. An empty file passes
+// http.NoBody or an empty reader as its Body.
+type WriteFileRequest struct {
+	// DB is the database begin's transaction and the completion's run on.
+	DB *sqlate.DB
 
-// writeOptions collects what the write options set.
-type writeOptions struct {
-	onComplete func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error
+	// Objects is the consumer's object store the body is put in and the
+	// abandon deletes from.
+	Objects ObjectStore
+
+	// Body is the object's content, read by the put outside any
+	// transaction.
+	Body io.Reader
+
+	// Size is the number of bytes of Body the put stores.
+	Size int64
+
+	// Begin runs Files.Create in one transaction on DB, where the caller
+	// checks its own scope, and returns the pending row. Its error, or its
+	// transaction's, is the call's as it came.
+	Begin func(*sqlate.Tx) (blobfs.File, error)
+
+	// OnComplete runs in the transaction that completes the file, after
+	// Files.Complete has made the row available, with the call's context
+	// and the completed File: where a consumer writes its own rows that
+	// must commit exactly when the file does. An error from it rolls the
+	// completion back and abandons the write as a failed completion does,
+	// the pending row deleted with its object; the call returns an error
+	// wrapping it. A nil OnComplete runs no hook.
+	OnComplete func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error
 }
 
-// writeOpts resolves a call's write options.
-func writeOpts(opts []WriteOption) writeOptions {
-	var o writeOptions
-	for _, opt := range opts {
-		opt(&o)
+// EnsureFileRequest names the write Store.EnsureFile runs: WriteFileRequest's
+// fields, with the fixed ID the file is written under and a Begin that runs
+// Files.Ensure. DB, Objects, Body, and Begin are required: EnsureFile panics
+// before any I/O when one is nil.
+type EnsureFileRequest struct {
+	// DB is the database begin's transaction and the completion's run on.
+	DB *sqlate.DB
+
+	// Objects is the consumer's object store the body is put in and the
+	// abandon deletes from.
+	Objects ObjectStore
+
+	// ID is the id the file is written under, checked with blobfs.ParseID
+	// before any SQL; an invalid one, the empty id included, is the call's
+	// error.
+	ID string
+
+	// Body is the object's content, read by the put outside any
+	// transaction.
+	Body io.Reader
+
+	// Size is the number of bytes of Body the put stores.
+	Size int64
+
+	// Begin runs Files.Ensure with CreateOptions{ID: ID} in one transaction
+	// on DB and returns the row and what the call did.
+	Begin func(*sqlate.Tx) (blobfs.File, WriteOutcome, error)
+
+	// OnComplete runs as WriteFileRequest.OnComplete does, and only when
+	// the call completes the file itself: never for a row it finds
+	// available, or one another writer completed. A nil OnComplete runs no
+	// hook.
+	OnComplete func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error
+}
+
+// check panics before any I/O when a required field is nil, naming the
+// first of DB, Objects, Body, and Begin that is. An interface that holds a
+// nil pointer is set.
+func (r WriteFileRequest) check() {
+	switch {
+	case r.DB == nil:
+		panic("data: WriteFileRequest.DB is nil")
+	case r.Objects == nil:
+		panic("data: WriteFileRequest.Objects is nil")
+	case r.Body == nil:
+		panic("data: WriteFileRequest.Body is nil")
+	case r.Begin == nil:
+		panic("data: WriteFileRequest.Begin is nil")
 	}
-	return o
 }
 
-// OnComplete runs fn in the transaction that completes the file, after
-// Files.Complete has made the row available, with the call's context and
-// the completed File: where a consumer writes its own rows that must
-// commit exactly when the file does. An error from fn rolls the completion
-// back and abandons the write as a failed completion does, the pending row
-// deleted with its object; the call returns an error wrapping fn's.
-// Store.EnsureFile runs fn only when the call completes the file itself:
-// never for a row it finds available, or one another writer completed.
-func OnComplete(fn func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error) WriteOption {
-	return func(o *writeOptions) { o.onComplete = fn }
+// check panics as WriteFileRequest's does, naming EnsureFileRequest.
+func (r EnsureFileRequest) check() {
+	switch {
+	case r.DB == nil:
+		panic("data: EnsureFileRequest.DB is nil")
+	case r.Objects == nil:
+		panic("data: EnsureFileRequest.Objects is nil")
+	case r.Body == nil:
+		panic("data: EnsureFileRequest.Body is nil")
+	case r.Begin == nil:
+		panic("data: EnsureFileRequest.Begin is nil")
+	}
 }
 
 // RemoveOptions configures one call of Store.RemoveFile beyond its

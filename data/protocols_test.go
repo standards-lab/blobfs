@@ -132,7 +132,7 @@ func TestWrite(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2))
 	objects := newObjectStore()
-	got, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow))
+	got, err := s.WriteFile(ctx, data.WriteFileRequest{DB: db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: create(ctx, s, allow)})
 	if err != nil || got.Status != blobfs.StatusAvailable || got.Version != 2 {
 		t.Fatalf("Write = %+v, %v, want the available row", got, err)
 	}
@@ -152,7 +152,7 @@ func TestWriteRefusedBegin(t *testing.T) {
 	s, db, rec := openStore(t, single)
 	objects := newObjectStore()
 	refused := errors.New("out of scope")
-	_, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, func(*sqlate.Tx) error { return refused }))
+	_, err := s.WriteFile(ctx, data.WriteFileRequest{DB: db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: create(ctx, s, func(*sqlate.Tx) error { return refused })})
 	if !errors.Is(err, refused) || strings.Contains(err.Error(), "data: ") {
 		t.Fatalf("Write = %v, want begin's error as it came", err)
 	}
@@ -171,7 +171,7 @@ func TestWriteUnderADeletingName(t *testing.T) {
 	s, db, rec := openStore(t, single, noFile(), noFile(), protocolDirectory(),
 		fileIn(holder, protocolDir, "report.txt", blobfs.StatusDeleting, 2), protocolDirectory())
 	objects := newObjectStore()
-	_, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow))
+	_, err := s.WriteFile(ctx, data.WriteFileRequest{DB: db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: create(ctx, s, allow)})
 	if errors.Is(err, blobfs.ErrNameTaken) {
 		t.Errorf("Write = %v, want no ErrNameTaken", err)
 	}
@@ -191,7 +191,7 @@ func TestWriteFailedPut(t *testing.T) {
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1})
 	objects := newObjectStore()
 	objects.putErr = errors.New("put failed")
-	_, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow))
+	_, err := s.WriteFile(ctx, data.WriteFileRequest{DB: db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: create(ctx, s, allow)})
 	if !errors.Is(err, objects.putErr) || !strings.HasPrefix(err.Error(), "data: write file "+protocolFile+": put the object: ") {
 		t.Fatalf("Write = %v, want the put's error, named", err)
 	}
@@ -209,7 +209,7 @@ func TestWriteFailedPut(t *testing.T) {
 	s, db, rec = openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusDeleting, 2))
 	objects = newObjectStore()
 	objects.putErr, objects.deleteErr = errors.New("the store is down"), errors.New("the store is still down")
-	_, err = s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow))
+	_, err = s.WriteFile(ctx, data.WriteFileRequest{DB: db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: create(ctx, s, allow)})
 	if !errors.Is(err, objects.putErr) || !errors.Is(err, objects.deleteErr) || !strings.Contains(err.Error(), "abandon: delete the object: ") {
 		t.Fatalf("Write = %v, want the put's error and the abandon's", err)
 	}
@@ -236,7 +236,7 @@ func TestWriteRefusedCompletion(t *testing.T) {
 			ctx := context.Background()
 			s, db, rec := openStore(t, single, append([]sqltest.Response{protocolRow(blobfs.StatusPending, 1), noFile()}, c.read...)...)
 			objects := newObjectStore()
-			if _, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow)); !errors.Is(err, c.want) {
+			if _, err := s.WriteFile(ctx, data.WriteFileRequest{DB: db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: create(ctx, s, allow)}); !errors.Is(err, c.want) {
 				t.Fatalf("Write = %v, want %v", err, c.want)
 			}
 			if objects.puts != 1 || objects.stored() || !slices.Equal(objects.deletes, []string{protocolKey}) {
@@ -260,7 +260,7 @@ func TestWriteFailedCompletion(t *testing.T) {
 		protocolRow(blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1},
 	)
 	objects := newObjectStore()
-	if _, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow)); !errors.Is(err, sqlate.ErrConnectionFailed) {
+	if _, err := s.WriteFile(ctx, data.WriteFileRequest{DB: db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: create(ctx, s, allow)}); !errors.Is(err, sqlate.ErrConnectionFailed) {
 		t.Fatalf("Write = %v, want the completion's error", err)
 	}
 	if objects.stored() {
@@ -285,15 +285,15 @@ func TestWriteOnComplete(t *testing.T) {
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2), sqltest.Response{Affected: 1})
 	objects := newObjectStore()
 	var hooked blobfs.File
-	hook := data.OnComplete(func(hctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+	hook := func(hctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
 		if hctx.Value(callerKey{}) != "caller" {
 			t.Error("the hook ran under another context than the call's")
 		}
 		hooked = f
 		_, err := tx.ExecContext(hctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID)
 		return err
-	})
-	got, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow), hook)
+	}
+	got, err := s.WriteFile(ctx, data.WriteFileRequest{DB: db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: create(ctx, s, allow), OnComplete: hook})
 	if err != nil || got.Status != blobfs.StatusAvailable || got.Version != 2 {
 		t.Fatalf("Write = %+v, %v, want the available row", got, err)
 	}
@@ -321,13 +321,13 @@ func TestWriteOnCompleteRefuses(t *testing.T) {
 	)
 	objects := newObjectStore()
 	refused := errors.New("the consumer refuses")
-	hook := data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+	hook := func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID); err != nil {
 			return err
 		}
 		return refused
-	})
-	got, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow), hook)
+	}
+	got, err := s.WriteFile(ctx, data.WriteFileRequest{DB: db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: create(ctx, s, allow), OnComplete: hook})
 	if !errors.Is(err, refused) || !strings.HasPrefix(err.Error(), "data: write file "+protocolFile+": the hook: ") || got.ID != "" {
 		t.Fatalf("Write = %+v, %v, want the hook's error, named", got, err)
 	}
@@ -360,7 +360,7 @@ func TestWriteRefusesARowNotPending(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusAvailable, 2))
 	objects := newObjectStore()
-	_, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, found(ctx, s))
+	_, err := s.WriteFile(ctx, data.WriteFileRequest{DB: db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: found(ctx, s)})
 	var te *blobfs.TransitionError
 	if !errors.As(err, &te) || te.From != blobfs.StatusAvailable || te.To != blobfs.StatusAvailable || errors.Is(err, blobfs.ErrDeleting) ||
 		!strings.HasPrefix(err.Error(), "data: write file "+protocolFile+": ") {
@@ -372,7 +372,7 @@ func TestWriteRefusesARowNotPending(t *testing.T) {
 	wantDone(t, rec)
 
 	s, db, rec = openStore(t, single, protocolRow(blobfs.StatusDeleting, 3), protocolDirectory())
-	_, err = s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, found(ctx, s))
+	_, err = s.WriteFile(ctx, data.WriteFileRequest{DB: db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: found(ctx, s)})
 	wantDeleting(t, "Write of a deleting row", err, false, protocolFile)
 	if !errors.As(err, &te) || te.From != blobfs.StatusDeleting {
 		t.Errorf("Write of a deleting row = %v, want its TransitionError from deleting", err)
@@ -420,7 +420,7 @@ func TestWriteCleansUpAfterCancellation(t *testing.T) {
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1})
 	objects := newObjectStore()
 	objects.cancel = cancel
-	if _, err := s.WriteFile(ctx, db, objects, strings.NewReader("report"), 6, create(ctx, s, allow)); !errors.Is(err, context.Canceled) {
+	if _, err := s.WriteFile(ctx, data.WriteFileRequest{DB: db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: create(ctx, s, allow)}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Write = %v, want the put's cancellation", err)
 	}
 	if want := "begin query commit begin query commit exec"; ops(rec) != want {
@@ -437,7 +437,7 @@ func TestWriteCleansUpAfterCancellation(t *testing.T) {
 	// The directory's read is the last statement, so the caller has hung
 	// up by the time the refusal is classified; a read the hang-up cuts
 	// short leaves the refusal untyped, still ErrDeleting.
-	if _, err := s.WriteFile(caller, db, objects, strings.NewReader("report"), 6, create(caller, s, allow)); !errors.Is(err, blobfs.ErrDeleting) {
+	if _, err := s.WriteFile(caller, data.WriteFileRequest{DB: db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: create(caller, s, allow)}); !errors.Is(err, blobfs.ErrDeleting) {
 		t.Fatalf("Write = %v, want ErrDeleting", err)
 	}
 	if caller.Err() == nil || !slices.Equal(objects.deletes, []string{protocolKey}) || !slices.Equal(objects.deleteCtxs, []error{nil}) || objects.stored() {
@@ -462,7 +462,7 @@ func TestEnsureWrite(t *testing.T) {
 	s, db, rec := openStore(t, single, noFile(), protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2))
 	objects := newObjectStore()
 	objects.objects[protocolKey] = "stale bytes"
-	got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+	got, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s)})
 	if err != nil || !stored || got.Status != blobfs.StatusAvailable {
 		t.Fatalf("Ensure = %+v, %v, %v, want the file stored", got, stored, err)
 	}
@@ -479,7 +479,7 @@ func TestEnsureWrite(t *testing.T) {
 
 	s, db, rec = openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2))
 	objects = newObjectStore()
-	if _, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s)); err != nil || !stored || objects.puts != 1 {
+	if _, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s)}); err != nil || !stored || objects.puts != 1 {
 		t.Fatalf("Ensure = %v, %v after %d puts, want the pending row put once and completed", stored, err, objects.puts)
 	}
 	if want := "begin query commit begin query commit"; ops(rec) != want {
@@ -495,13 +495,13 @@ func TestEnsureWritePresent(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusAvailable, 2))
 	objects := newObjectStore()
-	got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+	got, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s)})
 	if err != nil || stored || got.ID != protocolFile || objects.puts != 0 || ops(rec) != "begin query commit" {
 		t.Errorf("Ensure of an available row = %+v, %v, %v after %d puts and %q, want the row as it stands", got, stored, err, objects.puts, ops(rec))
 	}
 
 	s, db, rec = openStore(t, single, protocolRow(blobfs.StatusDeleting, 3), protocolDirectory())
-	_, stored, err = s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+	_, stored, err = s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s)})
 	wantDeleting(t, "Ensure of a deleting row", err, false, protocolFile)
 	if stored || objects.puts != 0 || ops(rec) != "begin query commit query" {
 		t.Errorf("Ensure of a deleting row stored %v after %d puts and %q, want nothing put", stored, objects.puts, ops(rec))
@@ -522,7 +522,7 @@ func TestEnsureWriteUnderAnotherID(t *testing.T) {
 			ctx := context.Background()
 			s, db, rec := openStore(t, single, fileIn(other, protocolDir, "report.txt", status, 2))
 			objects := newObjectStore()
-			got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+			got, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s)})
 			if !errors.Is(err, blobfs.ErrNameTaken) || stored || got.ID != "" {
 				t.Fatalf("Ensure = %+v, %v, %v, want the other row reported as the taken name", got, stored, err)
 			}
@@ -538,7 +538,7 @@ func TestEnsureWriteUnderAnotherID(t *testing.T) {
 		ctx := context.Background()
 		s, db, rec := openStore(t, single, fileIn(other, protocolDir, "report.txt", blobfs.StatusDeleting, 2), protocolDirectory())
 		objects := newObjectStore()
-		got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+		got, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s)})
 		if errors.Is(err, blobfs.ErrNameTaken) || stored || got.ID != "" {
 			t.Errorf("Ensure = %+v, %v, %v, want the deleting row's refusal", got, stored, err)
 		}
@@ -559,7 +559,7 @@ func TestEnsureWriteUnderAnotherID(t *testing.T) {
 		minted := func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
 			return s.Files.Ensure(ctx, tx, accepting{}, data.FileSpec{DirectoryID: protocolDir, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{})
 		}
-		got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, minted)
+		got, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: minted})
 		if err == nil || errors.Is(err, blobfs.ErrNameTaken) || stored || got.ID != "" ||
 			!strings.Contains(err.Error(), other) || !strings.Contains(err.Error(), protocolFile) {
 			t.Fatalf("Ensure = %+v, %v, %v, want a refusal naming both ids", got, stored, err)
@@ -586,7 +586,7 @@ func TestEnsureWriteRaces(t *testing.T) {
 		protocolRow(blobfs.StatusAvailable, 2), // the row read back
 	)
 	objects := newObjectStore()
-	got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+	got, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s)})
 	if err != nil || stored || got.Status != blobfs.StatusAvailable || got.Version != 2 {
 		t.Fatalf("Ensure = %+v, %v, %v, want the other writer's row, found", got, stored, err)
 	}
@@ -600,7 +600,7 @@ func TestEnsureWriteRaces(t *testing.T) {
 		protocolRow(blobfs.StatusPending, 1),   // the retry finds the other's pending row
 		protocolRow(blobfs.StatusAvailable, 2), // and completes it
 	)
-	if _, stored, err := s.EnsureFile(ctx, db, newObjectStore(), protocolFile, strings.NewReader("report"), 6, ensure(ctx, s)); err != nil || !stored {
+	if _, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: newObjectStore(), ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s)}); err != nil || !stored {
 		t.Fatalf("Ensure = %v, %v, want the resumed row stored", stored, err)
 	}
 	if want := "begin query query rollback begin query commit begin query commit"; ops(rec) != want {
@@ -619,7 +619,7 @@ func TestEnsureWriteFailedPut(t *testing.T) {
 	)
 	objects := newObjectStore()
 	objects.putErr = errors.New("put failed")
-	if _, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s)); !errors.Is(err, objects.putErr) || stored {
+	if _, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s)}); !errors.Is(err, objects.putErr) || stored {
 		t.Fatalf("Ensure = %v, %v, want the put's error", stored, err)
 	}
 	if want := "begin query query commit begin query commit exec"; ops(rec) != want {
@@ -643,7 +643,7 @@ func TestEnsureWriteAbandonAfterTheOtherWriter(t *testing.T) {
 	)...)
 	objects := newObjectStore()
 	objects.putErr = errors.New("put failed")
-	got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+	got, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s)})
 	if err != nil || stored || got.Status != blobfs.StatusAvailable || got.Version != 2 {
 		t.Fatalf("Ensure = %+v, %v, %v, want the other writer's row, found", got, stored, err)
 	}
@@ -670,7 +670,7 @@ func TestEnsureWriteRefusedCompletion(t *testing.T) {
 			ctx := context.Background()
 			s, db, rec := openStore(t, single, append([]sqltest.Response{protocolRow(blobfs.StatusPending, 1), noFile()}, c.read...)...)
 			objects := newObjectStore()
-			_, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s))
+			_, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s)})
 			if !errors.Is(err, c.want) || stored {
 				t.Fatalf("Ensure = %v, %v, want %v", stored, err, c.want)
 			}
@@ -697,15 +697,15 @@ func TestEnsureWriteOnComplete(t *testing.T) {
 	s, db, rec := openStore(t, single, noFile(), protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2), sqltest.Response{Affected: 1})
 	objects := newObjectStore()
 	var hooked blobfs.File
-	hook := data.OnComplete(func(hctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+	hook := func(hctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
 		if hctx.Value(callerKey{}) != "caller" {
 			t.Error("the hook ran under another context than the call's")
 		}
 		hooked = f
 		_, err := tx.ExecContext(hctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID)
 		return err
-	})
-	got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s), hook)
+	}
+	got, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s), OnComplete: hook})
 	if err != nil || !stored || got.Status != blobfs.StatusAvailable || got.Version != 2 {
 		t.Fatalf("Ensure = %+v, %v, %v, want the file stored", got, stored, err)
 	}
@@ -741,12 +741,12 @@ func TestEnsureWriteOnCompleteNotThisCall(t *testing.T) {
 			ctx := context.Background()
 			s, db, rec := openStore(t, single, c.script...)
 			ran := false
-			hook := data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+			hook := func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
 				ran = true
 				_, err := tx.ExecContext(ctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID)
 				return err
-			})
-			got, stored, err := s.EnsureFile(ctx, db, newObjectStore(), protocolFile, strings.NewReader("report"), 6, ensure(ctx, s), hook)
+			}
+			got, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: newObjectStore(), ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s), OnComplete: hook})
 			if err != nil || stored || got.Status != blobfs.StatusAvailable || got.Version != 2 {
 				t.Fatalf("Ensure = %+v, %v, %v, want the available row, not stored", got, stored, err)
 			}
@@ -780,13 +780,13 @@ func TestEnsureWriteOnCompleteRefuses(t *testing.T) {
 				protocolRow(blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1}, // abandoned
 			)
 			objects := newObjectStore()
-			hook := data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+			hook := func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
 				if _, err := tx.ExecContext(ctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID); err != nil {
 					return err
 				}
 				return c.refused
-			})
-			got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, ensure(ctx, s), hook)
+			}
+			got, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s), OnComplete: hook})
 			if !errors.Is(err, c.refused) || !strings.HasPrefix(err.Error(), "data: ensure file "+protocolFile+": the hook: ") || stored || got.ID != "" {
 				t.Fatalf("Ensure = %+v, %v, %v, want the hook's error, named", got, stored, err)
 			}
@@ -821,13 +821,13 @@ func TestEnsureWriteOnCompleteRefusesAMovedRow(t *testing.T) {
 		unchangedFile(single, protocolRow(blobfs.StatusAvailable, 2)),             // the abandon at 1 finds it completed
 	)...)
 	refused := errors.New("the consumer refuses")
-	hook := data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+	hook := func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID); err != nil {
 			return err
 		}
 		return refused
-	})
-	got, stored, err := s.EnsureFile(ctx, db, newObjectStore(), protocolFile, strings.NewReader("report"), 6, ensure(ctx, s), hook)
+	}
+	got, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: newObjectStore(), ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s), OnComplete: hook})
 	if !errors.Is(err, refused) || !errors.Is(err, query.ErrVersionMismatch) || stored || got.ID != "" {
 		t.Fatalf("Ensure = %+v, %v, %v, want the hook's error and the abandon's", got, stored, err)
 	}
@@ -839,16 +839,131 @@ func TestEnsureWriteOnCompleteRefusesAMovedRow(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestEnsureWriteRefusesAnID checks an id blobfs.ParseID refuses is
-// refused before any SQL.
+// TestEnsureWriteRefusesAnID checks an id blobfs.ParseID refuses, the
+// empty id among them, is the call's returned error before any SQL.
 func TestEnsureWriteRefusesAnID(t *testing.T) {
-	ctx := context.Background()
-	s, db, rec := openStore(t, single)
-	if _, _, err := s.EnsureFile(ctx, db, newObjectStore(), "seed", strings.NewReader("report"), 6, ensure(ctx, s)); !errors.Is(err, blobfs.ErrInvalidID) {
-		t.Errorf("Ensure under a malformed id = %v, want ErrInvalidID", err)
+	for _, id := range []string{"seed", ""} {
+		t.Run(fmt.Sprintf("%q", id), func(t *testing.T) {
+			ctx := context.Background()
+			s, db, rec := openStore(t, single)
+			if _, _, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: newObjectStore(), ID: id, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s)}); !errors.Is(err, blobfs.ErrInvalidID) {
+				t.Errorf("Ensure under the id %q = %v, want ErrInvalidID", id, err)
+			}
+			if len(rec.Calls()) != 0 {
+				t.Errorf("the refused id ran %q", ops(rec))
+			}
+		})
 	}
-	if len(rec.Calls()) != 0 {
-		t.Errorf("the refused id ran %q", ops(rec))
+}
+
+// TestWriteRequestsPanic checks WriteFile and EnsureFile panic, naming the
+// field, when a required field of their request is nil, before any I/O: no
+// statement, no begin, and no put or delete.
+func TestWriteRequestsPanic(t *testing.T) {
+	ctx := context.Background()
+	type call struct {
+		begun   *int
+		objects *objectStore
+		run     func()
+	}
+	write := func(s *data.Store, db *sqlate.DB, field string) call {
+		c := call{begun: new(int), objects: newObjectStore()}
+		req := data.WriteFileRequest{DB: db, Objects: c.objects, Body: strings.NewReader("report"), Size: 6, Begin: func(tx *sqlate.Tx) (blobfs.File, error) {
+			*c.begun++
+			return create(ctx, s, allow)(tx)
+		}}
+		switch field {
+		case "DB":
+			req.DB = nil
+		case "Objects":
+			req.Objects = nil
+		case "Body":
+			req.Body = nil
+		case "Begin":
+			req.Begin = nil
+		}
+		c.run = func() { _, _ = s.WriteFile(ctx, req) }
+		return c
+	}
+	ensureCall := func(s *data.Store, db *sqlate.DB, field string) call {
+		c := call{begun: new(int), objects: newObjectStore()}
+		req := data.EnsureFileRequest{DB: db, Objects: c.objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
+			*c.begun++
+			return ensure(ctx, s)(tx)
+		}}
+		switch field {
+		case "DB":
+			req.DB = nil
+		case "Objects":
+			req.Objects = nil
+		case "Body":
+			req.Body = nil
+		case "Begin":
+			req.Begin = nil
+		}
+		c.run = func() { _, _, _ = s.EnsureFile(ctx, req) }
+		return c
+	}
+	for _, c := range []struct {
+		request string
+		field   string
+		call    func(*data.Store, *sqlate.DB, string) call
+	}{
+		{"WriteFileRequest", "DB", write},
+		{"WriteFileRequest", "Objects", write},
+		{"WriteFileRequest", "Body", write},
+		{"WriteFileRequest", "Begin", write},
+		{"EnsureFileRequest", "DB", ensureCall},
+		{"EnsureFileRequest", "Objects", ensureCall},
+		{"EnsureFileRequest", "Body", ensureCall},
+		{"EnsureFileRequest", "Begin", ensureCall},
+	} {
+		t.Run(c.request+"/"+c.field, func(t *testing.T) {
+			s, db, rec := openStore(t, single)
+			call := c.call(s, db, c.field)
+			want := "data: " + c.request + "." + c.field + " is nil"
+			func() {
+				defer func() {
+					if got := recover(); got != want {
+						t.Errorf("the call panicked with %v, want %q", got, want)
+					}
+				}()
+				call.run()
+			}()
+			if len(rec.Calls()) != 0 || *call.begun != 0 || call.objects.puts != 0 || len(call.objects.deletes) != 0 {
+				t.Errorf("the refused request ran %q, began %d times, put %d times, and deleted %v, want no I/O", ops(rec), *call.begun, call.objects.puts, call.objects.deletes)
+			}
+		})
+	}
+}
+
+// absentBody is a test-only reader whose nil pointer a request's Body
+// holds in TestWriteRequestsTypedNil; nothing reads it.
+type absentBody struct{}
+
+func (*absentBody) Read([]byte) (int, error) { return 0, io.EOF }
+
+// TestWriteRequestsTypedNil checks an interface field that holds a nil
+// pointer counts as set: the call does not panic and runs its begin, whose
+// refusal it returns before the put would reach the fields.
+func TestWriteRequestsTypedNil(t *testing.T) {
+	ctx := context.Background()
+	errBegin := errors.New("the caller's scope refuses")
+	refuse := func(*sqlate.Tx) error { return errBegin }
+	refuseEnsure := func(*sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
+		return blobfs.File{}, data.WriteCreated, errBegin
+	}
+	var objects *objectStore
+	var body *absentBody
+	s, db, rec := openStore(t, single)
+	if _, err := s.WriteFile(ctx, data.WriteFileRequest{DB: db, Objects: objects, Body: body, Begin: create(ctx, s, refuse)}); !errors.Is(err, errBegin) {
+		t.Errorf("WriteFile with typed-nil Objects and Body = %v, want begin's refusal", err)
+	}
+	if _, _, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: body, Begin: refuseEnsure}); !errors.Is(err, errBegin) {
+		t.Errorf("EnsureFile with typed-nil Objects and Body = %v, want begin's refusal", err)
+	}
+	if want := "begin rollback begin rollback"; ops(rec) != want {
+		t.Errorf("ops = %q, want %q: each begin's transaction", ops(rec), want)
 	}
 }
 
