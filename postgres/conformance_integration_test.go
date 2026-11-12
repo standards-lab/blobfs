@@ -56,15 +56,11 @@ func conform(t *testing.T, dialect sqlate.Dialect, patterns query.Source, native
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)
 	}
-	var (
-		engine data.Engine
-		opts   []data.Option
-	)
+	var engine data.Engine
 	if native {
 		engine = postgres.Engine
-		opts = append(opts, data.WithEngine(engine))
 	}
-	store, err := data.New(c, dialect, opts...)
+	store, err := data.New(c, dialect, data.Options{Engine: engine})
 	if err != nil {
 		t.Fatalf("data.New: %v", err)
 	}
@@ -84,7 +80,7 @@ func TestTreeLockIsAnAdvisoryLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)
 	}
-	store, err := data.New(c, db.Dialect(), data.WithEngine(postgres.Engine))
+	store, err := data.New(c, db.Dialect(), data.Options{Engine: postgres.Engine})
 	if err != nil {
 		t.Fatalf("data.New: %v", err)
 	}
@@ -98,7 +94,7 @@ func TestTreeLockIsAnAdvisoryLock(t *testing.T) {
 	if n := held(); n != 0 {
 		t.Fatalf("%d tree locks held before the test", n)
 	}
-	tx, err := db.Begin(ctx)
+	tx, err := db.Begin(ctx, nil)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}

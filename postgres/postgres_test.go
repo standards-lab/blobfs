@@ -47,7 +47,7 @@ func newStore(t *testing.T, dialect sqlate.Dialect) (*data.Store, data.Variant) 
 		v, err = postgres.Engine(c, d, base)
 		return v, err
 	}
-	s, err := data.New(catalog(t), dialect, data.WithEngine(capture))
+	s, err := data.New(catalog(t), dialect, data.Options{Engine: capture})
 	if err != nil {
 		t.Fatalf("data.New: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestLockTreeSQL(t *testing.T) {
 	pool, rec := sqltest.Open(t, sqltest.Response{Affected: 0})
 	db := sqlate.Wrap(pool, sqltest.Dialect{})
 	ctx := context.Background()
-	tx, err := db.Begin(ctx)
+	tx, err := db.Begin(ctx, nil)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestLockTreeSQL(t *testing.T) {
 }
 
 // TestHoldFileSQL checks Hold through the variant is the locking read, its
-// bindings with and without AtVersion, and the refusals classified from the
+// bindings with and without a guarding version, and the refusals classified from the
 // store's read as over the baseline.
 func TestHoldFileSQL(t *testing.T) {
 	ctx := context.Background()
@@ -193,16 +193,16 @@ func TestHoldFileSQL(t *testing.T) {
 	root := datatest.DirectoryRows(blobfs.Directory{ID: blobfs.RootID, Status: blobfs.DirectoryStatusActive, Version: 1, CreatedAt: time.Now(), UpdatedAt: time.Now()})
 	locked := sqltest.Response{Columns: []string{"id"}, Rows: [][]driver.Value{{"F"}}}
 	none := sqltest.Response{Columns: []string{"id"}}
-	hold := func(t *testing.T, responses []sqltest.Response, opts ...data.VersionOption) (*sqltest.Recorder, error) {
+	hold := func(t *testing.T, responses []sqltest.Response, opts data.VersionOptions) (*sqltest.Recorder, error) {
 		t.Helper()
 		s, db, rec := openStore(t, responses...)
 		_, err := db.Transact(ctx, func(tx *sqlate.Tx) (struct{}, error) {
-			return struct{}{}, s.Files.Hold(ctx, tx, "F", opts...)
-		})
+			return struct{}{}, s.Files.Hold(ctx, tx, "F", opts)
+		}, nil)
 		return rec, err
 	}
 
-	rec, err := hold(t, []sqltest.Response{locked})
+	rec, err := hold(t, []sqltest.Response{locked}, data.VersionOptions{})
 	if err != nil {
 		t.Fatalf("Hold: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestHoldFileSQL(t *testing.T) {
 		t.Errorf("the hold bound %v, want the id and no version", c.Args)
 	}
 
-	rec, err = hold(t, []sqltest.Response{locked}, data.AtVersion(4))
+	rec, err = hold(t, []sqltest.Response{locked}, data.VersionOptions{Version: 4})
 	if err != nil {
 		t.Fatalf("Hold at a version: %v", err)
 	}
@@ -231,16 +231,16 @@ func TestHoldFileSQL(t *testing.T) {
 	for _, r := range []struct {
 		name  string
 		reads []sqltest.Response
-		opts  []data.VersionOption
+		opts  data.VersionOptions
 		want  error
 		not   error
 	}{
-		{"Deleting", []sqltest.Response{fileRow(blobfs.StatusDeleting, 2), root}, []data.VersionOption{data.AtVersion(1)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
-		{"StaleVersion", []sqltest.Response{fileRow(blobfs.StatusAvailable, 3)}, []data.VersionOption{data.AtVersion(1)}, query.ErrVersionMismatch, blobfs.ErrDeleting},
-		{"Missing", []sqltest.Response{datatest.FileRows()}, nil, blobfs.ErrNotFound, blobfs.ErrDeleting},
+		{"Deleting", []sqltest.Response{fileRow(blobfs.StatusDeleting, 2), root}, data.VersionOptions{Version: 1}, blobfs.ErrDeleting, query.ErrVersionMismatch},
+		{"StaleVersion", []sqltest.Response{fileRow(blobfs.StatusAvailable, 3)}, data.VersionOptions{Version: 1}, query.ErrVersionMismatch, blobfs.ErrDeleting},
+		{"Missing", []sqltest.Response{datatest.FileRows()}, data.VersionOptions{}, blobfs.ErrNotFound, blobfs.ErrDeleting},
 	} {
 		t.Run(r.name, func(t *testing.T) {
-			rec, err := hold(t, append([]sqltest.Response{none}, r.reads...), r.opts...)
+			rec, err := hold(t, append([]sqltest.Response{none}, r.reads...), r.opts)
 			if !errors.Is(err, r.want) || errors.Is(err, r.not) {
 				t.Errorf("Hold = %v, want %v and not %v", err, r.want, r.not)
 			}

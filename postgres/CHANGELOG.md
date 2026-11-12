@@ -7,6 +7,29 @@ changelog covers this sub-module only; the base module keeps its own.
 
 ## [Unreleased]
 
+## [v0.6.0] - 2026-11-12
+
+### Changed
+
+- **Breaking:** The `blobfs` requirement is v0.8.0, whose conformance suite it runs. blobfs
+  v0.8.0 configures `package data` with options structs in place of variadic option functions:
+  `data.New` takes a `data.Options`, so the engine installs as
+  `data.Options{Engine: postgres.Engine}` in place of `data.WithEngine(postgres.Engine)`, and
+  the directory, file, and store calls take `data.CreateOptions`, `data.VersionOptions`,
+  `data.ListOptions`, `data.CursorPage`, `data.FileSpec`, `data.FileMove`, `data.DirectoryMove`,
+  and the protocols' request values. The base module's v0.8.0 entry migrates each. The suite's
+  subtests `Deletes/AtVersion` and `Branches/MarkAtVersion` are named `Guarded` and
+  `MarkGuarded`.
+- **Breaking:** The `sqlate` requirement is v0.7.0, whose `DB.Begin`, `DB.Transact`, and
+  `Transact` take a trailing `*sql.TxOptions` in place of variadic `TxOption` values, and whose
+  `Beginner` has `DB.Begin`'s new signature. `TxOption`, `Isolation`, and `ReadOnly` are
+  removed. sqlate's changelog migrates each. The requirement also pulls sqlate v0.6.0's
+  `TryLocker` and v0.6.1's migration-lock fix into an importer's build.
+- **Breaking:** The `sqlate/postgres` requirement is v0.7.0, which carries the same sqlate
+  requirement; the dialect's own API is unchanged, and v0.6.0 added `Dialect.TryLock`.
+- pgx is v5.13.0, and the `sqlate/sqlint` tool v0.4.0, whose findings are unchanged.
+- The engine's migrations and statements are unchanged.
+
 ## [v0.5.0] - 2026-10-15
 
 ### Changed
@@ -117,7 +140,9 @@ The first release of the PostgreSQL engine.
 
 Requires `github.com/standards-lab/blobfs v0.1.0` and `github.com/standards-lab/sqlate v0.4.0`.
 
-[Unreleased]: https://github.com/standards-lab/blobfs/compare/postgres/v0.4.0...HEAD
+[Unreleased]: https://github.com/standards-lab/blobfs/compare/postgres/v0.6.0...HEAD
+[v0.6.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.6.0
+[v0.5.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.5.0
 [v0.4.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.4.0
 [v0.3.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.3.0
 [v0.2.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.2.0

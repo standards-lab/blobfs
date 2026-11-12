@@ -71,7 +71,7 @@ func openCost(t *testing.T, sizes dbtest.Sizes) costEnv {
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)
 	}
-	store, err := data.New(c, db.Dialect(), data.WithEngine(postgres.Engine))
+	store, err := data.New(c, db.Dialect(), data.Options{Engine: postgres.Engine})
 	if err != nil {
 		t.Fatalf("data.New: %v", err)
 	}
@@ -130,7 +130,7 @@ func page(t *testing.T, db *sqlate.DB, op func(sess sqlate.Session) error) call 
 func (e costEnv) explainList(t *testing.T, dir string, req query.Directives, pg query.Page) dbtest.Plan {
 	t.Helper()
 	c := page(t, e.db, func(sess sqlate.Session) error {
-		_, err := e.store.Files.List(e.ctx, sess, dir, req, pg)
+		_, err := e.store.Files.List(e.ctx, sess, dir, req, pg, data.ListOptions{})
 		return err
 	})
 	return e.ex.Explain(e.ctx, t, c.sql, c.args...)
@@ -140,7 +140,7 @@ func (e costEnv) explainList(t *testing.T, dir string, req query.Directives, pg 
 func (e costEnv) explainContinue(t *testing.T, dir string, req query.Directives, after query.Cursor) dbtest.Plan {
 	t.Helper()
 	c := page(t, e.db, func(sess sqlate.Session) error {
-		_, err := e.store.Files.Continue(e.ctx, sess, dir, req, after, costPageSize)
+		_, err := e.store.Files.Continue(e.ctx, sess, dir, req, data.CursorPage{After: after, Size: costPageSize}, data.ListOptions{})
 		return err
 	})
 	return e.ex.Explain(e.ctx, t, c.sql, c.args...)
@@ -150,7 +150,7 @@ func (e costEnv) explainContinue(t *testing.T, dir string, req query.Directives,
 func (e costEnv) cursorAt(t *testing.T, dir string, req query.Directives, number int) query.Cursor {
 	t.Helper()
 	req.Total = query.TotalNone
-	c, err := e.store.Files.List(e.ctx, e.db, dir, req, query.Page{Number: number, Size: costPageSize})
+	c, err := e.store.Files.List(e.ctx, e.db, dir, req, query.Page{Number: number, Size: costPageSize}, data.ListOptions{})
 	if err != nil || c.Next == "" {
 		t.Fatalf("page %d = %+v, %v; want a cursor", number, c, err)
 	}
@@ -440,8 +440,8 @@ func indexCondHas(p dbtest.Plan, s string) bool {
 func TestDeletingPlan(t *testing.T) {
 	e := openCost(t, stepSizes)
 	if _, err := e.db.Transact(e.ctx, func(tx *sqlate.Tx) (data.Marked, error) {
-		return e.store.Directories.MarkDeleting(e.ctx, tx, e.tree.Chain[2].ID)
-	}); err != nil {
+		return e.store.Directories.MarkDeleting(e.ctx, tx, e.tree.Chain[2].ID, data.VersionOptions{})
+	}, nil); err != nil {
 		t.Fatalf("MarkDeleting: %v", err)
 	}
 	if _, err := e.db.ExecContext(e.ctx, "ANALYZE blobfs_directory"); err != nil {

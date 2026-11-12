@@ -32,21 +32,21 @@ func TestOpposingRepeatableReadMoves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)
 	}
-	repeatable := sqlate.Isolation(sql.LevelRepeatableRead)
+	repeatable := &sql.TxOptions{Isolation: sql.LevelRepeatableRead}
 	for _, v := range []struct {
 		name string
-		opts []data.Option
-	}{{"Postgres", []data.Option{data.WithEngine(postgres.Engine)}}, {"Standard", nil}} {
+		opts data.Options
+	}{{"Postgres", data.Options{Engine: postgres.Engine}}, {"Standard", data.Options{}}} {
 		t.Run(v.name, func(t *testing.T) {
-			store, err := data.New(c, db.Dialect(), v.opts...)
+			store, err := data.New(c, db.Dialect(), v.opts)
 			if err != nil {
 				t.Fatalf("data.New: %v", err)
 			}
-			x, err := store.Directories.Create(ctx, db, blobfs.RootID, "rr-x-"+v.name)
+			x, err := store.Directories.Create(ctx, db, blobfs.RootID, "rr-x-"+v.name, data.CreateOptions{})
 			if err != nil {
 				t.Fatalf("Create x: %v", err)
 			}
-			y, err := store.Directories.Create(ctx, db, blobfs.RootID, "rr-y-"+v.name)
+			y, err := store.Directories.Create(ctx, db, blobfs.RootID, "rr-y-"+v.name, data.CreateOptions{})
 			if err != nil {
 				t.Fatalf("Create y: %v", err)
 			}
@@ -56,7 +56,7 @@ func TestOpposingRepeatableReadMoves(t *testing.T) {
 				t.Fatalf("Begin A: %v", err)
 			}
 			defer func() { _ = a.Rollback() }()
-			if _, err := store.Directories.Move(ctx, a, x.ID, y.ID, x.Name, x.Version); err != nil {
+			if _, err := store.Directories.Move(ctx, a, x.ID, data.DirectoryMove{ParentID: y.ID, Name: x.Name, Version: x.Version}); err != nil {
 				t.Fatalf("A's move: %v", err)
 			}
 			b, err := db.Begin(ctx, repeatable)
@@ -66,7 +66,7 @@ func TestOpposingRepeatableReadMoves(t *testing.T) {
 			defer func() { _ = b.Rollback() }()
 			moved := make(chan error, 1)
 			go func() {
-				_, err := store.Directories.Move(ctx, b, y.ID, x.ID, y.Name, y.Version)
+				_, err := store.Directories.Move(ctx, b, y.ID, data.DirectoryMove{ParentID: x.ID, Name: y.Name, Version: y.Version})
 				moved <- err
 			}()
 			// B waits, on the tree lock over the engine and on X's row lock
