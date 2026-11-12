@@ -64,7 +64,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	store, err := data.New(catalog, db.Dialect(), data.WithEngine(blobfspg.Engine))
+	store, err := data.New(catalog, db.Dialect(), data.Options{Engine: blobfspg.Engine})
 	if err != nil {
 		return err
 	}
@@ -74,7 +74,7 @@ func run(ctx context.Context) error {
 	fmt.Println("verified the store's statements against the schema")
 
 	// A directory of its own under the root, so repeated runs never meet.
-	dir, err := store.Directories.Create(ctx, db, blobfs.RootID, "example-"+time.Now().UTC().Format("20060102T150405.000"))
+	dir, err := store.Directories.Create(ctx, db, blobfs.RootID, "example-"+time.Now().UTC().Format("20060102T150405.000"), data.CreateOptions{})
 	if err != nil {
 		return err
 	}
@@ -87,15 +87,19 @@ func run(ctx context.Context) error {
 	// The write, which the store runs end to end through the adapter: the
 	// pending row, then the object, then the row available.
 	body := "quarterly numbers\n"
-	file, err := store.WriteFile(ctx, db, objs, strings.NewReader(body), int64(len(body)), func(tx *sqlate.Tx) (blobfs.File, error) {
-		return store.Files.Create(ctx, tx, objs, dir.ID, "Q3 summary.txt", "text/plain")
+	file, err := store.WriteFile(ctx, data.WriteFileRequest{
+		DB: db, Objects: objs, Body: strings.NewReader(body), Size: int64(len(body)),
+		Begin: func(tx *sqlate.Tx) (blobfs.File, error) {
+			spec := data.FileSpec{DirectoryID: dir.ID, Name: "Q3 summary.txt", ContentType: "text/plain"}
+			return store.Files.Create(ctx, tx, objs, spec, data.CreateOptions{})
+		},
 	})
 	if err != nil {
 		return err
 	}
 	fmt.Printf("wrote %s under key %s: %s, %d bytes, etag %s\n", file.Name, file.Key, file.Status, *file.Size, *file.ETag)
 
-	page, err := store.Files.List(ctx, db, dir.ID, query.Directives{}, query.Page{Number: 1, Size: 10})
+	page, err := store.Files.List(ctx, db, dir.ID, query.Directives{}, query.Page{Number: 1, Size: 10}, data.ListOptions{})
 	if err != nil {
 		return err
 	}
@@ -105,7 +109,7 @@ func run(ctx context.Context) error {
 	}
 
 	// The delete: the row marked deleting, then the object, then the row.
-	if err := store.RemoveFileID(ctx, db, objs, file.ID); err != nil {
+	if err := store.RemoveFileID(ctx, db, objs, file.ID, data.VersionOptions{}); err != nil {
 		return err
 	}
 	if _, err := objects.Stat(ctx, file.Key); !isNotFound(err) {
@@ -117,7 +121,8 @@ func run(ctx context.Context) error {
 	// sanitizes a filename into a key every provider it targets accepts, so
 	// a hostile name becomes a valid key, and the rule itself refuses a key
 	// blobfs would never build.
-	hostile, err := store.Files.Create(ctx, db, objs, dir.ID, "draft...", "text/plain")
+	hostileSpec := data.FileSpec{DirectoryID: dir.ID, Name: "draft...", ContentType: "text/plain"}
+	hostile, err := store.Files.Create(ctx, db, objs, hostileSpec, data.CreateOptions{})
 	if err != nil {
 		return err
 	}
@@ -129,7 +134,7 @@ func run(ctx context.Context) error {
 	}
 	// A pending row whose object was never stored is removed the same way:
 	// deleting a missing object is success.
-	if err := store.RemoveFileID(ctx, db, objs, hostile.ID); err != nil {
+	if err := store.RemoveFileID(ctx, db, objs, hostile.ID, data.VersionOptions{}); err != nil {
 		return err
 	}
 
@@ -141,7 +146,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 
-	if err := store.Directories.Delete(ctx, db, dir.ID); err != nil {
+	if err := store.Directories.Delete(ctx, db, dir.ID, data.VersionOptions{}); err != nil {
 		return err
 	}
 	fmt.Printf("removed %s\n", path)
@@ -151,21 +156,25 @@ func run(ctx context.Context) error {
 // sweepBranch writes a branch of three files under parentID, marks it
 // deleting, and drains it with data.SweepUntilDone, reporting each pass.
 func sweepBranch(ctx context.Context, db *sqlate.DB, store *data.Store, objs objectStore, parentID string) error {
-	branch, err := store.Directories.Create(ctx, db, parentID, "archive")
+	branch, err := store.Directories.Create(ctx, db, parentID, "archive", data.CreateOptions{})
 	if err != nil {
 		return err
 	}
 	for _, name := range []string{"jan.txt", "feb.txt", "mar.txt"} {
 		body := "month " + name + "\n"
-		if _, err := store.WriteFile(ctx, db, objs, strings.NewReader(body), int64(len(body)), func(tx *sqlate.Tx) (blobfs.File, error) {
-			return store.Files.Create(ctx, tx, objs, branch.ID, name, "text/plain")
+		if _, err := store.WriteFile(ctx, data.WriteFileRequest{
+			DB: db, Objects: objs, Body: strings.NewReader(body), Size: int64(len(body)),
+			Begin: func(tx *sqlate.Tx) (blobfs.File, error) {
+				spec := data.FileSpec{DirectoryID: branch.ID, Name: name, ContentType: "text/plain"}
+				return store.Files.Create(ctx, tx, objs, spec, data.CreateOptions{})
+			},
 		}); err != nil {
 			return err
 		}
 	}
 	marked, err := sqlate.Transact(ctx, db, func(tx *sqlate.Tx) (data.Marked, error) {
-		return store.Directories.MarkDeleting(ctx, tx, branch.ID)
-	})
+		return store.Directories.MarkDeleting(ctx, tx, branch.ID, data.VersionOptions{})
+	}, nil)
 	if err != nil {
 		return err
 	}
@@ -174,7 +183,7 @@ func sweepBranch(ctx context.Context, db *sqlate.DB, store *data.Store, objs obj
 	passes := 0
 	pass := func(ctx context.Context) (data.SweepResult, error) {
 		passes++
-		return store.Sweep(ctx, db, objs, data.Batch(2))
+		return store.Sweep(ctx, db, objs, data.SweepOptions{Batch: 2})
 	}
 	report := func(res data.SweepResult, err error) {
 		fmt.Printf("  pass %d: %d files, %d directories, more %t, err %v\n", passes, res.Files, res.Directories, res.More, err)
