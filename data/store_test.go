@@ -528,7 +528,7 @@ func TestErrorsNamedOnce(t *testing.T) {
 	check(t, "Directories.Delete of the root", s.Directories.Delete(ctx, db, blobfs.RootID, data.VersionOptions{}), blobfs.ErrRootDirectory)
 	_, err = s.Directories.BranchRoots(ctx, db, 0)
 	check(t, "BranchRoots below 1", err, err)
-	_, err = s.Sweep(ctx, db, &objectLog{}, data.Batch(0))
+	_, err = s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{Batch: -1})
 	check(t, "Sweep of a refused batch", err, err)
 
 	failing := newStore(t, fallback, data.Options{Engine: func(_ *query.Catalog, _ sqlate.Dialect, base data.Variant) (data.Variant, error) {
@@ -554,7 +554,7 @@ func TestErrorsNamedOnce(t *testing.T) {
 
 	// A purge the consumer's key refuses, inside a branch's walk.
 	s, db, _ = openStore(t, fallback, deletingRoot(), files("D", "F"), violation("fk_bookmark_file", sqlate.ErrForeignKeyViolation), noDirectory())
-	_, err = s.Sweep(ctx, db, &objectLog{})
+	_, err = s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{})
 	check(t, "Sweep over a referenced file", err, blobfs.ErrReferenced)
 	if err != nil && !strings.Contains(err.Error(), "branch D: purge file F: ") {
 		t.Errorf("Sweep over a referenced file = %q, want the branch and the step named", err)

@@ -31,24 +31,20 @@ type SweepResult struct {
 }
 
 // Sweep runs one bounded, stateless pass that finishes the deletes callers
-// began: the marked branches, and with StaleOlderThan the stale rows. A
-// refusal leaves its row for a later pass, and the pass returns every
-// refusal joined. See The sweep in docs/features.md.
-func (s *Store) Sweep(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, opts ...SweepOption) (_ SweepResult, err error) {
+// began: the marked branches, and with SweepOptions.StaleOlderThan the
+// stale rows. A refusal leaves its row for a later pass, and the pass
+// returns every refusal joined. See The sweep in docs/features.md.
+func (s *Store) Sweep(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, opts SweepOptions) (_ SweepResult, err error) {
 	defer wrap(&err, "sweep")
-	o := sweepOptions{batch: defaultBatch}
-	for _, opt := range opts {
-		opt(&o)
-	}
 	switch {
-	case o.batch < 1:
-		return SweepResult{}, fmt.Errorf("the batch %d is below 1", o.batch)
-	case o.hasStale && o.staleAge <= 0:
-		return SweepResult{}, fmt.Errorf("the stale age %s is not positive", o.staleAge)
+	case opts.Batch < 0:
+		return SweepResult{}, fmt.Errorf("the batch %d is below 1", opts.Batch)
+	case opts.StaleOlderThan < 0:
+		return SweepResult{}, fmt.Errorf("the stale age %s is not positive", opts.StaleOlderThan)
 	}
-	w := &sweep{store: s, db: db, objects: objects, opts: o, budget: o.batch, refused: map[string]bool{}}
-	if o.hasStale {
-		w.before = time.Now().Add(-o.staleAge)
+	w := &sweep{store: s, db: db, objects: objects, opts: opts, budget: opts.batch(), refused: map[string]bool{}}
+	if opts.stale() {
+		w.before = time.Now().Add(-opts.StaleOlderThan)
 	}
 	err = w.run(ctx)
 	return w.result, err
@@ -86,7 +82,7 @@ type sweep struct {
 	store   *Store
 	db      *sqlate.DB
 	objects ObjectDeleter
-	opts    sweepOptions
+	opts    SweepOptions
 	// before is the stale rows' cutoff, set only with StaleOlderThan.
 	before time.Time
 	budget int
@@ -132,7 +128,7 @@ func (w *sweep) run(ctx context.Context) error {
 	if err := w.branches(ctx); err != nil {
 		return errors.Join(append(w.errs, err)...)
 	}
-	if w.opts.hasStale && w.budget > 0 {
+	if w.opts.stale() && w.budget > 0 {
 		if err := w.stale(ctx); err != nil {
 			w.errs = append(w.errs, err)
 		}
@@ -334,8 +330,8 @@ func (w *sweep) remark(ctx context.Context) (bool, error) {
 func (w *sweep) remove(ctx context.Context, dir blobfs.Directory) (walk, error) {
 	var hookErr error
 	_, err := w.db.Transact(ctx, func(tx *sqlate.Tx) (struct{}, error) {
-		if w.opts.onRemove != nil {
-			if hookErr = w.opts.onRemove(ctx, tx, dir); hookErr != nil {
+		if w.opts.OnRemoveDirectory != nil {
+			if hookErr = w.opts.OnRemoveDirectory(ctx, tx, dir); hookErr != nil {
 				return struct{}{}, hookErr
 			}
 		}
@@ -430,7 +426,7 @@ func (w *sweep) reclaim(ctx context.Context, f blobfs.File) bool {
 // is left for another pass past those this pass left.
 func (w *sweep) remains(ctx context.Context) (bool, error) {
 	roots, err := w.roots(ctx, w.leftRoots, 1)
-	if err != nil || len(roots) > 0 || !w.opts.hasStale {
+	if err != nil || len(roots) > 0 || !w.opts.stale() {
 		return len(roots) > 0, err
 	}
 	rows, err := w.store.Files.stale.All(ctx, w.db, query.Args{"before": w.before, "offset": w.leftStale, "fetch": 1})

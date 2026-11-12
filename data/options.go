@@ -136,44 +136,43 @@ type RemoveOptions struct {
 	OnDelete func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error
 }
 
-// SweepOption configures one call of Store.Sweep beyond its required
-// arguments.
-type SweepOption func(*sweepOptions)
+// SweepOptions configures one call of Store.Sweep beyond its required
+// arguments. The zero SweepOptions runs passes of 100 records with no hook
+// and no stale reclaim.
+type SweepOptions struct {
+	// Batch bounds the records one pass handles: each file finished, each
+	// directory removed, and each stale row reclaimed counts one. A zero
+	// Batch means 100; a negative one is refused before any SQL.
+	Batch int
 
-// sweepOptions collects what the sweep options set.
-type sweepOptions struct {
-	batch    int
-	onRemove func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error
-	staleAge time.Duration
-	hasStale bool
+	// OnRemoveDirectory runs in the transaction that removes each
+	// directory of a branch, before the removal, with the call's context
+	// and the Directory: where a consumer removes its own rows that
+	// reference the directory. An error from it rolls the removal back for
+	// the next pass. A nil OnRemoveDirectory runs no hook.
+	OnRemoveDirectory func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error
+
+	// StaleOlderThan makes a pass also reclaim the pending and deleting
+	// file rows last written more than that long ago, oldest first. It
+	// must exceed the longest write the consumer lets run; see Stale rows
+	// and orphaned objects in docs/concepts.md. A zero StaleOlderThan
+	// reclaims no stale rows; a negative one is refused before any SQL.
+	StaleOlderThan time.Duration
 }
 
-// defaultBatch is the number of records a pass handles when Batch is not
-// given.
+// defaultBatch is the number of records a pass handles when
+// SweepOptions.Batch is zero.
 const defaultBatch = 100
 
-// Batch bounds the records one pass of Store.Sweep handles to n: each file
-// finished, each directory removed, and each stale row reclaimed counts
-// one. The default is 100; an n below 1 is refused before any SQL.
-func Batch(n int) SweepOption {
-	return func(o *sweepOptions) { o.batch = n }
-}
-
-// OnRemoveDirectory runs fn in the transaction that removes each directory
-// of a branch, before the removal: where a consumer removes its own rows
-// that reference the directory. An error from fn rolls the removal back
-// for the next pass.
-func OnRemoveDirectory(fn func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error) SweepOption {
-	return func(o *sweepOptions) { o.onRemove = fn }
-}
-
-// StaleOlderThan makes a pass of Store.Sweep also reclaim the pending and
-// deleting file rows last written more than age ago, oldest first. age
-// must exceed the longest write the consumer lets run; see Stale rows and
-// orphaned objects in docs/concepts.md.
-func StaleOlderThan(age time.Duration) SweepOption {
-	return func(o *sweepOptions) {
-		o.staleAge = age
-		o.hasStale = true
+// batch is the bound of a pass: Batch, or defaultBatch when Batch is zero.
+func (o SweepOptions) batch() int {
+	if o.Batch == 0 {
+		return defaultBatch
 	}
+	return o.Batch
+}
+
+// stale reports whether a pass reclaims stale rows.
+func (o SweepOptions) stale() bool {
+	return o.StaleOlderThan > 0
 }

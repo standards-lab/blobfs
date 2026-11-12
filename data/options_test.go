@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/standards-lab/sqlate"
 	"github.com/standards-lab/sqlate/query"
@@ -270,4 +271,82 @@ func checkCursorPage[T any](t *testing.T, c listingCase[T]) {
 			t.Errorf("the refused pages ran %d calls, want none", n-ran)
 		}
 	})
+}
+
+// TestSweepOptionsBatch checks a zero SweepOptions.Batch bounds a pass at
+// 100 records and a set Batch at its value, each bound into the roots'
+// read.
+func TestSweepOptionsBatch(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		batch, want int
+	}{{0, 100}, {7, 7}} {
+		s, db, rec := openStore(t, fallback, noDirectory())
+		if got, err := s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{Batch: c.batch}); err != nil || got != (data.SweepResult{}) {
+			t.Fatalf("Sweep with Batch %d = %+v, %v, want a zero result", c.batch, got, err)
+		}
+		if calls := queries(rec); len(calls) != 1 || !slices.Equal(calls[0].Args, []any{0, c.want}) {
+			t.Errorf("Sweep with Batch %d ran %v, want the roots' read bound to %d", c.batch, calls, c.want)
+		}
+	}
+}
+
+// TestSweepOptionsStaleOlderThan checks a zero
+// SweepOptions.StaleOlderThan reads no stale rows and a set one reads them
+// after the roots.
+func TestSweepOptionsStaleOlderThan(t *testing.T) {
+	ctx := context.Background()
+	s, db, rec := openStore(t, fallback, noDirectory())
+	if got, err := s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{}); err != nil || got != (data.SweepResult{}) {
+		t.Fatalf("Sweep with a zero StaleOlderThan = %+v, %v, want a zero result", got, err)
+	}
+	if want := "query"; ops(rec) != want {
+		t.Errorf("Sweep with a zero StaleOlderThan ran %q, want %q: the roots' read alone", ops(rec), want)
+	}
+	wantDone(t, rec)
+
+	s, db, rec = openStore(t, fallback, noDirectory(), files("D", "F"), sqltest.Response{Affected: 1})
+	objects := &objectLog{}
+	if got, err := s.Sweep(ctx, db, objects, data.SweepOptions{StaleOlderThan: time.Hour}); err != nil || got != (data.SweepResult{Stale: 1}) {
+		t.Fatalf("Sweep with StaleOlderThan = %+v, %v, want the stale row reclaimed", got, err)
+	}
+	if want := "query query exec"; ops(rec) != want || !slices.Equal(objects.keys, []string{"F/f.txt"}) {
+		t.Errorf("Sweep with StaleOlderThan ran %q and deleted %v, want %q and F's key", ops(rec), objects.keys, want)
+	}
+	wantDone(t, rec)
+}
+
+// TestSweepOptionsOnRemoveDirectory checks a nil
+// SweepOptions.OnRemoveDirectory removes a branch with no hook, and a set
+// one is called once a directory, inside the removal's transaction, the
+// statements the same.
+func TestSweepOptionsOnRemoveDirectory(t *testing.T) {
+	ctx := context.Background()
+	var hooked []string
+	hook := func(_ context.Context, tx *sqlate.Tx, dir blobfs.Directory) error {
+		if tx == nil {
+			t.Error("the hook ran outside a transaction")
+		}
+		hooked = append(hooked, dir.ID)
+		return nil
+	}
+	for _, c := range []struct {
+		name string
+		hook func(context.Context, *sqlate.Tx, blobfs.Directory) error
+		want []string
+	}{
+		{"nil", nil, nil},
+		{"set", hook, []string{"D"}},
+	} {
+		hooked = nil
+		s, db, rec := openStore(t, fallback, deletingRoot(), files("D"), noDirectory(), sqltest.Response{Affected: 1})
+		got, err := s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{OnRemoveDirectory: c.hook})
+		if err != nil || got != (data.SweepResult{Directories: 1}) {
+			t.Errorf("%s: Sweep = %+v, %v, want the directory removed", c.name, got, err)
+		}
+		if want := "query query query begin exec commit"; ops(rec) != want || !slices.Equal(hooked, c.want) {
+			t.Errorf("%s: the pass ran %q and hooked %v, want %q and %v", c.name, ops(rec), hooked, want, c.want)
+		}
+		wantDone(t, rec)
+	}
 }

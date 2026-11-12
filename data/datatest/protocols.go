@@ -218,7 +218,7 @@ func (s *suite) protocolWriteRefusedCompletion(t *testing.T) {
 				t.Errorf("the refused write left %+v, want its row deleting for the sweep", f)
 			}
 			sweeper := newObjectStore()
-			if r, err := s.sweep(tier.store, sweeper); err != nil || r != (data.SweepResult{Files: 1, Directories: 1}) {
+			if r, err := s.sweep(tier.store, sweeper, data.SweepOptions{}); err != nil || r != (data.SweepResult{Files: 1, Directories: 1}) {
 				t.Errorf("the Sweep after the refusal = %+v, %v, want the row and its directory finished", r, err)
 			}
 			s.wantFilesGone(t, ids...)
@@ -973,15 +973,15 @@ func (p *passes) report(r data.SweepResult, err error) {
 
 // pass is one pass of store's sweep through objects with opts, counted in
 // ran, as a consumer hands it to SweepUntilDone.
-func (p *passes) pass(s *suite, store *data.Store, objects *objectStore, opts ...data.SweepOption) func(context.Context) (data.SweepResult, error) {
+func (p *passes) pass(s *suite, store *data.Store, objects *objectStore, opts data.SweepOptions) func(context.Context) (data.SweepResult, error) {
 	return func(ctx context.Context) (data.SweepResult, error) {
 		p.ran++
-		return store.Sweep(ctx, s.db, objects, opts...)
+		return store.Sweep(ctx, s.db, objects, opts)
 	}
 }
 
 // protocolSweepUntilDone checks that SweepUntilDone drains a backlog
-// larger than one batch: a branch of eight records at Batch(3) takes the
+// larger than one batch: a branch of eight records at a Batch of 3 takes the
 // three passes sweepBatch counts, the loop runs each once, report sees
 // each with no error, and the branch is gone with each object deleted once.
 func (s *suite) protocolSweepUntilDone(t *testing.T) {
@@ -995,7 +995,7 @@ func (s *suite) protocolSweepUntilDone(t *testing.T) {
 			}
 			objects := newObjectStore()
 			var got passes
-			if err := data.SweepUntilDone(s.ctx, nil, got.pass(s, tier.store, objects, data.Batch(3)), got.report); err != nil {
+			if err := data.SweepUntilDone(s.ctx, nil, got.pass(s, tier.store, objects, data.SweepOptions{Batch: 3}), got.report); err != nil {
 				t.Fatalf("SweepUntilDone: %v", err)
 			}
 			if !slices.Equal(got.results, want) || !slices.Equal(got.errs, make([]error, len(want))) || got.ran != len(want) {
@@ -1022,14 +1022,14 @@ func (s *suite) protocolSweepUntilDoneStopped(t *testing.T) {
 			close(stop)
 			objects := newObjectStore()
 			var got passes
-			if err := data.SweepUntilDone(s.ctx, stop, got.pass(s, tier.store, objects), got.report); err != nil || len(got.results) != 0 || got.ran != 0 || objects.calls != 0 {
+			if err := data.SweepUntilDone(s.ctx, stop, got.pass(s, tier.store, objects, data.SweepOptions{}), got.report); err != nil || len(got.results) != 0 || got.ran != 0 || objects.calls != 0 {
 				t.Errorf("SweepUntilDone with a closed stop = %v after %d passes reported and %d run, %d deletes, want nothing run", err, len(got.results), got.ran, objects.calls)
 			}
 			if d := s.directory(t, b.top.ID); d.Status != blobfs.DirectoryStatusDeleting {
 				t.Errorf("the stopped loop left the branch %s, want deleting", d.Status)
 			}
 			got = passes{}
-			if err := data.SweepUntilDone(s.ctx, nil, got.pass(s, tier.store, objects), got.report); err != nil || len(got.results) != 1 ||
+			if err := data.SweepUntilDone(s.ctx, nil, got.pass(s, tier.store, objects, data.SweepOptions{}), got.report); err != nil || len(got.results) != 1 ||
 				got.results[0] != (data.SweepResult{Files: 5, Directories: 3}) {
 				t.Errorf("the unstopped SweepUntilDone = %v after %+v, want the branch in one pass", err, got.results)
 			}
