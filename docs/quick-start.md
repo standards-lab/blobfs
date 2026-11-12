@@ -328,15 +328,16 @@ WHERE file_id = {{file_id:uuid}}
 The stores layer builds the program's one catalog: sqlate's patterns with the PostgreSQL overlay
 of the cursor predicate, `sqlatepg.Patterns()`, and blobfs's published patterns,
 `data.Patterns()`. `data.New` compiles blobfs's statements against it and installs the
-PostgreSQL engine with `data.WithEngine`; the program's own statements compile against the same
+PostgreSQL engine as `data.Options.Engine`; the program's own statements compile against the same
 catalog. `Verify` prepares both against the migrated schema.
 
 `Upload` runs `Store.WriteFile` and `Delete` runs `Store.RemoveFile`, each with a callback of the
-program's inside the protocol's first transaction; [the protocols](features.md#the-protocols)
+program's inside the protocol's first transaction, `Begin` in a `data.WriteFileRequest` and
+`pick`; [the protocols](features.md#the-protocols)
 states what each runs and refuses. Both callbacks first check the program's scope: the file's
 directory must lie within the area the caller may reach, which `Directories.IsWithin` answers.
 
-- `Upload`'s `begin` inserts the pending row with `Files.Create` and nothing that references it,
+- `Upload`'s `Begin` inserts the pending row with `Files.Create` and nothing that references it,
   since a write that fails and cannot clean up leaves a stale row the sweep must be free to
   purge. `Upload` attaches the note once the file is available, in a transaction that first
   holds the file's row, as the [reference-then-delete](concepts.md#reference-then-delete) rule
@@ -387,7 +388,7 @@ func newStores(dialect sqlate.Dialect) (*Stores, error) {
 	if err != nil {
 		return nil, err
 	}
-	store, err := data.New(catalog, dialect, data.WithEngine(blobfspg.Engine))
+	store, err := data.New(catalog, dialect, data.Options{Engine: blobfspg.Engine})
 	if err != nil {
 		return nil, err
 	}
@@ -416,26 +417,33 @@ func (s *Stores) Verify(ctx context.Context, sess sqlate.Session) error {
 // lie within areaID, and attaches the program's note to it once it is
 // available.
 func (s *Stores) Upload(ctx context.Context, db *sqlate.DB, objects data.ObjectStore, areaID, dirID, name, contentType, note string, body io.Reader, size int64) (blobfs.File, error) {
-	file, err := s.Blobfs.WriteFile(ctx, db, objects, body, size, func(tx *sqlate.Tx) (blobfs.File, error) {
-		if err := s.within(ctx, tx, dirID, areaID); err != nil {
-			return blobfs.File{}, err
-		}
-		// The pending row, and no row that references it.
-		return s.Blobfs.Files.Create(ctx, tx, objects, dirID, name, contentType)
+	file, err := s.Blobfs.WriteFile(ctx, data.WriteFileRequest{
+		DB:      db,
+		Objects: objects,
+		Body:    body,
+		Size:    size,
+		Begin: func(tx *sqlate.Tx) (blobfs.File, error) {
+			if err := s.within(ctx, tx, dirID, areaID); err != nil {
+				return blobfs.File{}, err
+			}
+			// The pending row, and no row that references it.
+			spec := data.FileSpec{DirectoryID: dirID, Name: name, ContentType: contentType}
+			return s.Blobfs.Files.Create(ctx, tx, objects, spec, data.CreateOptions{})
+		},
 	})
 	if err != nil {
 		return blobfs.File{}, err
 	}
 	_, err = sqlate.Transact(ctx, db, func(tx *sqlate.Tx) (int64, error) {
-		if err := s.Blobfs.Files.Hold(ctx, tx, file.ID); err != nil {
+		if err := s.Blobfs.Files.Hold(ctx, tx, file.ID, data.VersionOptions{}); err != nil {
 			return 0, err
 		}
 		return s.attach.Exec(ctx, tx, query.Args{"file_id": file.ID, "note": note})
-	})
+	}, nil)
 	if err != nil {
 		// The attach rolled back, so nothing references the file: remove it
 		// rather than leave it stored with no note.
-		return blobfs.File{}, errors.Join(err, s.Blobfs.RemoveFileID(context.WithoutCancel(ctx), db, objects, file.ID))
+		return blobfs.File{}, errors.Join(err, s.Blobfs.RemoveFileID(context.WithoutCancel(ctx), db, objects, file.ID, data.VersionOptions{}))
 	}
 	return file, nil
 }
@@ -453,7 +461,7 @@ func (s *Stores) Delete(ctx context.Context, db *sqlate.DB, objects data.ObjectD
 		}
 		_, err = s.detach.Exec(ctx, tx, query.Args{"file_id": id})
 		return id, err
-	})
+	}, data.RemoveOptions{})
 }
 
 // within is the program's scope check: the directory dirID must lie
@@ -500,6 +508,7 @@ import (
 	"github.com/standards-lab/sqlate/query"
 
 	"github.com/standards-lab/blobfs"
+	"github.com/standards-lab/blobfs/data"
 )
 
 func main() {
@@ -532,7 +541,7 @@ func run(ctx context.Context) error {
 	store := stores.Blobfs
 
 	// A directory under the root, found on every run after the first.
-	dir, created, err := store.Directories.Ensure(ctx, db, blobfs.RootID, "reports")
+	dir, created, err := store.Directories.Ensure(ctx, db, blobfs.RootID, "reports", data.CreateOptions{})
 	if err != nil {
 		return err
 	}
@@ -554,7 +563,7 @@ func run(ctx context.Context) error {
 	}
 	page, err := store.Files.List(ctx, db, found.ID,
 		query.Directives{Sort: []query.Sort{{Field: "created_at", Descending: true}}},
-		query.Page{Number: 1, Size: 20})
+		query.Page{Number: 1, Size: 20}, data.ListOptions{})
 	if err != nil {
 		return err
 	}

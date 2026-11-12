@@ -30,6 +30,9 @@
 //   - ListOptions configures a listing; its IncludeDeleting lists deleting
 //     rows too. CursorPage names the page a Continue reads past a cursor.
 //   - CreateOptions configures a create; its ID supplies the row's id.
+//     FileSpec names the file Files.Create and Files.Ensure write.
+//   - FileMove and DirectoryMove name where Files.Move and
+//     Directories.Move put the row and the version they expect.
 //   - VersionOptions configures a guarded step; its Version names the
 //     version.
 //   - SweepOptions configures a sweep: its Batch bounds a pass, its

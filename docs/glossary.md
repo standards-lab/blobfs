@@ -102,7 +102,7 @@ full.
   `blobfs.file_columns`, which a consumer's own statements include.
 - **Listing**: one page of one directory's child directories or files, a sqlate projection
   anchored on the directory's id, with the caller's filters and sort composed onto it. A listing
-  hides deleting rows unless it is called with `data.IncludeDeleting`.
+  hides deleting rows unless it is called with `data.ListOptions.IncludeDeleting`.
 - **Directives** (sqlate): a listing request's sorts, filters, and whether it counts the
   total.
 - **Cursor** (sqlate): an opaque position in a listing's order that `Continue` reads the next
@@ -116,8 +116,9 @@ full.
 - **Fallback** (sqlate): a returning command run as the command and then its read, in one
   transaction, on an engine whose dialect does not render `RETURNING`.
 - **Guarded step**: an update that runs only at the version the caller read; see [deleting
-  outranks the version](concepts.md#deleting-outranks-the-version). `data.AtVersion` guards the
-  steps that take no version argument.
+  outranks the version](concepts.md#deleting-outranks-the-version).
+  `data.VersionOptions.Version` guards the steps that take no version argument, and a zero
+  `Version` leaves them unguarded.
 - **Violation**: a database constraint violation mapped to a blobfs sentinel, reported as a
   `blobfs.ViolationError` that names the sentinel and the constraint.
 
@@ -134,7 +135,7 @@ full.
   forwards them to. A variant embeds the variant it is given, the baseline or an engine's, so a
   variation point a later release adds reaches it through the embedding.
 - **Engine**: a `data.Engine`, the function that builds a variant over the baseline `data.New`
-  compiled, installed with `data.WithEngine`. An engine sub-module ships one; a consumer may
+  compiled, installed as `data.Options.Engine`. An engine sub-module ships one; a consumer may
   write its own.
 - **Engine sub-module**: a module named for its engine, such as `postgres`, holding the engine's
   variant, its native statements, its migration set, and its integration tier.

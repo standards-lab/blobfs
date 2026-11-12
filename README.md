@@ -49,18 +49,25 @@ over its object store, a `data.ObjectStore`; error handling is elided.
 
 ```go
 catalog, err := query.NewCatalog(sqlatepg.Patterns(), data.Patterns())
-store, err := data.New(catalog, db.Dialect(), data.WithEngine(blobfspg.Engine))
+store, err := data.New(catalog, db.Dialect(), data.Options{Engine: blobfspg.Engine})
 
 // The write: the pending row, the object under the row's key, the row available.
-file, err := store.WriteFile(ctx, db, objects, body, size, func(tx *sqlate.Tx) (blobfs.File, error) {
-	return store.Files.Create(ctx, tx, objects, dirID, "Q3 summary.txt", "text/plain")
+file, err := store.WriteFile(ctx, data.WriteFileRequest{
+	DB:      db,
+	Objects: objects,
+	Body:    body,
+	Size:    size,
+	Begin: func(tx *sqlate.Tx) (blobfs.File, error) {
+		spec := data.FileSpec{DirectoryID: dirID, Name: "Q3 summary.txt", ContentType: "text/plain"}
+		return store.Files.Create(ctx, tx, objects, spec, data.CreateOptions{})
+	},
 })
 
 // One page of the directory's files, with the total counted in the page's own statement.
-page, err := store.Files.List(ctx, db, dirID, query.Directives{}, query.Page{Number: 1, Size: 20})
+page, err := store.Files.List(ctx, db, dirID, query.Directives{}, query.Page{Number: 1, Size: 20}, data.ListOptions{})
 ```
 
-The callback runs in the transaction that inserts the pending row, where the consumer checks
+`Begin` runs in the transaction that inserts the pending row, where the consumer checks
 its own scope. `file.Key` is `<id>/Q3 summary.txt`. A later rename of the file, or a move of its
 directory, updates rows and leaves the object where it is. The protocol's steps are exported
 too: a write that does not fit its shape runs `Files.Create`, its own put, and `Files.Complete`
@@ -95,8 +102,10 @@ Four conventions the library keeps are stricter than a reader might expect:
 - `data` is the persistence package. `New` compiles the `Store`. The store's `Directories` and
   `Files` handles run the operations and listings. Its protocols, `WriteFile`, `EnsureFile`,
   `RemoveFile`, `RemoveFileID`, and `PurgeFile`, run the write and the delete end to end over
-  the consumer's `ObjectStore`; `OnComplete` and `OnDelete` run the consumer's function in the
-  transaction that completes a write or begins a delete. Its `Sweep` finishes the deletes of
+  the consumer's `ObjectStore`; a `WriteFileRequest`'s `OnComplete` and a `RemoveOptions`'s
+  `OnDelete` run the consumer's function in the transaction that completes a write or begins a
+  delete. Each call takes its options as a struct, such as `CreateOptions` or `ListOptions`,
+  whose zero value is the default. Its `Sweep` finishes the deletes of
   marked branches and stopped protocols. The package also holds the `Variant` interface, the
   `Engine` type, and the published patterns.
 - `data/datatest` is the conformance suite, `Run`, which an engine or a consumer's own variant
