@@ -31,11 +31,11 @@ func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, engine data.Engine
 	if engine == nil {
 		engine = baselineEngine
 	}
-	store, err := data.New(catalog, dialect, data.WithEngine(engine))
+	store, err := data.New(catalog, dialect, data.Options{Engine: engine})
 	if err != nil {
 		t.Fatalf("data.New over the engine under test: %v", err)
 	}
-	baseline, err := data.New(catalog, dialect)
+	baseline, err := data.New(catalog, dialect, data.Options{})
 	if err != nil {
 		t.Fatalf("data.New over the baseline: %v", err)
 	}

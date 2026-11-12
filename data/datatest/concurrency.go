@@ -145,7 +145,7 @@ func (s *suite) walksTerminate(t *testing.T, x, y string) {
 		}
 		cancel()
 	}
-	if err := s.store.Directories.Delete(s.ctx, s.db, child.ID); err != nil {
+	if err := s.store.Directories.Delete(s.ctx, s.db, child.ID, data.VersionOptions{}); err != nil {
 		t.Fatalf("Delete of the directory below the loop: %v", err)
 	}
 }
@@ -225,7 +225,7 @@ func (s *suite) gatedStore(t *testing.T) (*gated, *data.Store) {
 		g.Variant = v
 		return g, nil
 	}
-	store, err := data.New(s.catalog, s.db.Dialect(), data.WithEngine(gate))
+	store, err := data.New(s.catalog, s.db.Dialect(), data.Options{Engine: gate})
 	if err != nil {
 		t.Fatalf("data.New over the gated variant: %v", err)
 	}

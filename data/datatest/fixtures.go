@@ -11,6 +11,7 @@ import (
 	"github.com/standards-lab/sqlate"
 
 	"github.com/standards-lab/blobfs"
+	"github.com/standards-lab/blobfs/data"
 )
 
 // The two spellings of one name, built from code points so that no editor
@@ -56,7 +57,7 @@ func (s *suite) mkdir(t *testing.T, n string) blobfs.Directory {
 // test, named from n.
 func (s *suite) mkdirUnder(t *testing.T, parentID, n string) blobfs.Directory {
 	t.Helper()
-	d, err := s.store.Directories.Create(s.ctx, s.db, parentID, name(n))
+	d, err := s.store.Directories.Create(s.ctx, s.db, parentID, name(n), data.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Directories.Create(%q): %v", n, err)
 	}

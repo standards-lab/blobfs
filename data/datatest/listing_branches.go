@@ -47,7 +47,7 @@ func (s *suite) fileIDs(t *testing.T, store *data.Store, dir string, opts ...dat
 func (s *suite) deleteFile(t *testing.T, id string) {
 	t.Helper()
 	if _, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
-		return s.store.Files.Delete(s.ctx, tx, id)
+		return s.store.Files.Delete(s.ctx, tx, id, data.VersionOptions{})
 	}, nil); err != nil {
 		t.Fatalf("Files.Delete: %v", err)
 	}
@@ -64,7 +64,7 @@ func (s *suite) listingsHideTheBranch(t *testing.T) {
 	if ids, total := s.directoryIDs(t, s.store, holder.ID); !slices.Equal(ids, []string{keep.ID, b.top.ID}) || total != 2 {
 		t.Fatalf("before the mark the listing is %v of %d, want keep and marked", ids, total)
 	}
-	if _, err := s.mark(s.store, b.top.ID); err != nil {
+	if _, err := s.mark(s.store, b.top.ID, data.VersionOptions{}); err != nil {
 		t.Fatalf("MarkDeleting: %v", err)
 	}
 	s.deleteFile(t, deleted)
@@ -113,7 +113,7 @@ func (s *suite) listingADeletingDirectory(t *testing.T) {
 	if err != nil || files.Next == "" {
 		t.Fatalf("Files.List before the mark = %+v, %v, want a cursor", files, err)
 	}
-	if _, err := s.mark(s.store, b.top.ID); err != nil {
+	if _, err := s.mark(s.store, b.top.ID, data.VersionOptions{}); err != nil {
 		t.Fatalf("MarkDeleting: %v", err)
 	}
 	type listing struct {
@@ -176,7 +176,7 @@ func (s *suite) cursorAcrossAMark(t *testing.T) {
 	if err != nil || firstFiles.Next == "" {
 		t.Fatalf("Files.List = %+v, %v, want a cursor", firstFiles, err)
 	}
-	if _, err := s.mark(s.store, dirs["c"]); err != nil {
+	if _, err := s.mark(s.store, dirs["c"], data.VersionOptions{}); err != nil {
 		t.Fatalf("MarkDeleting: %v", err)
 	}
 	s.deleteFile(t, files["c"])
@@ -190,7 +190,7 @@ func (s *suite) cursorAcrossAMark(t *testing.T) {
 			t.Errorf("Files.Continue past a delete = %+v, %v, want d alone of 3", f, err)
 		}
 	}
-	if _, err := s.mark(s.store, holder.ID); err != nil {
+	if _, err := s.mark(s.store, holder.ID, data.VersionOptions{}); err != nil {
 		t.Fatalf("MarkDeleting of the listed directory: %v", err)
 	}
 	for _, store := range []*data.Store{s.store, s.baseline} {
@@ -215,7 +215,7 @@ func (s *suite) branchRootsFindsTheRoots(t *testing.T) {
 	middle := s.newBranch(t, "roots-middle-"+t.Name())
 	twice := s.newBranch(t, "roots-twice-"+t.Name())
 	for _, id := range []string{top.top.ID, middle.mid.ID, twice.mid.ID, twice.top.ID} {
-		if _, err := s.mark(s.store, id); err != nil {
+		if _, err := s.mark(s.store, id, data.VersionOptions{}); err != nil {
 			t.Fatalf("MarkDeleting: %v", err)
 		}
 	}

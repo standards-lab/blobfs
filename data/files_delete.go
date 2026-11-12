@@ -15,11 +15,11 @@ import (
 // Hold locks the row of the file with id for the rest of tx without
 // changing it, so a Delete of the file waits for tx: the library's half of
 // the reference-then-delete rule. Refusals: blobfs.ErrNotFound, a
-// blobfs.DeletingError, and query.ErrVersionMismatch under AtVersion. See
-// Reference-then-delete in docs/concepts.md.
-func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) (err error) {
+// blobfs.DeletingError, and query.ErrVersionMismatch under opts.Version.
+// See Reference-then-delete in docs/concepts.md.
+func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts VersionOptions) (err error) {
 	defer wrap(&err, "hold file %s", id)
-	version := atVersion(opts)
+	version := opts.at()
 	held, err := f.variant.HoldFile(ctx, tx, id, version)
 	switch {
 	case err != nil:
@@ -45,10 +45,10 @@ func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts ...Vers
 // and then calls Purge. A row already deleting is returned as it is, the
 // step's retry. The consumer checks for its own references in tx after the
 // call. Refusals: blobfs.ErrNotFound; query.ErrVersionMismatch under
-// AtVersion. See Files in docs/features.md.
-func (f *Files) Delete(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) (_ blobfs.File, err error) {
+// opts.Version. See Files in docs/features.md.
+func (f *Files) Delete(ctx context.Context, tx *sqlate.Tx, id string, opts VersionOptions) (_ blobfs.File, err error) {
 	defer wrap(&err, "delete file %s", id)
-	file, _, err := f.deleteFile(ctx, tx, id, atVersion(opts))
+	file, _, err := f.deleteFile(ctx, tx, id, opts.at())
 	return file, err
 }
 

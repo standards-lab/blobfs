@@ -21,16 +21,13 @@ func validName(name string) (string, error) {
 	return name, nil
 }
 
-// rowID returns the id WithID supplied, in canonical form, or a minted one.
-func rowID(opts []CreateOption) (string, error) {
-	var o createOptions
-	for _, opt := range opts {
-		opt(&o)
-	}
-	if !o.hasID {
+// rowID returns the id o supplies, in canonical form, or a minted one
+// when it supplies none.
+func rowID(o CreateOptions) (string, error) {
+	if o.ID == "" {
 		return blobfs.NewID(), nil
 	}
-	return blobfs.ParseID(o.id)
+	return blobfs.ParseID(o.ID)
 }
 
 // inTransaction reports whether sess is a transaction, where a failed

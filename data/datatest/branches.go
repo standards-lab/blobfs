@@ -19,7 +19,7 @@ func (s *suite) branches(t *testing.T) {
 	t.Run("MarkRefusesTheRoot", s.markRoot)
 	t.Run("MarkMissingIsNotFound", s.markMissing)
 	t.Run("MarkAgainConverges", s.markAgain)
-	t.Run("MarkAtVersion", s.markAtVersion)
+	t.Run("MarkGuarded", s.markGuarded)
 	t.Run("MarkWaitsOnAHold", s.markWaitsOnHold)
 	t.Run("MarkRacesAFileMove", s.markRacesAFileMove)
 	t.Run("DeletingRefuses", s.deletingRefuses)
@@ -70,9 +70,9 @@ func (s *suite) newBranchUnder(t *testing.T, parentID, n string) branch {
 
 // mark runs MarkDeleting of id through store in a transaction of its own
 // and commits it.
-func (s *suite) mark(store *data.Store, id string, opts ...data.VersionOption) (data.Marked, error) {
+func (s *suite) mark(store *data.Store, id string, opts data.VersionOptions) (data.Marked, error) {
 	return s.db.Transact(s.ctx, func(tx *sqlate.Tx) (data.Marked, error) {
-		return store.Directories.MarkDeleting(s.ctx, tx, id, opts...)
+		return store.Directories.MarkDeleting(s.ctx, tx, id, opts)
 	}, nil)
 }
 
@@ -84,14 +84,14 @@ func (s *suite) markCounts(t *testing.T) {
 	sibling := s.newBranch(t, "sibling-"+t.Name())
 	root := s.directory(t, blobfs.RootID)
 	already := s.file(t, b.deleting)
-	got, err := s.mark(s.store, b.top.ID)
+	got, err := s.mark(s.store, b.top.ID, data.VersionOptions{})
 	if err != nil {
 		t.Fatalf("MarkDeleting: %v", err)
 	}
 	if want := (data.Marked{Directories: 3, Files: 4}); got != want {
 		t.Errorf("MarkDeleting = %+v, want %+v", got, want)
 	}
-	base, err := s.mark(s.baseline, sibling.top.ID)
+	base, err := s.mark(s.baseline, sibling.top.ID, data.VersionOptions{})
 	if err != nil || base != got {
 		t.Errorf("the baseline's MarkDeleting of the same shape = %+v, %v, want %+v", base, err, got)
 	}
@@ -123,7 +123,7 @@ func (s *suite) markCounts(t *testing.T) {
 		t.Errorf("the root changed to %+v from %+v", after, root)
 	}
 	outside := s.newBranch(t, "outside-"+t.Name())
-	if _, err := s.mark(s.store, outside.mid.ID); err != nil {
+	if _, err := s.mark(s.store, outside.mid.ID, data.VersionOptions{}); err != nil {
 		t.Fatalf("MarkDeleting of a branch's middle: %v", err)
 	}
 	if top := s.directory(t, outside.top.ID); top.Status != blobfs.DirectoryStatusActive || top.Version != outside.top.Version {
@@ -137,11 +137,11 @@ func (s *suite) markCounts(t *testing.T) {
 // markRoot checks the root is refused with ErrRootDirectory on both
 // stores, in the same text, and left active.
 func (s *suite) markRoot(t *testing.T) {
-	_, err := s.mark(s.store, blobfs.RootID)
+	_, err := s.mark(s.store, blobfs.RootID, data.VersionOptions{})
 	if !errors.Is(err, blobfs.ErrRootDirectory) {
 		t.Errorf("MarkDeleting(root) = %v, want ErrRootDirectory", err)
 	}
-	_, base := s.mark(s.baseline, blobfs.RootID)
+	_, base := s.mark(s.baseline, blobfs.RootID, data.VersionOptions{})
 	wantSameError(t, err, base)
 	if root := s.directory(t, blobfs.RootID); root.Status != blobfs.DirectoryStatusActive {
 		t.Errorf("the refused mark left the root %s", root.Status)
@@ -152,11 +152,11 @@ func (s *suite) markRoot(t *testing.T) {
 // both stores, in the same text.
 func (s *suite) markMissing(t *testing.T) {
 	id := blobfs.NewID()
-	_, err := s.mark(s.store, id)
+	_, err := s.mark(s.store, id, data.VersionOptions{})
 	if !errors.Is(err, blobfs.ErrNotFound) {
 		t.Errorf("MarkDeleting(missing) = %v, want ErrNotFound", err)
 	}
-	_, base := s.mark(s.baseline, id)
+	_, base := s.mark(s.baseline, id, data.VersionOptions{})
 	wantSameError(t, err, base)
 }
 
@@ -164,13 +164,13 @@ func (s *suite) markMissing(t *testing.T) {
 // later mark reaches stragglers, counting them alone.
 func (s *suite) markAgain(t *testing.T) {
 	b := s.newBranch(t, "again-"+t.Name())
-	if _, err := s.mark(s.store, b.top.ID); err != nil {
+	if _, err := s.mark(s.store, b.top.ID, data.VersionOptions{}); err != nil {
 		t.Fatalf("MarkDeleting: %v", err)
 	}
 	leaf := s.directory(t, b.leaf.ID)
 	file := s.file(t, b.files[3])
 	for _, store := range []*data.Store{s.store, s.baseline} {
-		got, err := s.mark(store, b.top.ID)
+		got, err := s.mark(store, b.top.ID, data.VersionOptions{})
 		if err != nil || got != (data.Marked{}) {
 			t.Errorf("MarkDeleting of a marked branch = %+v, %v, want nothing marked", got, err)
 		}
@@ -183,7 +183,7 @@ func (s *suite) markAgain(t *testing.T) {
 	}
 	straggler := s.insertDirectory(t, b.leaf.ID, "straggler")
 	s.insertFile(t, straggler, "straggler.txt", blobfs.StatusPending)
-	got, err := s.mark(s.store, b.top.ID)
+	got, err := s.mark(s.store, b.top.ID, data.VersionOptions{})
 	if err != nil || got != (data.Marked{Directories: 1, Files: 1}) {
 		t.Errorf("MarkDeleting after the stragglers = %+v, %v, want the straggling directory and file", got, err)
 	}
@@ -192,13 +192,13 @@ func (s *suite) markAgain(t *testing.T) {
 	}
 }
 
-// markAtVersion checks a mark under AtVersion against the baseline: a
-// stale version, the current one, a retry after the mark, and a missing
-// directory.
-func (s *suite) markAtVersion(t *testing.T) {
+// markGuarded checks a mark under a set VersionOptions.Version against
+// the baseline: a stale version, the current one, a retry after the mark,
+// and a missing directory.
+func (s *suite) markGuarded(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("at-version-%d-%s", i, t.Name()))
-		_, err := s.mark(store, b.top.ID, data.AtVersion(b.top.Version+1))
+		_, err := s.mark(store, b.top.ID, data.VersionOptions{Version: b.top.Version + 1})
 		if !errors.Is(err, query.ErrVersionMismatch) {
 			t.Errorf("MarkDeleting at a stale version = %v, want ErrVersionMismatch", err)
 		}
@@ -213,23 +213,23 @@ func (s *suite) markAtVersion(t *testing.T) {
 				t.Errorf("the refused mark changed the file %s to %+v", f.Name, f)
 			}
 		}
-		got, err := s.mark(store, b.top.ID, data.AtVersion(b.top.Version))
+		got, err := s.mark(store, b.top.ID, data.VersionOptions{Version: b.top.Version})
 		if err != nil || got != (data.Marked{Directories: 3, Files: 4}) {
 			t.Errorf("MarkDeleting at the current version = %+v, %v, want the branch marked", got, err)
 		}
-		got, err = s.mark(store, b.top.ID, data.AtVersion(b.top.Version))
+		got, err = s.mark(store, b.top.ID, data.VersionOptions{Version: b.top.Version})
 		if err != nil || got != (data.Marked{}) {
 			t.Errorf("MarkDeleting's retry at the version read before the mark = %+v, %v, want nothing marked", got, err)
 		}
 		straggler := s.insertDirectory(t, b.leaf.ID, "straggler")
-		got, err = s.mark(store, b.top.ID, data.AtVersion(b.top.Version+7))
+		got, err = s.mark(store, b.top.ID, data.VersionOptions{Version: b.top.Version + 7})
 		if err != nil || got != (data.Marked{Directories: 1}) {
 			t.Errorf("MarkDeleting's retry at a version the directory never had = %+v, %v, want the straggler marked", got, err)
 		}
 		if d := s.directory(t, straggler); d.Status != blobfs.DirectoryStatusDeleting {
 			t.Errorf("the retry left the straggler %s, want deleting", d.Status)
 		}
-		if _, err := s.mark(store, blobfs.NewID(), data.AtVersion(1)); !errors.Is(err, blobfs.ErrNotFound) {
+		if _, err := s.mark(store, blobfs.NewID(), data.VersionOptions{Version: 1}); !errors.Is(err, blobfs.ErrNotFound) {
 			t.Errorf("MarkDeleting(missing) at a version = %v, want ErrNotFound", err)
 		}
 	}
@@ -250,12 +250,12 @@ func (s *suite) markWaitsOnHold(t *testing.T) {
 				_ = holder.Rollback()
 			}
 		}()
-		if err := store.Files.Hold(s.ctx, holder, held); err != nil {
+		if err := store.Files.Hold(s.ctx, holder, held, data.VersionOptions{}); err != nil {
 			t.Fatalf("Hold: %v", err)
 		}
 		done := make(chan error, 1)
 		go func() {
-			_, err := s.mark(store, b.top.ID)
+			_, err := s.mark(store, b.top.ID, data.VersionOptions{})
 			done <- err
 		}()
 		wantBlocked(t, done, "the mark returned while the hold's transaction was open")
@@ -291,7 +291,7 @@ func (s *suite) markRacesAFileMove(t *testing.T) {
 		}
 		done := make(chan error, 1)
 		go func() {
-			_, err := s.mark(store, b.top.ID)
+			_, err := s.mark(store, b.top.ID, data.VersionOptions{})
 			done <- err
 		}()
 		wantBlocked(t, done, "the mark returned while the move's transaction was open")
@@ -309,7 +309,7 @@ func (s *suite) markRacesAFileMove(t *testing.T) {
 		outside = s.mkdir(t, fmt.Sprintf("kept-in-%d-%s", i, t.Name()))
 		kept := s.file(t, b.files[0])
 		marker := s.beginTx(t, nil)
-		if _, err := store.Directories.MarkDeleting(s.ctx, marker, b.top.ID); err != nil {
+		if _, err := store.Directories.MarkDeleting(s.ctx, marker, b.top.ID, data.VersionOptions{}); err != nil {
 			_ = marker.Rollback()
 			t.Fatalf("MarkDeleting: %v", err)
 		}
@@ -340,7 +340,7 @@ func (s *suite) markRacesAFileMove(t *testing.T) {
 // present.
 func (s *suite) deletingRefuses(t *testing.T) {
 	b := s.newBranch(t, "refuses-"+t.Name())
-	if _, err := s.mark(s.store, b.top.ID); err != nil {
+	if _, err := s.mark(s.store, b.top.ID, data.VersionOptions{}); err != nil {
 		t.Fatalf("MarkDeleting: %v", err)
 	}
 	outside := s.mkdir(t, "outside-"+t.Name())
@@ -356,25 +356,25 @@ func (s *suite) deletingRefuses(t *testing.T) {
 	}
 	createDir := func(parent, n string) func(*data.Store) error {
 		return func(store *data.Store) error {
-			_, err := store.Directories.Create(s.ctx, s.db, parent, n)
+			_, err := store.Directories.Create(s.ctx, s.db, parent, n, data.CreateOptions{})
 			return err
 		}
 	}
 	ensureDir := func(parent, n string) func(*data.Store) error {
 		return func(store *data.Store) error {
-			_, _, err := store.Directories.Ensure(s.ctx, s.db, parent, n)
+			_, _, err := store.Directories.Ensure(s.ctx, s.db, parent, n, data.CreateOptions{})
 			return err
 		}
 	}
 	createFile := func(dir, n string) func(*data.Store) error {
 		return func(store *data.Store) error {
-			_, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir, n, "text/plain")
+			_, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir, n, "text/plain", data.CreateOptions{})
 			return err
 		}
 	}
 	ensureFile := func(dir, n string) func(*data.Store) error {
 		return func(store *data.Store) error {
-			_, _, err := store.Files.Ensure(s.ctx, s.db, acceptAll{}, dir, n, "text/plain")
+			_, _, err := store.Files.Ensure(s.ctx, s.db, acceptAll{}, dir, n, "text/plain", data.CreateOptions{})
 			return err
 		}
 	}
@@ -410,7 +410,7 @@ func (s *suite) deletingRefuses(t *testing.T) {
 		{"RenameStragglingFile", moveFile(strayFile, b.mid.ID, "renamed.txt", 1)},
 		{"HoldAMarkedFile", func(store *data.Store) error {
 			_, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (struct{}, error) {
-				return struct{}{}, store.Files.Hold(s.ctx, tx, b.files[2])
+				return struct{}{}, store.Files.Hold(s.ctx, tx, b.files[2], data.VersionOptions{})
 			}, nil)
 			return err
 		}},
@@ -430,7 +430,7 @@ func (s *suite) deletingRefuses(t *testing.T) {
 			wantSameError(t, err, c.run(s.baseline))
 		})
 	}
-	if f, outcome, err := s.store.Files.Ensure(s.ctx, s.db, acceptAll{}, b.mid.ID, "mid.txt", "text/plain"); err != nil ||
+	if f, outcome, err := s.store.Files.Ensure(s.ctx, s.db, acceptAll{}, b.mid.ID, "mid.txt", "text/plain", data.CreateOptions{}); err != nil ||
 		outcome != data.WritePresent || f.Status != blobfs.StatusDeleting {
 		t.Errorf("Ensure of a marked file = %+v, %s, %v, want it present and deleting", f, outcome, err)
 	}

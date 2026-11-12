@@ -10,83 +10,47 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// Option configures New beyond its required arguments.
-type Option func(*options)
-
-// options collects what the options set.
-type options struct {
-	engine Engine
+// Options configures New beyond its required arguments. The zero Options
+// binds the baseline.
+type Options struct {
+	// Engine makes the store forward its variation points to the variant
+	// it builds instead of the baseline; New calls it once. See Engine.
+	Engine Engine
 }
 
-// WithEngine makes the store forward its variation points to the variant
-// e builds instead of the baseline. New calls e once. See Engine.
-func WithEngine(e Engine) Option {
-	return func(o *options) { o.engine = e }
-}
-
-// CreateOption configures one call of an operation that creates a row,
+// CreateOptions configures one call of an operation that creates a row,
 // Create or Ensure, beyond its required arguments.
-type CreateOption func(*createOptions)
-
-// createOptions collects what the create options set.
-type createOptions struct {
-	id    string
-	hasID bool
+type CreateOptions struct {
+	// ID is the id of the row the call inserts, so a seeded row keeps its
+	// id across resets. A set ID is checked with blobfs.ParseID before any
+	// SQL; an empty ID mints one. A row an Ensure finds keeps its own id.
+	ID string
 }
 
-// WithID supplies the id of the row the call inserts, in place of a minted
-// one, so a seeded row keeps its id across resets. It is checked with
-// blobfs.ParseID before any SQL; a row an Ensure finds keeps its own id.
-func WithID(id string) CreateOption {
-	return func(o *createOptions) {
-		o.id = id
-		o.hasID = true
-	}
-}
-
-// VersionOption configures a call that acts on a row the caller read,
+// VersionOptions configures a call that acts on a row the caller read,
 // beyond its required arguments: Files.Hold, Files.Delete,
-// Directories.Delete, Directories.MarkDeleting, Store.RemoveFileID, and,
-// as a RemoveOption, Store.RemoveFile.
-type VersionOption func(*versionOptions)
-
-// versionOptions collects what the version options set.
-type versionOptions struct {
-	version    int64
-	hasVersion bool
+// Directories.Delete, Directories.MarkDeleting, and Store.RemoveFileID.
+type VersionOptions struct {
+	// Version makes the call act on the row only at that version, the
+	// value the caller read from a listing or an earlier read; a row at
+	// another version is query.ErrVersionMismatch and is left as it is. A
+	// row already deleting is Files.Delete's or Directories.MarkDeleting's
+	// retry, which converges. A zero Version leaves the call unguarded:
+	// row versions start at 1.
+	Version int64
 }
 
-// at is the version AtVersion gave, or nil when none did.
-func (o versionOptions) at() *int64 {
-	if !o.hasVersion {
+// at is the version Version guards, or nil when the call is unguarded.
+func (o VersionOptions) at() *int64 {
+	return versionAt(o.Version)
+}
+
+// versionAt is version as a guard: nil, which guards nothing, for zero.
+func versionAt(version int64) *int64 {
+	if version == 0 {
 		return nil
 	}
-	return &o.version
-}
-
-// AtVersion makes the call act on the row only at version, the value the
-// caller read from a listing or an earlier read; a row at another version
-// is query.ErrVersionMismatch and is left as it is. A row already deleting
-// is Files.Delete's or Directories.MarkDeleting's retry, which converges.
-func AtVersion(version int64) VersionOption {
-	return func(o *versionOptions) {
-		o.version = version
-		o.hasVersion = true
-	}
-}
-
-// applyRemove makes a VersionOption a RemoveOption, so Store.RemoveFile
-// takes AtVersion as the other version calls do.
-func (opt VersionOption) applyRemove(o *removeOptions) { opt(&o.versionOptions) }
-
-// atVersion resolves a call's version options: the version AtVersion
-// gave, or nil when none did.
-func atVersion(opts []VersionOption) *int64 {
-	var o versionOptions
-	for _, opt := range opts {
-		opt(&o)
-	}
-	return o.at()
+	return &version
 }
 
 // withVersion binds version into args for a statement whose version
@@ -147,41 +111,22 @@ func OnComplete(fn func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error
 	return func(o *writeOptions) { o.onComplete = fn }
 }
 
-// RemoveOption configures one call of Store.RemoveFile beyond its required
-// arguments: AtVersion, a VersionOption, or OnDelete.
-type RemoveOption interface {
-	applyRemove(*removeOptions)
-}
+// RemoveOptions configures one call of Store.RemoveFile beyond its
+// required arguments.
+type RemoveOptions struct {
+	// Version guards the delete as VersionOptions.Version guards
+	// Files.Delete. A zero Version leaves the call unguarded.
+	Version int64
 
-// removeOptions collects what the remove options set.
-type removeOptions struct {
-	versionOptions
-	onDelete func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error
-}
-
-// removeFunc is a RemoveOption that is not also a VersionOption.
-type removeFunc func(*removeOptions)
-
-func (opt removeFunc) applyRemove(o *removeOptions) { opt(o) }
-
-// removeOpts resolves a call's remove options.
-func removeOpts(opts []RemoveOption) removeOptions {
-	var o removeOptions
-	for _, opt := range opts {
-		opt.applyRemove(&o)
-	}
-	return o
-}
-
-// OnDelete runs fn in the transaction that begins the delete, after pick
-// and Files.Delete have marked the file deleting, with the call's context
-// and the File as marked: where a consumer writes its own rows that must
-// commit exactly when the delete begins. A retry, which finds the file
-// already deleting, runs no hook and finishes the delete. An error from fn
-// rolls the transaction back, leaving the file as it was and its object in
-// place; the call returns an error wrapping fn's.
-func OnDelete(fn func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error) RemoveOption {
-	return removeFunc(func(o *removeOptions) { o.onDelete = fn })
+	// OnDelete runs in the transaction that begins the delete, after pick
+	// and Files.Delete have marked the file deleting, with the call's
+	// context and the File as marked: where a consumer writes its own rows
+	// that must commit exactly when the delete begins. A retry, which
+	// finds the file already deleting, runs no hook and finishes the
+	// delete. An error from it rolls the transaction back, leaving the
+	// file as it was and its object in place; the call returns an error
+	// wrapping it. A nil OnDelete runs no hook.
+	OnDelete func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error
 }
 
 // SweepOption configures one call of Store.Sweep beyond its required

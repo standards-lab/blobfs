@@ -7,7 +7,7 @@
 //   - Namespace is the pattern namespace blobfs publishes, and Patterns its
 //     pattern source, which a consumer registers in its catalog.
 //   - New compiles the statements once against that catalog into a Store;
-//     Option configures it, and WithEngine installs an Engine.
+//     Options configures it, and its Engine installs an Engine.
 //   - Engine builds a Variant, the variation points an engine implements
 //     natively, over the baseline it is given.
 //   - Store.Statements lists the compiled inventory, and Store.Verify
@@ -29,8 +29,8 @@
 //
 //   - ListOption configures a listing; IncludeDeleting lists deleting rows
 //     too.
-//   - CreateOption configures a create; WithID supplies the row's id.
-//   - VersionOption configures a guarded step; AtVersion names the
+//   - CreateOptions configures a create; its ID supplies the row's id.
+//   - VersionOptions configures a guarded step; its Version names the
 //     version.
 //   - SweepOption configures a sweep: Batch bounds a pass,
 //     OnRemoveDirectory runs the consumer's cleanup in each directory
@@ -39,8 +39,8 @@
 //   - WriteOption configures a write, Store.WriteFile's or
 //     Store.EnsureFile's: OnComplete runs the consumer's function in the
 //     transaction of the completion the call itself makes.
-//   - RemoveOption configures Store.RemoveFile: AtVersion, a VersionOption,
-//     names the version, and OnDelete runs the consumer's function in the
+//   - RemoveOptions configures Store.RemoveFile: its Version names the
+//     version, and its OnDelete runs the consumer's function in the
 //     transaction that marks the file deleting.
 //
 // The protocols, which run the steps end to end over the consumer's object

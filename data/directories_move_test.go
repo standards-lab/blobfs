@@ -230,7 +230,7 @@ func TestMarkDeleting(t *testing.T) {
 	ctx := context.Background()
 	for _, root := range rootSpellings {
 		s, db, rec := openStore(t, fallback)
-		if _, err := s.Directories.MarkDeleting(ctx, begin(t, db), root); !errors.Is(err, blobfs.ErrRootDirectory) {
+		if _, err := s.Directories.MarkDeleting(ctx, begin(t, db), root, data.VersionOptions{}); !errors.Is(err, blobfs.ErrRootDirectory) {
 			t.Errorf("MarkDeleting(%s) = %v, want ErrRootDirectory", root, err)
 		}
 		if got := ops(rec); got != "begin" {
@@ -239,7 +239,7 @@ func TestMarkDeleting(t *testing.T) {
 	}
 
 	s, db, rec := openStore(t, fallback, sqltest.Response{Affected: 3}, sqltest.Response{Affected: 5})
-	marked, err := s.Directories.MarkDeleting(ctx, begin(t, db), "D")
+	marked, err := s.Directories.MarkDeleting(ctx, begin(t, db), "D", data.VersionOptions{})
 	if err != nil || marked != (data.Marked{Directories: 3, Files: 5}) {
 		t.Fatalf("MarkDeleting = %+v, %v, want 3 directories and 5 files", marked, err)
 	}
@@ -254,7 +254,7 @@ func TestMarkDeleting(t *testing.T) {
 	}
 
 	s, db, rec = openStore(t, fallback, sqltest.Response{Affected: 0}, noDirectory())
-	if _, err := s.Directories.MarkDeleting(ctx, begin(t, db), "D"); !errors.Is(err, blobfs.ErrNotFound) {
+	if _, err := s.Directories.MarkDeleting(ctx, begin(t, db), "D", data.VersionOptions{}); !errors.Is(err, blobfs.ErrNotFound) {
 		t.Errorf("MarkDeleting of a missing directory = %v, want ErrNotFound", err)
 	}
 	if got := ops(rec); got != "begin exec query" {
@@ -262,7 +262,7 @@ func TestMarkDeleting(t *testing.T) {
 	}
 
 	s, db, _ = openStore(t, fallback, sqltest.Response{Affected: 0}, directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusDeleting, 2), sqltest.Response{Affected: 1})
-	marked, err = s.Directories.MarkDeleting(ctx, begin(t, db), "D")
+	marked, err = s.Directories.MarkDeleting(ctx, begin(t, db), "D", data.VersionOptions{})
 	if err != nil || marked != (data.Marked{Files: 1}) {
 		t.Errorf("MarkDeleting of a marked branch = %+v, %v, want no directory and the one straggling file", marked, err)
 	}
@@ -271,7 +271,7 @@ func TestMarkDeleting(t *testing.T) {
 	// directory at another version is told apart by the read, and the
 	// files' update does not run.
 	s, db, rec = openStore(t, fallback, sqltest.Response{Affected: 0}, directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusActive, 3))
-	if _, err := s.Directories.MarkDeleting(ctx, begin(t, db), "D", data.AtVersion(2)); !errors.Is(err, query.ErrVersionMismatch) {
+	if _, err := s.Directories.MarkDeleting(ctx, begin(t, db), "D", data.VersionOptions{Version: 2}); !errors.Is(err, query.ErrVersionMismatch) {
 		t.Errorf("MarkDeleting at a stale version = %v, want ErrVersionMismatch", err)
 	}
 	if got := ops(rec); got != "begin exec query" {
@@ -283,7 +283,7 @@ func TestMarkDeleting(t *testing.T) {
 
 	// A branch deleting already is the mark's retry, whatever the version.
 	s, db, _ = openStore(t, fallback, sqltest.Response{Affected: 0}, directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusDeleting, 3), sqltest.Response{Affected: 0})
-	if marked, err := s.Directories.MarkDeleting(ctx, begin(t, db), "D", data.AtVersion(1)); err != nil || marked != (data.Marked{}) {
+	if marked, err := s.Directories.MarkDeleting(ctx, begin(t, db), "D", data.VersionOptions{Version: 1}); err != nil || marked != (data.Marked{}) {
 		t.Errorf("MarkDeleting's retry at an old version = %+v, %v, want nothing marked", marked, err)
 	}
 }

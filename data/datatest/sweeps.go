@@ -259,7 +259,7 @@ func (s *suite) sweepBranch(t *testing.T) {
 		kept := s.insertFile(t, sibling.ID, "kept.txt", blobfs.StatusAvailable)
 		s.own(t, b.top.ID)
 		keys := s.keys(t, branchFiles(b)...)
-		if _, err := s.mark(store, b.top.ID); err != nil {
+		if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 			t.Fatalf("MarkDeleting: %v", err)
 		}
 		objects := newObjectStore()
@@ -291,7 +291,7 @@ func (s *suite) sweepCrash(t *testing.T) {
 		b := s.newBranch(t, fmt.Sprintf("crash-%d-%s", i, t.Name()))
 		ids := branchFiles(b)
 		keys := s.keys(t, ids...)
-		if _, err := s.mark(store, b.top.ID); err != nil {
+		if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 			t.Fatalf("MarkDeleting: %v", err)
 		}
 		objects := newObjectStore()
@@ -340,7 +340,7 @@ func (s *suite) sweepCrash(t *testing.T) {
 func (s *suite) sweepStragglers(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("stragglers-%d-%s", i, t.Name()))
-		if _, err := s.mark(store, b.top.ID); err != nil {
+		if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 			t.Fatalf("MarkDeleting: %v", err)
 		}
 		dir := s.insertDirectory(t, b.leaf.ID, "straggler")
@@ -372,7 +372,7 @@ func (s *suite) sweepBatch(t *testing.T) {
 		} {
 			b := s.newBranch(t, fmt.Sprintf("batch-%d-%d-%s", c.batch, i, t.Name()))
 			keys := s.keys(t, branchFiles(b)...)
-			if _, err := s.mark(store, b.top.ID); err != nil {
+			if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 				t.Fatalf("MarkDeleting: %v", err)
 			}
 			objects := newObjectStore()
@@ -393,7 +393,7 @@ func (s *suite) sweepHookAborts(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("hook-%d-%s", i, t.Name()))
 		s.own(t, b.top.ID)
-		if _, err := s.mark(store, b.top.ID); err != nil {
+		if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 			t.Fatalf("MarkDeleting: %v", err)
 		}
 		h := &hooks{s: s, failOn: b.mid.ID}
@@ -432,7 +432,7 @@ func (s *suite) sweepRefusalDoesNotBlock(t *testing.T) {
 		free := s.newBranch(t, fmt.Sprintf("free-%d-%s", i, t.Name()))
 		s.own(t, stuck.top.ID)
 		for _, b := range []branch{stuck, free} {
-			if _, err := s.mark(store, b.top.ID); err != nil {
+			if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 				t.Fatalf("MarkDeleting: %v", err)
 			}
 		}
@@ -467,7 +467,7 @@ func (s *suite) sweepRefusedRootAtBatchOne(t *testing.T) {
 		free := s.newBranch(t, fmt.Sprintf("free-one-%d-%s", i, t.Name()))
 		s.own(t, stuck.top.ID)
 		for _, b := range []branch{stuck, free} {
-			if _, err := s.mark(store, b.top.ID); err != nil {
+			if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 				t.Fatalf("MarkDeleting: %v", err)
 			}
 		}
@@ -570,7 +570,7 @@ func (s *suite) sweepStale(t *testing.T) {
 		for _, id := range []string{abandoned, young, available, stopped, starting} {
 			before[id] = s.file(t, id)
 		}
-		_, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "stopped.txt", "text/plain")
+		_, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "stopped.txt", "text/plain", data.CreateOptions{})
 		if errors.Is(err, blobfs.ErrNameTaken) {
 			t.Errorf("Create over the stopped delete's name = %v, want its DeletingError and not ErrNameTaken", err)
 		}
@@ -598,7 +598,7 @@ func (s *suite) sweepStale(t *testing.T) {
 				t.Errorf("the reclaim changed %s to\n%+v\nfrom\n%+v", f.Name, f, before[id])
 			}
 		}
-		if f, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "stopped.txt", "text/plain"); err != nil || f.Status != blobfs.StatusPending {
+		if f, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "stopped.txt", "text/plain", data.CreateOptions{}); err != nil || f.Status != blobfs.StatusPending {
 			t.Errorf("Create over the finished delete's name = %+v, %v, want a new pending row", f, err)
 		}
 	}
@@ -632,7 +632,7 @@ func (s *suite) sweepConcurrent(t *testing.T) {
 			b := s.newBranch(t, fmt.Sprintf("concurrent-%d-%d-%s", i, j, t.Name()))
 			s.own(t, b.top.ID)
 			keys = append(keys, s.keys(t, branchFiles(b)...)...)
-			if _, err := s.mark(store, b.top.ID); err != nil {
+			if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 				t.Fatalf("MarkDeleting: %v", err)
 			}
 			branches = append(branches, b)

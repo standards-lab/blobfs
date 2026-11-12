@@ -110,7 +110,7 @@ func create(ctx context.Context, s *data.Store, own func(*sqlate.Tx) error) func
 		if err := own(tx); err != nil {
 			return blobfs.File{}, err
 		}
-		return s.Files.Create(ctx, tx, accepting{}, protocolDir, "report.txt", "text/plain")
+		return s.Files.Create(ctx, tx, accepting{}, protocolDir, "report.txt", "text/plain", data.CreateOptions{})
 	}
 }
 
@@ -347,7 +347,7 @@ func TestWriteOnCompleteRefuses(t *testing.T) {
 // may find a row that is no longer pending.
 func found(ctx context.Context, s *data.Store) func(*sqlate.Tx) (blobfs.File, error) {
 	return func(tx *sqlate.Tx) (blobfs.File, error) {
-		f, _, err := s.Files.Ensure(ctx, tx, accepting{}, protocolDir, "report.txt", "text/plain")
+		f, _, err := s.Files.Ensure(ctx, tx, accepting{}, protocolDir, "report.txt", "text/plain", data.CreateOptions{})
 		return f, err
 	}
 }
@@ -450,7 +450,7 @@ func TestWriteCleansUpAfterCancellation(t *testing.T) {
 // file under the fixed id.
 func ensure(ctx context.Context, s *data.Store) func(*sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
 	return func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
-		return s.Files.Ensure(ctx, tx, accepting{}, protocolDir, "report.txt", "text/plain", data.WithID(protocolFile))
+		return s.Files.Ensure(ctx, tx, accepting{}, protocolDir, "report.txt", "text/plain", data.CreateOptions{ID: protocolFile})
 	}
 }
 
@@ -512,9 +512,9 @@ func TestEnsureWritePresent(t *testing.T) {
 // TestEnsureWriteUnderAnotherID checks a row found by the name under
 // another id, an upload of the same name, is left as it stands, nothing
 // put over its object and nothing removed, and reported as the taken
-// name, or as its DeletingError when it is deleting; a row a begin without
-// WithID(id) created under another id is abandoned at its version, nothing
-// put, and reported naming both ids.
+// name, or as its DeletingError when it is deleting; a row a begin
+// without CreateOptions{ID: id} created under another id is abandoned at
+// its version, nothing put, and reported naming both ids.
 func TestEnsureWriteUnderAnotherID(t *testing.T) {
 	const other = "00000000-0000-7000-8000-0000000000c1"
 	for _, status := range []blobfs.Status{blobfs.StatusPending, blobfs.StatusAvailable} {
@@ -557,7 +557,7 @@ func TestEnsureWriteUnderAnotherID(t *testing.T) {
 		)
 		objects := newObjectStore()
 		minted := func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
-			return s.Files.Ensure(ctx, tx, accepting{}, protocolDir, "report.txt", "text/plain")
+			return s.Files.Ensure(ctx, tx, accepting{}, protocolDir, "report.txt", "text/plain", data.CreateOptions{})
 		}
 		got, stored, err := s.EnsureFile(ctx, db, objects, protocolFile, strings.NewReader("report"), 6, minted)
 		if err == nil || errors.Is(err, blobfs.ErrNameTaken) || stored || got.ID != "" ||
@@ -863,7 +863,7 @@ func TestRemove(t *testing.T) {
 	err := s.RemoveFile(ctx, db, objects, func(tx *sqlate.Tx) (string, error) {
 		_, err := tx.ExecContext(ctx, "DELETE FROM owner WHERE file_id = $1", protocolFile)
 		return protocolFile, err
-	}, data.AtVersion(2))
+	}, data.RemoveOptions{Version: 2})
 	if err != nil {
 		t.Fatalf("Remove = %v", err)
 	}
@@ -880,7 +880,7 @@ func TestRemove(t *testing.T) {
 
 	s, db, rec = openStore(t, single)
 	refused := errors.New("out of scope")
-	if err := s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return "", refused }); !errors.Is(err, refused) || strings.Contains(err.Error(), "data: ") {
+	if err := s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return "", refused }, data.RemoveOptions{}); !errors.Is(err, refused) || strings.Contains(err.Error(), "data: ") {
 		t.Fatalf("Remove = %v, want pick's error as it came", err)
 	}
 	if ops(rec) != "begin rollback" || len(objects.deletes) != 1 {
@@ -888,7 +888,7 @@ func TestRemove(t *testing.T) {
 	}
 
 	s, db, _ = openStore(t, single, unchangedFile(single, fileIn(protocolFile, protocolDir, "report.txt", blobfs.StatusAvailable, 3))...)
-	err = s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, data.AtVersion(2))
+	err = s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, data.RemoveOptions{Version: 2})
 	if !errors.Is(err, query.ErrVersionMismatch) || !strings.HasPrefix(err.Error(), "data: remove file "+protocolFile+": ") {
 		t.Errorf("Remove at a stale version = %v, want ErrVersionMismatch, named", err)
 	}
@@ -904,15 +904,15 @@ func TestRemoveOnDelete(t *testing.T) {
 	objects := newObjectStore()
 	objects.objects[protocolKey] = "report"
 	var hooked blobfs.File
-	hook := data.OnDelete(func(hctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+	hook := func(hctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
 		if hctx.Value(callerKey{}) != "caller" {
 			t.Error("the hook ran under another context than the call's")
 		}
 		hooked = f
 		_, err := tx.ExecContext(hctx, "DELETE FROM owner WHERE file_id = $1", f.ID)
 		return err
-	})
-	err := s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, data.AtVersion(2), hook)
+	}
+	err := s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, data.RemoveOptions{Version: 2, OnDelete: hook})
 	if err != nil {
 		t.Fatalf("Remove = %v", err)
 	}
@@ -943,11 +943,11 @@ func TestRemoveOnDeleteRetried(t *testing.T) {
 	objects := newObjectStore()
 	objects.objects[protocolKey] = "report"
 	ran := 0
-	hook := data.OnDelete(func(context.Context, *sqlate.Tx, blobfs.File) error {
+	hook := func(context.Context, *sqlate.Tx, blobfs.File) error {
 		ran++
 		return nil
-	})
-	if err := s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, hook); err != nil {
+	}
+	if err := s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, data.RemoveOptions{OnDelete: hook}); err != nil {
 		t.Fatalf("Remove retried = %v", err)
 	}
 	if ran != 0 {
@@ -971,13 +971,13 @@ func TestRemoveOnDeleteRefuses(t *testing.T) {
 	objects := newObjectStore()
 	objects.objects[protocolKey] = "report"
 	refused := errors.New("the consumer refuses")
-	hook := data.OnDelete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+	hook := func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM owner WHERE file_id = $1", f.ID); err != nil {
 			return err
 		}
 		return refused
-	})
-	err := s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, hook)
+	}
+	err := s.RemoveFile(ctx, db, objects, func(*sqlate.Tx) (string, error) { return protocolFile, nil }, data.RemoveOptions{OnDelete: hook})
 	if !errors.Is(err, refused) || !strings.HasPrefix(err.Error(), "data: remove file "+protocolFile+": the hook: ") {
 		t.Fatalf("Remove = %v, want the hook's error, named", err)
 	}
@@ -998,7 +998,7 @@ func TestRemoveFileID(t *testing.T) {
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusDeleting, 3), sqltest.Response{Affected: 1}, noFile(), noFile())
 	objects := newObjectStore()
 	objects.objects[protocolKey] = "report"
-	if err := s.RemoveFileID(ctx, db, objects, protocolFile, data.AtVersion(2)); err != nil {
+	if err := s.RemoveFileID(ctx, db, objects, protocolFile, data.VersionOptions{Version: 2}); err != nil {
 		t.Fatalf("RemoveFileID = %v", err)
 	}
 	if objects.stored() {
@@ -1010,7 +1010,7 @@ func TestRemoveFileID(t *testing.T) {
 	if del := rec.Calls()[1]; !slices.Equal(del.Args, []any{protocolFile, int64(2)}) {
 		t.Errorf("the delete bound %v, want the file at the guarded version", del.Args)
 	}
-	err := s.RemoveFileID(ctx, db, objects, protocolFile)
+	err := s.RemoveFileID(ctx, db, objects, protocolFile, data.VersionOptions{})
 	if !errors.Is(err, blobfs.ErrNotFound) || !strings.HasPrefix(err.Error(), "data: remove file "+protocolFile+": ") {
 		t.Errorf("RemoveFileID retried after it finished = %v, want ErrNotFound, named", err)
 	}

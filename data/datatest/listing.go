@@ -83,7 +83,7 @@ func (s *suite) seedListing(t *testing.T) listingFixture {
 	marked := s.mkdirUnder(t, f.dirs[d1], "a-marked")
 	s.mkdirUnder(t, marked.ID, "a-child")
 	s.insertFile(t, marked.ID, "a1", blobfs.StatusAvailable)
-	if _, err := s.mark(s.store, marked.ID); err != nil {
+	if _, err := s.mark(s.store, marked.ID, data.VersionOptions{}); err != nil {
 		t.Fatalf("MarkDeleting: %v", err)
 	}
 	return f

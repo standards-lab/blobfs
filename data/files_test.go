@@ -168,7 +168,7 @@ func TestCreateFileForms(t *testing.T) {
 		if c.inTx {
 			sess = begin(t, db)
 		}
-		f, err := s.Files.Create(ctx, sess, accepting{}, blobfs.RootID, nfdName, "application/pdf", data.WithID(id))
+		f, err := s.Files.Create(ctx, sess, accepting{}, blobfs.RootID, nfdName, "application/pdf", data.CreateOptions{ID: id})
 		if err != nil || f.ID != id || f.Status != blobfs.StatusPending || f.Key != id+"/"+nfcName {
 			t.Fatalf("%s (in tx %v): Create = %+v, %v, want the pending row", c.form.name, c.inTx, f, err)
 		}
@@ -186,7 +186,7 @@ func TestCreateFileForms(t *testing.T) {
 
 	// A minted id is a UUID, and the key and the read are built from it.
 	s, db, rec := openStore(t, fallback, sqltest.Response{Affected: 1}, fileResponse("F", "a.txt", blobfs.StatusPending, 1))
-	if _, err := s.Files.Create(ctx, db, accepting{}, blobfs.RootID, "a.txt", "text/plain"); err != nil {
+	if _, err := s.Files.Create(ctx, db, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.CreateOptions{}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	calls := rec.Calls()
@@ -202,18 +202,18 @@ func TestCreateFileRefusals(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
 	for _, name := range []string{"", "a/b", ".."} {
-		if _, err := s.Files.Create(ctx, db, accepting{}, blobfs.RootID, name, "text/plain"); !errors.Is(err, blobfs.ErrInvalidName) {
+		if _, err := s.Files.Create(ctx, db, accepting{}, blobfs.RootID, name, "text/plain", data.CreateOptions{}); !errors.Is(err, blobfs.ErrInvalidName) {
 			t.Errorf("Create(%q) = %v, want ErrInvalidName", name, err)
 		}
 	}
 	cause := errors.New("the store says no")
-	_, err := s.Files.Create(ctx, db, refusing{cause}, blobfs.RootID, "ok.txt", "text/plain")
+	_, err := s.Files.Create(ctx, db, refusing{cause}, blobfs.RootID, "ok.txt", "text/plain", data.CreateOptions{})
 	var ke *blobfs.KeyError
 	if !errors.Is(err, blobfs.ErrInvalidKey) || !errors.Is(err, cause) || !errors.As(err, &ke) || !strings.HasSuffix(ke.Key, "/ok.txt") {
 		t.Errorf("Create with a refusing store = %v, want a KeyError matching ErrInvalidKey and wrapping the cause", err)
 	}
-	for _, id := range []string{blobfs.RootID, "", "not-a-uuid"} {
-		if _, err := s.Files.Create(ctx, db, accepting{}, blobfs.RootID, "ok.txt", "text/plain", data.WithID(id)); !errors.Is(err, blobfs.ErrInvalidID) {
+	for _, id := range []string{blobfs.RootID, "not-a-uuid"} {
+		if _, err := s.Files.Create(ctx, db, accepting{}, blobfs.RootID, "ok.txt", "text/plain", data.CreateOptions{ID: id}); !errors.Is(err, blobfs.ErrInvalidID) {
 			t.Errorf("Create with the id %q = %v, want ErrInvalidID", id, err)
 		}
 	}
@@ -232,7 +232,7 @@ func TestCreateFileRefusals(t *testing.T) {
 			{blobfs.ConstraintPrimaryKeyFile, sqlate.ErrUniqueViolation, blobfs.ErrIDTaken},
 		} {
 			s, db, _ := openStore(t, f, violation(c.constraint, c.class))
-			_, err := s.Files.Create(ctx, db, accepting{}, blobfs.RootID, "ok.txt", "text/plain")
+			_, err := s.Files.Create(ctx, db, accepting{}, blobfs.RootID, "ok.txt", "text/plain", data.CreateOptions{})
 			var ve *blobfs.ViolationError
 			if !errors.Is(err, c.want) || !errors.As(err, &ve) || ve.Constraint != c.constraint {
 				t.Errorf("%s: Create under %s = %v, want %v", f.name, c.constraint, err, c.want)
@@ -253,7 +253,7 @@ func TestCreateFileRefusals(t *testing.T) {
 			{directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusDeleting, 2), blobfs.ErrDeleting},
 		} {
 			s, db, rec := openStore(t, f, append(unchangedFile(f, noFile()), c.directory)...)
-			_, err := s.Files.Create(ctx, db, accepting{}, "D", "ok.txt", "text/plain")
+			_, err := s.Files.Create(ctx, db, accepting{}, "D", "ok.txt", "text/plain", data.CreateOptions{})
 			var ve *blobfs.ViolationError
 			if !errors.Is(err, c.want) || errors.As(err, &ve) {
 				t.Errorf("%s: Create under a directory the insert did not select = %v, want %v", f.name, err, c.want)
@@ -295,7 +295,7 @@ func TestCreateFileRefusals(t *testing.T) {
 			{"an available holder twice", append([]sqltest.Response{fileIn("H", "D", "ok.txt", blobfs.StatusAvailable, 1)}, again(fileIn("H", "D", "ok.txt", blobfs.StatusAvailable, 1))...), errUnexplained, false, "", 2},
 		} {
 			s, db, rec := openStore(t, f, append(append(unchangedFile(f, noFile()), active), c.reads...)...)
-			file, err := s.Files.Create(ctx, db, accepting{}, "D", "ok.txt", "text/plain")
+			file, err := s.Files.Create(ctx, db, accepting{}, "D", "ok.txt", "text/plain", data.CreateOptions{})
 			switch c.want {
 			case nil:
 				if err != nil || file.ID != "N" {
@@ -331,12 +331,12 @@ func TestCreateFileRefusals(t *testing.T) {
 	// selected nothing a success: the read found that row unchanged.
 	s, db, _ = openStore(t, fallback, sqltest.Response{Affected: 0}, fileResponse("F", "other.txt", blobfs.StatusAvailable, 1),
 		directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusDeleting, 2))
-	if _, err = s.Files.Create(ctx, db, accepting{}, "D", "ok.txt", "text/plain", data.WithID(blobfs.NewID())); !errors.Is(err, blobfs.ErrDeleting) {
+	if _, err = s.Files.Create(ctx, db, accepting{}, "D", "ok.txt", "text/plain", data.CreateOptions{ID: blobfs.NewID()}); !errors.Is(err, blobfs.ErrDeleting) {
 		t.Errorf("Create whose read found another row = %v, want ErrDeleting", err)
 	}
 
 	s, db, _ = openStore(t, fallback, violation("blobfs_ck_file_name", sqlate.ErrCheckViolation))
-	_, err = s.Files.Create(ctx, db, accepting{}, blobfs.RootID, "ok.txt", "text/plain")
+	_, err = s.Files.Create(ctx, db, accepting{}, blobfs.RootID, "ok.txt", "text/plain", data.CreateOptions{})
 	var ve *blobfs.ViolationError
 	if !errors.Is(err, sqlate.ErrCheckViolation) || errors.As(err, &ve) || !strings.Contains(err.Error(), "duplicate key") {
 		t.Errorf("Create under a check violation = %v, want the driver's error unclassified", err)
@@ -352,7 +352,7 @@ func TestCreateFileKeyBoundary(t *testing.T) {
 	// limit exactly.
 	fits := strings.Repeat(nfcName[3:], limit-37)
 	s, db, rec := openStore(t, forms[1], fileResponse("F", fits, blobfs.StatusPending, 1))
-	if _, err := s.Files.Create(ctx, db, runeLimit(limit), blobfs.RootID, fits, "text/plain"); err != nil {
+	if _, err := s.Files.Create(ctx, db, runeLimit(limit), blobfs.RootID, fits, "text/plain", data.CreateOptions{}); err != nil {
 		t.Fatalf("Create at the boundary: %v", err)
 	}
 	key, _ := rec.Calls()[0].Args[2].(string)
@@ -361,7 +361,7 @@ func TestCreateFileKeyBoundary(t *testing.T) {
 	}
 
 	s, db, rec = openStore(t, forms[1])
-	if _, err := s.Files.Create(ctx, db, runeLimit(limit), blobfs.RootID, fits+nfcName[3:], "text/plain"); !errors.Is(err, blobfs.ErrInvalidKey) {
+	if _, err := s.Files.Create(ctx, db, runeLimit(limit), blobfs.RootID, fits+nfcName[3:], "text/plain", data.CreateOptions{}); !errors.Is(err, blobfs.ErrInvalidKey) {
 		t.Fatalf("Create one rune over = %v, want ErrInvalidKey", err)
 	}
 	if calls := rec.Calls(); len(calls) != 0 {
@@ -381,7 +381,7 @@ func TestEnsureFile(t *testing.T) {
 			}
 
 			s, db, rec := openStore(t, f, append([]sqltest.Response{noFile()}, changedFile(f, fileResponse("N", "a.txt", blobfs.StatusPending, 1))...)...)
-			file, outcome, err := s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "a.txt", "text/plain")
+			file, outcome, err := s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.CreateOptions{})
 			if err != nil || outcome != data.WriteCreated || file.ID != "N" {
 				t.Fatalf("Ensure of a free name = %+v, %v, %v; want the pending row created", file, outcome, err)
 			}
@@ -398,7 +398,7 @@ func TestEnsureFile(t *testing.T) {
 				blobfs.StatusDeleting:  data.WritePresent,
 			} {
 				s, db, rec := openStore(t, f, fileResponse("P", "a.txt", status, 2))
-				file, outcome, err := s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.WithID(blobfs.NewID()))
+				file, outcome, err := s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.CreateOptions{ID: blobfs.NewID()})
 				if err != nil || outcome != want || file.ID != "P" || file.Status != status {
 					t.Errorf("Ensure over a %s row = %+v, %v, %v; want the row as it is and %s", status, file, outcome, err, want)
 				}
@@ -409,7 +409,7 @@ func TestEnsureFile(t *testing.T) {
 
 			for status, want := range map[blobfs.Status]data.WriteOutcome{blobfs.StatusPending: data.WriteResumed, blobfs.StatusAvailable: data.WritePresent} {
 				s, db, rec := openStore(t, f, noFile(), violation(blobfs.ConstraintUniqueFileDirectoryName, sqlate.ErrUniqueViolation), fileResponse("C", "a.txt", status, 1))
-				file, outcome, err := s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "a.txt", "text/plain")
+				file, outcome, err := s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.CreateOptions{})
 				if err != nil || outcome != want || file.ID != "C" {
 					t.Errorf("Ensure under a concurrent %s writer = %+v, %v, %v; want the writer's row and %s", status, file, outcome, err, want)
 				}
@@ -423,7 +423,7 @@ func TestEnsureFile(t *testing.T) {
 			// found when it carries the id; otherwise the id stays taken.
 			id := blobfs.NewID()
 			s, db, rec = openStore(t, f, noFile(), violation(blobfs.ConstraintPrimaryKeyFile, sqlate.ErrUniqueViolation), fileResponse(id, "a.txt", blobfs.StatusPending, 1))
-			file, outcome, err = s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.WithID(strings.ToUpper(id)))
+			file, outcome, err = s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.CreateOptions{ID: strings.ToUpper(id)})
 			if err != nil || outcome != data.WriteResumed || file.ID != id {
 				t.Errorf("Ensure under a concurrent writer of the same id = %+v, %v, %v; want the writer's row resumed", file, outcome, err)
 			}
@@ -432,7 +432,7 @@ func TestEnsureFile(t *testing.T) {
 			}
 			for _, again := range []sqltest.Response{fileResponse(blobfs.NewID(), "a.txt", blobfs.StatusPending, 1), noFile()} {
 				s, db, rec = openStore(t, f, noFile(), violation(blobfs.ConstraintPrimaryKeyFile, sqlate.ErrUniqueViolation), again)
-				_, _, err = s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.WithID(id))
+				_, _, err = s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.CreateOptions{ID: id})
 				if !errors.Is(err, blobfs.ErrIDTaken) || errors.Is(err, blobfs.ErrNameTaken) {
 					t.Errorf("Ensure under an id taken by a row elsewhere = %v, want ErrIDTaken", err)
 				}
@@ -444,7 +444,7 @@ func TestEnsureFile(t *testing.T) {
 			// joined.
 			errLookup := errors.New("the lookup failed")
 			s, db, _ = openStore(t, f, noFile(), violation(blobfs.ConstraintPrimaryKeyFile, sqlate.ErrUniqueViolation), sqltest.Response{Err: errLookup})
-			_, _, err = s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.WithID(id))
+			_, _, err = s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.CreateOptions{ID: id})
 			if !errors.Is(err, blobfs.ErrIDTaken) || !errors.Is(err, errLookup) {
 				t.Errorf("Ensure under a taken id whose lookup failed = %v, want ErrIDTaken joined to the lookup's failure", err)
 			}
@@ -452,7 +452,7 @@ func TestEnsureFile(t *testing.T) {
 			// second lookup, since it may have aborted the transaction.
 			s, db, rec = openStore(t, f, noFile(), violation(blobfs.ConstraintPrimaryKeyFile, sqlate.ErrUniqueViolation))
 			_, err = db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
-				file, _, err := s.Files.Ensure(ctx, tx, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.WithID(id))
+				file, _, err := s.Files.Ensure(ctx, tx, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.CreateOptions{ID: id})
 				return file, err
 			}, nil)
 			if !errors.Is(err, blobfs.ErrIDTaken) {
@@ -468,7 +468,7 @@ func TestEnsureFile(t *testing.T) {
 
 			s, db, rec = openStore(t, f, noFile(), violation(blobfs.ConstraintUniqueFileDirectoryName, sqlate.ErrUniqueViolation))
 			_, err = db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
-				file, _, err := s.Files.Ensure(ctx, tx, accepting{}, blobfs.RootID, "a.txt", "text/plain")
+				file, _, err := s.Files.Ensure(ctx, tx, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.CreateOptions{})
 				return file, err
 			}, nil)
 			if !errors.Is(err, blobfs.ErrNameTaken) {
@@ -498,7 +498,7 @@ func TestEnsureFile(t *testing.T) {
 						outcome data.WriteOutcome
 					}
 					run := func(sess sqlate.Session) (ensured, error) {
-						file, outcome, err := s.Files.Ensure(ctx, sess, accepting{}, blobfs.RootID, "a.txt", "text/plain")
+						file, outcome, err := s.Files.Ensure(ctx, sess, accepting{}, blobfs.RootID, "a.txt", "text/plain", data.CreateOptions{})
 						return ensured{file, outcome}, err
 					}
 					var e ensured
@@ -534,15 +534,15 @@ func TestEnsureFile(t *testing.T) {
 func TestEnsureFileRefusals(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
-	if _, _, err := s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "a/b", "text/plain"); !errors.Is(err, blobfs.ErrInvalidName) {
+	if _, _, err := s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "a/b", "text/plain", data.CreateOptions{}); !errors.Is(err, blobfs.ErrInvalidName) {
 		t.Errorf("Ensure(a/b) = %v, want ErrInvalidName", err)
 	}
 	cause := errors.New("the store says no")
-	if _, _, err := s.Files.Ensure(ctx, db, refusing{cause}, blobfs.RootID, "ok.txt", "text/plain"); !errors.Is(err, blobfs.ErrInvalidKey) || !errors.Is(err, cause) {
+	if _, _, err := s.Files.Ensure(ctx, db, refusing{cause}, blobfs.RootID, "ok.txt", "text/plain", data.CreateOptions{}); !errors.Is(err, blobfs.ErrInvalidKey) || !errors.Is(err, cause) {
 		t.Errorf("Ensure with a refusing store = %v, want ErrInvalidKey wrapping the cause", err)
 	}
-	for _, id := range []string{blobfs.RootID, "", "not-a-uuid"} {
-		if _, _, err := s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "ok.txt", "text/plain", data.WithID(id)); !errors.Is(err, blobfs.ErrInvalidID) {
+	for _, id := range []string{blobfs.RootID, "not-a-uuid"} {
+		if _, _, err := s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "ok.txt", "text/plain", data.CreateOptions{ID: id}); !errors.Is(err, blobfs.ErrInvalidID) {
 			t.Errorf("Ensure with the id %q = %v, want ErrInvalidID", id, err)
 		}
 	}

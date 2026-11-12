@@ -8,6 +8,7 @@ import (
 	"github.com/standards-lab/sqlate/query"
 
 	"github.com/standards-lab/blobfs"
+	"github.com/standards-lab/blobfs/data"
 )
 
 // moves checks the tree lock and the directory move.
@@ -192,13 +193,13 @@ func (s *suite) moveDirectoryRefusals(t *testing.T) {
 	p := s.mkdir(t, "taken-"+t.Name())
 	s.mkdirUnder(t, p.ID, "held")
 	held := s.mkdirUnder(t, p.ID, "held-deleting")
-	if _, err := s.mark(s.store, held.ID); err != nil {
+	if _, err := s.mark(s.store, held.ID, data.VersionOptions{}); err != nil {
 		t.Fatalf("MarkDeleting: %v", err)
 	}
 	// The marked branch is removed once the refusals ran, so no later
 	// group's sweep finds it.
 	t.Cleanup(func() {
-		if err := s.store.Directories.Delete(s.ctx, s.db, held.ID); err != nil {
+		if err := s.store.Directories.Delete(s.ctx, s.db, held.ID, data.VersionOptions{}); err != nil {
 			t.Errorf("remove the deleting holder: %v", err)
 		}
 	})

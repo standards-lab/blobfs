@@ -92,7 +92,7 @@ func (f *Files) findByName(ctx context.Context, sess sqlate.Session, directoryID
 // any SQL. A name a deleting file holds is refused with that file's
 // blobfs.DeletingError, not blobfs.ErrNameTaken. See Files in
 // docs/features.md.
-func (f *Files) Create(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts ...CreateOption) (_ blobfs.File, err error) {
+func (f *Files) Create(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts CreateOptions) (_ blobfs.File, err error) {
 	defer wrap(&err, "create file %q in %s", name, directoryID)
 	name, id, key, err := newFile(keys, name, opts)
 	if err != nil {
@@ -125,7 +125,7 @@ const (
 // holds the name is returned as WritePresent, and blobfs.ErrNameTaken
 // inside a transaction for a writer that commits the name after the
 // lookup. See Files in docs/features.md.
-func (f *Files) Ensure(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts ...CreateOption) (_ blobfs.File, _ WriteOutcome, err error) {
+func (f *Files) Ensure(ctx context.Context, sess sqlate.Session, keys blobfs.KeyValidator, directoryID, name, contentType string, opts CreateOptions) (_ blobfs.File, _ WriteOutcome, err error) {
 	defer wrap(&err, "ensure file %q in %s", name, directoryID)
 	name, id, key, err := newFile(keys, name, opts)
 	if err != nil {
@@ -151,7 +151,7 @@ func (f *Files) Ensure(ctx context.Context, sess sqlate.Session, keys blobfs.Key
 
 // newFile runs a file insert's checks before any SQL and returns the
 // normalized name, the id, and the key, or the refusal bare.
-func newFile(keys blobfs.KeyValidator, name string, opts []CreateOption) (string, string, string, error) {
+func newFile(keys blobfs.KeyValidator, name string, opts CreateOptions) (string, string, string, error) {
 	name, err := validName(name)
 	if err != nil {
 		return "", "", "", err

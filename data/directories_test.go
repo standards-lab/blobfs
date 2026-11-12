@@ -79,7 +79,7 @@ func TestCreateForms(t *testing.T) {
 		if c.inTx {
 			sess = begin(t, db)
 		}
-		d, err := s.Directories.Create(ctx, sess, blobfs.RootID, nfdName, data.WithID(id))
+		d, err := s.Directories.Create(ctx, sess, blobfs.RootID, nfdName, data.CreateOptions{ID: id})
 		if err != nil || d.ID != id || d.Name != nfcName || d.Version != 1 {
 			t.Fatalf("%s (in tx %v): Create = %+v, %v, want the row", c.form.name, c.inTx, d, err)
 		}
@@ -107,12 +107,12 @@ func TestCreateRefusals(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
 	for _, name := range []string{"", "a/b", "tab\there", ".."} {
-		if _, err := s.Directories.Create(ctx, db, blobfs.RootID, name); !errors.Is(err, blobfs.ErrInvalidName) {
+		if _, err := s.Directories.Create(ctx, db, blobfs.RootID, name, data.CreateOptions{}); !errors.Is(err, blobfs.ErrInvalidName) {
 			t.Errorf("Create(%q) = %v, want ErrInvalidName", name, err)
 		}
 	}
-	for _, id := range []string{blobfs.RootID, "", "not-a-uuid"} {
-		if _, err := s.Directories.Create(ctx, db, blobfs.RootID, "docs", data.WithID(id)); !errors.Is(err, blobfs.ErrInvalidID) {
+	for _, id := range []string{blobfs.RootID, "not-a-uuid"} {
+		if _, err := s.Directories.Create(ctx, db, blobfs.RootID, "docs", data.CreateOptions{ID: id}); !errors.Is(err, blobfs.ErrInvalidID) {
 			t.Errorf("Create with the id %q = %v, want ErrInvalidID", id, err)
 		}
 	}
@@ -131,7 +131,7 @@ func TestCreateRefusals(t *testing.T) {
 			{blobfs.ConstraintPrimaryKeyDirectory, sqlate.ErrUniqueViolation, blobfs.ErrIDTaken},
 		} {
 			s, db, rec := openStore(t, f, violation(c.constraint, c.class))
-			_, err := s.Directories.Create(ctx, db, blobfs.RootID, "docs")
+			_, err := s.Directories.Create(ctx, db, blobfs.RootID, "docs", data.CreateOptions{})
 			var ve *blobfs.ViolationError
 			if !errors.Is(err, c.want) || !errors.As(err, &ve) || ve.Constraint != c.constraint {
 				t.Errorf("%s: Create under %s = %v, want %v", f.name, c.constraint, err, c.want)
@@ -167,7 +167,7 @@ func TestCreateUnderAClosedParent(t *testing.T) {
 			{directoryIn("P", blobfs.RootID, "p", blobfs.DirectoryStatusDeleting, 2), blobfs.ErrDeleting},
 		} {
 			s, db, rec := openStore(t, f, append(unchanged, c.parent)...)
-			_, err := s.Directories.Create(ctx, db, "P", "docs")
+			_, err := s.Directories.Create(ctx, db, "P", "docs", data.CreateOptions{})
 			var ve *blobfs.ViolationError
 			if !errors.Is(err, c.want) || errors.As(err, &ve) {
 				t.Errorf("%s: Create under a parent the insert did not select = %v, want %v", f.name, err, c.want)
@@ -212,7 +212,7 @@ func TestCreateUnderAClosedParent(t *testing.T) {
 			{"an active holder twice", append([]sqltest.Response{directoryResponse("H", "P", "docs", 1)}, again(directoryResponse("H", "P", "docs", 1))...), errUnexplained, 2},
 		} {
 			s, db, rec := openStore(t, f, append(append(append([]sqltest.Response{}, unchanged...), parent), c.reads...)...)
-			dir, err := s.Directories.Create(ctx, db, "P", "docs")
+			dir, err := s.Directories.Create(ctx, db, "P", "docs", data.CreateOptions{})
 			switch c.want {
 			case nil:
 				if err != nil || dir.ID != "N" {
@@ -244,18 +244,18 @@ func TestCreateUnderAClosedParent(t *testing.T) {
 	}
 	s, db, _ := openStore(t, fallback, sqltest.Response{Affected: 0}, childResponse("X", "other"),
 		directoryIn("P", blobfs.RootID, "p", blobfs.DirectoryStatusDeleting, 2))
-	if _, err := s.Directories.Create(ctx, db, "P", "docs", data.WithID(blobfs.NewID())); !errors.Is(err, blobfs.ErrDeleting) {
+	if _, err := s.Directories.Create(ctx, db, "P", "docs", data.CreateOptions{ID: blobfs.NewID()}); !errors.Is(err, blobfs.ErrDeleting) {
 		t.Errorf("Create whose read found another row = %v, want ErrDeleting", err)
 	}
 }
 
-// TestWithID proves the supplied id reaches the insert in canonical form,
-// whatever form the caller wrote.
-func TestWithID(t *testing.T) {
+// TestCreateOptionsID proves the supplied id reaches the insert in
+// canonical form, whatever form the caller wrote.
+func TestCreateOptionsID(t *testing.T) {
 	ctx := context.Background()
 	id := blobfs.NewID()
 	s, db, rec := openStore(t, forms[1], childResponse(id, "docs"))
-	if _, err := s.Directories.Create(ctx, db, blobfs.RootID, "docs", data.WithID("{"+strings.ToUpper(id)+"}")); err != nil {
+	if _, err := s.Directories.Create(ctx, db, blobfs.RootID, "docs", data.CreateOptions{ID: "{" + strings.ToUpper(id) + "}"}); err != nil {
 		t.Fatalf("Create with a braced upper-case id: %v", err)
 	}
 	if got := rec.Calls()[0].Args[0]; got != id {
@@ -276,7 +276,7 @@ func TestEnsure(t *testing.T) {
 			}
 
 			s, db, rec := openStore(t, f, childResponse("D", "docs"))
-			d, created, err := s.Directories.Ensure(ctx, db, blobfs.RootID, "docs")
+			d, created, err := s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.CreateOptions{})
 			if err != nil || created || d.ID != "D" {
 				t.Fatalf("Ensure of a held name = %+v, %v, %v; want the row found", d, created, err)
 			}
@@ -289,7 +289,7 @@ func TestEnsure(t *testing.T) {
 				rec.Queue(sqltest.Response{Affected: 1})
 			}
 			rec.Queue(childResponse("N", "docs"))
-			d, created, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs")
+			d, created, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.CreateOptions{})
 			if err != nil || !created || d.ID != "N" {
 				t.Fatalf("Ensure of a free name = %+v, %v, %v; want the row created", d, created, err)
 			}
@@ -298,7 +298,7 @@ func TestEnsure(t *testing.T) {
 			}
 
 			s, db, rec = openStore(t, f, noDirectory(), violation(blobfs.ConstraintUniqueDirectoryParentName, sqlate.ErrUniqueViolation), childResponse("C", "docs"))
-			d, created, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs")
+			d, created, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.CreateOptions{})
 			if err != nil || created || d.ID != "C" {
 				t.Fatalf("Ensure under a concurrent creator = %+v, %v, %v; want the creator's row found", d, created, err)
 			}
@@ -308,7 +308,7 @@ func TestEnsure(t *testing.T) {
 
 			s, db, rec = openStore(t, f, noDirectory(), violation(blobfs.ConstraintUniqueDirectoryParentName, sqlate.ErrUniqueViolation))
 			_, err = db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
-				d, _, err := s.Directories.Ensure(ctx, tx, blobfs.RootID, "docs")
+				d, _, err := s.Directories.Ensure(ctx, tx, blobfs.RootID, "docs", data.CreateOptions{})
 				return d, err
 			}, nil)
 			if !errors.Is(err, blobfs.ErrNameTaken) {
@@ -327,7 +327,7 @@ func TestEnsure(t *testing.T) {
 			// found when it carries the id; otherwise the id stays taken.
 			id := blobfs.NewID()
 			s, db, rec = openStore(t, f, noDirectory(), violation(blobfs.ConstraintPrimaryKeyDirectory, sqlate.ErrUniqueViolation), childResponse(id, "docs"))
-			d, created, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.WithID(strings.ToUpper(id)))
+			d, created, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.CreateOptions{ID: strings.ToUpper(id)})
 			if err != nil || created || d.ID != id {
 				t.Errorf("Ensure under a concurrent creator of the same id = %+v, %v, %v; want the creator's row found", d, created, err)
 			}
@@ -336,7 +336,7 @@ func TestEnsure(t *testing.T) {
 			}
 			for _, again := range []sqltest.Response{childResponse(blobfs.NewID(), "docs"), noDirectory()} {
 				s, db, rec = openStore(t, f, noDirectory(), violation(blobfs.ConstraintPrimaryKeyDirectory, sqlate.ErrUniqueViolation), again)
-				_, _, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.WithID(id))
+				_, _, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.CreateOptions{ID: id})
 				if !errors.Is(err, blobfs.ErrIDTaken) || errors.Is(err, blobfs.ErrNameTaken) {
 					t.Errorf("Ensure under an id taken by a row elsewhere = %v, want ErrIDTaken", err)
 				}
@@ -348,13 +348,13 @@ func TestEnsure(t *testing.T) {
 			// joined.
 			errLookup := errors.New("the lookup failed")
 			s, db, _ = openStore(t, f, noDirectory(), violation(blobfs.ConstraintPrimaryKeyDirectory, sqlate.ErrUniqueViolation), sqltest.Response{Err: errLookup})
-			_, _, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.WithID(id))
+			_, _, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.CreateOptions{ID: id})
 			if !errors.Is(err, blobfs.ErrIDTaken) || !errors.Is(err, errLookup) {
 				t.Errorf("Ensure under a taken id whose lookup failed = %v, want ErrIDTaken joined to the lookup's failure", err)
 			}
 			s, db, rec = openStore(t, f, noDirectory(), violation(blobfs.ConstraintPrimaryKeyDirectory, sqlate.ErrUniqueViolation))
 			_, err = db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
-				d, _, err := s.Directories.Ensure(ctx, tx, blobfs.RootID, "docs", data.WithID(id))
+				d, _, err := s.Directories.Ensure(ctx, tx, blobfs.RootID, "docs", data.CreateOptions{ID: id})
 				return d, err
 			}, nil)
 			if !errors.Is(err, blobfs.ErrIDTaken) {
@@ -372,7 +372,7 @@ func TestEnsure(t *testing.T) {
 func TestEnsureFindsADeletingDirectory(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, directoryIn("D", blobfs.RootID, "docs", blobfs.DirectoryStatusDeleting, 2))
-	if _, _, err := s.Directories.Ensure(ctx, db, blobfs.RootID, "docs"); !errors.Is(err, blobfs.ErrDeleting) {
+	if _, _, err := s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.CreateOptions{}); !errors.Is(err, blobfs.ErrDeleting) {
 		t.Errorf("Ensure of a deleting directory = %v, want ErrDeleting", err)
 	}
 	if got := ops(rec); got != "query" {
@@ -384,7 +384,7 @@ func TestEnsureFindsADeletingDirectory(t *testing.T) {
 	deleting := directoryIn("D", blobfs.RootID, "docs", blobfs.DirectoryStatusDeleting, 2)
 	s, db, rec = openStore(t, single, noDirectory(), noDirectory(), noDirectory(), directoryResponse(blobfs.RootID, "", "/", 1), deleting, deleting)
 	_, err := db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
-		dir, _, err := s.Directories.Ensure(ctx, tx, blobfs.RootID, "docs")
+		dir, _, err := s.Directories.Ensure(ctx, tx, blobfs.RootID, "docs", data.CreateOptions{})
 		return dir, err
 	}, nil)
 	wantDeleting(t, "Ensure under a concurrent deleting directory", err, true, "D")
@@ -402,11 +402,11 @@ func TestEnsureFindsADeletingDirectory(t *testing.T) {
 func TestEnsureRefusals(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
-	if _, _, err := s.Directories.Ensure(ctx, db, blobfs.RootID, "a/b"); !errors.Is(err, blobfs.ErrInvalidName) {
+	if _, _, err := s.Directories.Ensure(ctx, db, blobfs.RootID, "a/b", data.CreateOptions{}); !errors.Is(err, blobfs.ErrInvalidName) {
 		t.Errorf("Ensure(a/b) = %v, want ErrInvalidName", err)
 	}
-	for _, id := range []string{blobfs.RootID, "", "not-a-uuid"} {
-		if _, _, err := s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.WithID(id)); !errors.Is(err, blobfs.ErrInvalidID) {
+	for _, id := range []string{blobfs.RootID, "not-a-uuid"} {
+		if _, _, err := s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.CreateOptions{ID: id}); !errors.Is(err, blobfs.ErrInvalidID) {
 			t.Errorf("Ensure with the id %q = %v, want ErrInvalidID", id, err)
 		}
 	}
@@ -420,7 +420,7 @@ func TestDelete(t *testing.T) {
 	ctx := context.Background()
 	for _, root := range rootSpellings {
 		s, db, rec := openStore(t, fallback)
-		if err := s.Directories.Delete(ctx, db, root); !errors.Is(err, blobfs.ErrRootDirectory) {
+		if err := s.Directories.Delete(ctx, db, root, data.VersionOptions{}); !errors.Is(err, blobfs.ErrRootDirectory) {
 			t.Errorf("Delete(%s) = %v, want ErrRootDirectory", root, err)
 		}
 		if calls := rec.Calls(); len(calls) != 0 {
@@ -430,7 +430,7 @@ func TestDelete(t *testing.T) {
 
 	for _, id := range notRootSpellings {
 		s, db, rec := openStore(t, fallback, sqltest.Response{Affected: 1})
-		if err := s.Directories.Delete(ctx, db, id); err != nil {
+		if err := s.Directories.Delete(ctx, db, id, data.VersionOptions{}); err != nil {
 			t.Errorf("Delete(%q) = %v, want the removal run", id, err)
 		}
 		if calls := rec.Calls(); len(calls) != 1 || !slices.Equal(calls[0].Args, []any{id, nil}) {
@@ -439,7 +439,7 @@ func TestDelete(t *testing.T) {
 	}
 
 	s, db, rec := openStore(t, fallback, sqltest.Response{Affected: 1}, sqltest.Response{Affected: 0})
-	if err := s.Directories.Delete(ctx, db, "D"); err != nil {
+	if err := s.Directories.Delete(ctx, db, "D", data.VersionOptions{}); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if got := rec.SQL(sqltest.OpExec); len(got) != 1 || !strings.HasPrefix(got[0], "DELETE FROM blobfs_directory") || !strings.Contains(got[0], "parent_id IS NOT NULL") {
@@ -448,7 +448,7 @@ func TestDelete(t *testing.T) {
 	if calls := rec.Calls(); !slices.Equal(calls[0].Args, []any{"D", nil}) {
 		t.Errorf("the removal bound %v, want the id and no version", calls[0].Args)
 	}
-	if err := s.Directories.Delete(ctx, db, "D"); !errors.Is(err, blobfs.ErrNotFound) {
+	if err := s.Directories.Delete(ctx, db, "D", data.VersionOptions{}); !errors.Is(err, blobfs.ErrNotFound) {
 		t.Errorf("Delete of a missing directory = %v, want ErrNotFound", err)
 	}
 
@@ -461,7 +461,7 @@ func TestDelete(t *testing.T) {
 		{"fk_directory_owner_directory", blobfs.ErrReferenced},
 	} {
 		s, db, _ := openStore(t, fallback, violation(c.constraint, sqlate.ErrForeignKeyViolation))
-		err := s.Directories.Delete(ctx, db, "D")
+		err := s.Directories.Delete(ctx, db, "D", data.VersionOptions{})
 		var ce *sqlate.ConstraintError
 		if !errors.Is(err, c.want) || !errors.As(err, &ce) || ce.Constraint != c.constraint {
 			t.Errorf("Delete under %s = %v, want %v with the constraint reachable", c.constraint, err, c.want)
@@ -498,7 +498,7 @@ func TestCreateOnASessionThatCannotBegin(t *testing.T) {
 	ctx := context.Background()
 	for _, f := range forms {
 		s, db, rec := openStore(t, f, childResponse("N", "docs"))
-		_, err := s.Directories.Create(ctx, plainSession{db}, blobfs.RootID, "docs")
+		_, err := s.Directories.Create(ctx, plainSession{db}, blobfs.RootID, "docs", data.CreateOptions{})
 		if f.single {
 			if err != nil {
 				t.Errorf("%s: Create on a plain session = %v, want the row", f.name, err)
