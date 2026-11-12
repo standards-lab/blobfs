@@ -34,8 +34,8 @@ type Store struct {
 // without the blobfs namespace is refused before compiling, and any other
 // compile failure is returned as the loader reports it. The dialect
 // chooses the form of each returning command. With opts.Engine set, New
-// passes the baseline it bound to the Engine and runs the variant it returns; an
-// Engine's error is returned as "data: new store: engine: ...".
+// passes the baseline it bound to the Engine and runs the variant it
+// returns; an Engine's error is returned as "data: new store: engine: ...".
 func New(catalog *query.Catalog, dialect sqlate.Dialect, opts Options) (_ *Store, err error) {
 	defer wrap(&err, "new store")
 	if !slices.Contains(catalog.Namespaces(), Namespace) {

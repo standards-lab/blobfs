@@ -104,10 +104,10 @@ Four conventions the library keeps are stricter than a reader might expect:
   `RemoveFile`, `RemoveFileID`, and `PurgeFile`, run the write and the delete end to end over
   the consumer's `ObjectStore`; a `WriteFileRequest`'s `OnComplete` and a `RemoveOptions`'s
   `OnDelete` run the consumer's function in the transaction that completes a write or begins a
-  delete. Each call takes its options as a struct, such as `CreateOptions` or `ListOptions`,
-  whose zero value is the default. Its `Sweep` finishes the deletes of
-  marked branches and stopped protocols. The package also holds the `Variant` interface, the
-  `Engine` type, and the published patterns.
+  delete. The store's `Sweep` finishes the deletes of marked branches and stopped protocols.
+  Each call takes its options as a struct, such as `CreateOptions` or `ListOptions`, whose
+  zero value is the default. The package also holds the `Variant` interface, the `Engine` type,
+  and the published patterns.
 - `data/datatest` is the conformance suite, `Run`, which an engine or a consumer's own variant
   runs against a live database.
 - `postgres` (sub-module) is the PostgreSQL engine: `Engine`, whose variant takes an advisory

@@ -36,13 +36,15 @@ func TestCreateOptionsMints(t *testing.T) {
 	for _, call := range calls {
 		minted = append(minted, call.Args[0])
 	}
+	seen := map[any]bool{}
 	for _, id := range minted {
-		s, ok := id.(string)
-		if parsed, err := blobfs.ParseID(s); !ok || err != nil || parsed != s {
+		str, ok := id.(string)
+		if parsed, err := blobfs.ParseID(str); !ok || err != nil || parsed != str {
 			t.Errorf("the insert bound %v, want a minted id in canonical form", id)
 		}
+		seen[id] = true
 	}
-	if len(minted) != 3 || minted[0] == minted[1] {
+	if len(minted) != 3 || len(seen) != 3 {
 		t.Errorf("the inserts bound %v, want a fresh id each", minted)
 	}
 }

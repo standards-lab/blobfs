@@ -242,8 +242,8 @@ A listing hides deleting rows: the directories of a branch being deleted, and th
 delete began or whose branch was marked. It appends a filter on status after the caller's own,
 so neither the page nor the total holds them, and the listing of a directory that is itself
 deleting is refused with `blobfs.ErrDeleting`. A directory that does not exist still lists
-empty. `data.IncludeDeleting` shows deleting rows and lists a deleting directory: it is how a
-sweep, or a consumer's own tool, finds the work of a delete.
+empty. `data.ListOptions.IncludeDeleting` shows deleting rows and lists a deleting directory:
+it is how a sweep, or a consumer's own tool, finds the work of a delete.
 
 Each listing is a projection of sqlate's `query` package. Its base is an authored statement
 anchored on the directory, and the `query` package composes the caller's `query.Directives`
@@ -318,17 +318,18 @@ the one any create that raced the mark meets: the sweep marks it and removes it,
 
 The sweep keeps no state. On every pass it finds its work in the database:
 `Directories.BranchRoots` returns the roots of the branches being deleted, each a deleting
-directory under an active parent, and the listings with `data.IncludeDeleting` reach the rest of
-each branch. Every step it takes is idempotent, so a pass stopped at any point, by an error or a
-crash, is finished by the next, and a row another pass removed first counts as done. A pass is
-bounded by `data.Batch`, a count of records and not of bytes, since a pass never reads an
-object's size, and reports `More` when work remains that it did not reach; a consumer runs
-passes while `More` is true, and again on a schedule of its own. A refusal leaves the row it
-meets, and the directories above it, which cannot be removed while it remains, for a later pass,
-and the pass goes on past it: to the row's siblings, to the next branch, and to the next stale
-row, each read past the ones the pass left, so a row refused on every pass holds back nothing
-behind it. A refusal spends none of the budget and is not `More`: the pass returns every refusal
-joined, with a result that counts what it did, and a later pass tries the row again.
+directory under an active parent, and the listings with `data.ListOptions.IncludeDeleting` reach
+the rest of each branch. Every step it takes is idempotent, so a pass stopped at any point, by
+an error or a crash, is finished by the next, and a row another pass removed first counts as
+done. A pass is bounded by `data.SweepOptions.Batch`, a count of records and not of bytes, since
+a pass never reads an object's size, and reports `More` when work remains that it did not reach;
+a consumer runs passes while `More` is true, and again on a schedule of its own. A refusal
+leaves the row it meets, and the directories above it, which cannot be removed while it remains,
+for a later pass, and the pass goes on past it: to the row's siblings, to the next branch, and
+to the next stale row, each read past the ones the pass left, so a row refused on every pass
+holds back nothing behind it. A refusal spends none of the budget and is not `More`: the pass
+returns every refusal joined, with a result that counts what it did, and a later pass tries the
+row again.
 
 ### The consumer's own rows
 

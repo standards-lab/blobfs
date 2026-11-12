@@ -45,9 +45,9 @@ func (d *Directories) Serializes() bool {
 }
 
 // Move moves the directory with id under to's ParentID as its Name,
-// guarded by its Version, and returns the row; its children and files follow it. It runs
-// in tx under the tree lock, after the cycle check. Refusals:
-// blobfs.ErrRootDirectory, blobfs.NameError, blobfs.ErrCycle,
+// guarded by its Version, and returns the row; its children and files
+// follow it. It runs in tx under the tree lock, after the cycle check.
+// Refusals: blobfs.ErrRootDirectory, blobfs.NameError, blobfs.ErrCycle,
 // blobfs.ErrNotFound, blobfs.ErrNameTaken, a blobfs.DeletingError,
 // query.ErrVersionMismatch, and sqlate.ErrSerializationFailure above read
 // committed. See Moves in docs/concepts.md.

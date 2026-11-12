@@ -119,8 +119,8 @@ const (
 )
 
 // Ensure is the retry-safe first step: it returns the row that holds
-// spec's Name in its DirectoryID, creating it pending when none does, and the WriteOutcome
-// that says which. A found row, a deleting one included, keeps its own id
+// spec's Name in its DirectoryID, creating it pending when none does, and
+// the WriteOutcome that says which. A found row, a deleting one included, keeps its own id
 // and key. Its refusals are Create's, except that a deleting row that
 // holds the name is returned as WritePresent, and blobfs.ErrNameTaken
 // inside a transaction for a writer that commits the name after the
@@ -241,8 +241,8 @@ func (f *Files) completeFile(ctx context.Context, sess sqlate.Session, id string
 }
 
 // Move moves the file with id into to's DirectoryID as its Name, guarded
-// by its Version, and returns the row; a rename is a move within its directory.
-// The key is untouched. Refusals: blobfs.NameError, blobfs.ErrNotFound,
+// by its Version, and returns the row; a rename is a move within its
+// directory. The key is untouched. Refusals: blobfs.NameError, blobfs.ErrNotFound,
 // blobfs.ErrNameTaken, a blobfs.DeletingError, and
 // query.ErrVersionMismatch. See Files in docs/features.md.
 func (f *Files) Move(ctx context.Context, sess sqlate.Session, id string, to FileMove) (_ blobfs.File, err error) {
