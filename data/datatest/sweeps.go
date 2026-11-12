@@ -135,8 +135,8 @@ func (s *suite) own(t *testing.T, id string) {
 }
 
 // sweep runs one pass through store with objects and opts.
-func (s *suite) sweep(store *data.Store, objects data.ObjectDeleter, opts ...data.SweepOption) (data.SweepResult, error) {
-	return store.Sweep(s.ctx, s.db, objects, opts...)
+func (s *suite) sweep(store *data.Store, objects data.ObjectDeleter, opts data.SweepOptions) (data.SweepResult, error) {
+	return store.Sweep(s.ctx, s.db, objects, opts)
 }
 
 // keys reads the keys of the files with ids, which a sweep deletes.
@@ -202,7 +202,7 @@ func (s *suite) sweepDrains(t *testing.T) {
 		if pass == 1000 {
 			t.Fatalf("the sweep still reports More after %d passes: %+v", pass, total)
 		}
-		r, err := s.sweep(s.store, objects, data.StaleOlderThan(time.Hour))
+		r, err := s.sweep(s.store, objects, data.SweepOptions{StaleOlderThan: time.Hour})
 		if err != nil {
 			t.Fatalf("Sweep: %v", err)
 		}
@@ -238,10 +238,10 @@ func (s *suite) sweepDrains(t *testing.T) {
 // object deleted, and no hook called.
 func (s *suite) sweepNothing(t *testing.T) {
 	for _, store := range []*data.Store{s.store, s.baseline} {
-		for _, opts := range [][]data.SweepOption{nil, {data.StaleOlderThan(time.Hour)}} {
+		for _, stale := range []time.Duration{0, time.Hour} {
 			objects := newObjectStore()
 			h := &hooks{s: s}
-			r, err := s.sweep(store, objects, append(opts, data.OnRemoveDirectory(h.remove))...)
+			r, err := s.sweep(store, objects, data.SweepOptions{OnRemoveDirectory: h.remove, StaleOlderThan: stale})
 			if err != nil || r != (data.SweepResult{}) || objects.calls != 0 || len(h.ids) != 0 {
 				t.Errorf("Sweep with nothing to do = %+v, %v, with %d object deletes and hooks %v, want a zero result and nothing called", r, err, objects.calls, h.ids)
 			}
@@ -259,12 +259,12 @@ func (s *suite) sweepBranch(t *testing.T) {
 		kept := s.insertFile(t, sibling.ID, "kept.txt", blobfs.StatusAvailable)
 		s.own(t, b.top.ID)
 		keys := s.keys(t, branchFiles(b)...)
-		if _, err := s.mark(store, b.top.ID); err != nil {
+		if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 			t.Fatalf("MarkDeleting: %v", err)
 		}
 		objects := newObjectStore()
 		h := &hooks{s: s}
-		r, err := s.sweep(store, objects, data.OnRemoveDirectory(h.remove))
+		r, err := s.sweep(store, objects, data.SweepOptions{OnRemoveDirectory: h.remove})
 		if want := (data.SweepResult{Files: 5, Directories: 3}); err != nil || r != want {
 			t.Errorf("Sweep = %+v, %v, want %+v", r, err, want)
 		}
@@ -291,12 +291,12 @@ func (s *suite) sweepCrash(t *testing.T) {
 		b := s.newBranch(t, fmt.Sprintf("crash-%d-%s", i, t.Name()))
 		ids := branchFiles(b)
 		keys := s.keys(t, ids...)
-		if _, err := s.mark(store, b.top.ID); err != nil {
+		if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 			t.Fatalf("MarkDeleting: %v", err)
 		}
 		objects := newObjectStore()
 		objects.failAt, objects.deleteFirst = 3, true
-		r, err := s.sweep(store, objects)
+		r, err := s.sweep(store, objects, data.SweepOptions{})
 		if !errors.Is(err, errObjectStore) || r != (data.SweepResult{Files: 4, Directories: 1}) {
 			t.Errorf("the crashed Sweep = %+v, %v, want every file but the refused one, the leaf, and the store's error", r, err)
 		}
@@ -315,7 +315,7 @@ func (s *suite) sweepCrash(t *testing.T) {
 			t.Errorf("the crash left %v with the object deleted and the row not purged, want one", stopped)
 		}
 		objects.failAt = 0
-		r, err = s.sweep(store, objects)
+		r, err = s.sweep(store, objects, data.SweepOptions{})
 		if want := (data.SweepResult{Files: 1, Directories: 2}); err != nil || r != want {
 			t.Errorf("the finishing Sweep = %+v, %v, want %+v", r, err, want)
 		}
@@ -340,7 +340,7 @@ func (s *suite) sweepCrash(t *testing.T) {
 func (s *suite) sweepStragglers(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("stragglers-%d-%s", i, t.Name()))
-		if _, err := s.mark(store, b.top.ID); err != nil {
+		if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 			t.Fatalf("MarkDeleting: %v", err)
 		}
 		dir := s.insertDirectory(t, b.leaf.ID, "straggler")
@@ -349,7 +349,7 @@ func (s *suite) sweepStragglers(t *testing.T) {
 			s.insertFile(t, b.mid.ID, "straggler.txt", blobfs.StatusAvailable))
 		keys := s.keys(t, files...)
 		objects := newObjectStore()
-		r, err := s.sweep(store, objects)
+		r, err := s.sweep(store, objects, data.SweepOptions{})
 		if want := (data.SweepResult{Files: 7, Directories: 4}); err != nil || r != want {
 			t.Errorf("Sweep = %+v, %v, want %+v", r, err, want)
 		}
@@ -372,13 +372,13 @@ func (s *suite) sweepBatch(t *testing.T) {
 		} {
 			b := s.newBranch(t, fmt.Sprintf("batch-%d-%d-%s", c.batch, i, t.Name()))
 			keys := s.keys(t, branchFiles(b)...)
-			if _, err := s.mark(store, b.top.ID); err != nil {
+			if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 				t.Fatalf("MarkDeleting: %v", err)
 			}
 			objects := newObjectStore()
 			for n, want := range c.passes {
-				if r, err := s.sweep(store, objects, data.Batch(c.batch)); err != nil || r != want {
-					t.Errorf("pass %d of Batch(%d) = %+v, %v, want %+v", n+1, c.batch, r, err, want)
+				if r, err := s.sweep(store, objects, data.SweepOptions{Batch: c.batch}); err != nil || r != want {
+					t.Errorf("pass %d of a Batch of %d = %+v, %v, want %+v", n+1, c.batch, r, err, want)
 				}
 			}
 			wantDeletedOnce(t, objects, keys)
@@ -393,11 +393,11 @@ func (s *suite) sweepHookAborts(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("hook-%d-%s", i, t.Name()))
 		s.own(t, b.top.ID)
-		if _, err := s.mark(store, b.top.ID); err != nil {
+		if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 			t.Fatalf("MarkDeleting: %v", err)
 		}
 		h := &hooks{s: s, failOn: b.mid.ID}
-		r, err := s.sweep(store, newObjectStore(), data.OnRemoveDirectory(h.remove))
+		r, err := s.sweep(store, newObjectStore(), data.SweepOptions{OnRemoveDirectory: h.remove})
 		if !errors.Is(err, errHook) || r != (data.SweepResult{Files: 5, Directories: 1}) {
 			t.Errorf("Sweep under a failing hook = %+v, %v, want the leaf removed and the hook's error", r, err)
 		}
@@ -409,14 +409,14 @@ func (s *suite) sweepHookAborts(t *testing.T) {
 			t.Errorf("Deleting after the abort = %+v, %v, want the branch's top", roots, err)
 		}
 
-		r, err = s.sweep(store, newObjectStore())
+		r, err = s.sweep(store, newObjectStore(), data.SweepOptions{})
 		if !errors.Is(err, blobfs.ErrReferenced) || r != (data.SweepResult{Directories: 1}) {
 			t.Errorf("Sweep without the hook = %+v, %v, want the middle removed and the top refused as ErrReferenced", r, err)
 		}
 		s.wantDirectoriesGone(t, b.mid.ID)
 
 		h = &hooks{s: s}
-		r, err = s.sweep(store, newObjectStore(), data.OnRemoveDirectory(h.remove))
+		r, err = s.sweep(store, newObjectStore(), data.SweepOptions{OnRemoveDirectory: h.remove})
 		if err != nil || r != (data.SweepResult{Directories: 1}) || !slices.Equal(h.ids, []string{b.top.ID}) {
 			t.Errorf("the finishing Sweep = %+v, %v with hooks %v, want the top removed and hooked once", r, err, h.ids)
 		}
@@ -432,7 +432,7 @@ func (s *suite) sweepRefusalDoesNotBlock(t *testing.T) {
 		free := s.newBranch(t, fmt.Sprintf("free-%d-%s", i, t.Name()))
 		s.own(t, stuck.top.ID)
 		for _, b := range []branch{stuck, free} {
-			if _, err := s.mark(store, b.top.ID); err != nil {
+			if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 				t.Fatalf("MarkDeleting: %v", err)
 			}
 		}
@@ -440,7 +440,7 @@ func (s *suite) sweepRefusalDoesNotBlock(t *testing.T) {
 		if err != nil || len(roots) != 2 || roots[0].ID != stuck.top.ID {
 			t.Fatalf("Deleting = %+v, %v, want the stuck branch first", roots, err)
 		}
-		r, err := s.sweep(store, newObjectStore())
+		r, err := s.sweep(store, newObjectStore(), data.SweepOptions{})
 		if !errors.Is(err, blobfs.ErrReferenced) || r.Directories != 5 || r.Files != 10 {
 			t.Errorf("Sweep past a refused branch = %+v, %v, want both branches emptied, the free one removed, and ErrReferenced", r, err)
 		}
@@ -449,7 +449,7 @@ func (s *suite) sweepRefusalDoesNotBlock(t *testing.T) {
 			t.Errorf("the refused top is %s, want deleting", d.Status)
 		}
 		h := &hooks{s: s}
-		if r, err := s.sweep(store, newObjectStore(), data.OnRemoveDirectory(h.remove)); err != nil || r != (data.SweepResult{Directories: 1}) {
+		if r, err := s.sweep(store, newObjectStore(), data.SweepOptions{OnRemoveDirectory: h.remove}); err != nil || r != (data.SweepResult{Directories: 1}) {
 			t.Errorf("the finishing Sweep = %+v, %v, want the refused top removed", r, err)
 		}
 		s.wantDirectoriesGone(t, stuck.top.ID)
@@ -457,17 +457,17 @@ func (s *suite) sweepRefusalDoesNotBlock(t *testing.T) {
 }
 
 // sweepRefusedRootAtBatchOne checks, against the baseline, that a branch
-// refused on every pass and first in id order holds back nothing at
-// Batch(1): every pass reads past it and spends its one record, the branch
-// behind it is swept over the passes, and More stays true while that
-// branch remains.
+// refused on every pass and first in id order holds back nothing at a
+// Batch of 1: every pass reads past it and spends its one record, the
+// branch behind it is swept over the passes, and More stays true while
+// that branch remains.
 func (s *suite) sweepRefusedRootAtBatchOne(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		stuck := s.newBranch(t, fmt.Sprintf("stuck-one-%d-%s", i, t.Name()))
 		free := s.newBranch(t, fmt.Sprintf("free-one-%d-%s", i, t.Name()))
 		s.own(t, stuck.top.ID)
 		for _, b := range []branch{stuck, free} {
-			if _, err := s.mark(store, b.top.ID); err != nil {
+			if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 				t.Fatalf("MarkDeleting: %v", err)
 			}
 		}
@@ -481,7 +481,7 @@ func (s *suite) sweepRefusedRootAtBatchOne(t *testing.T) {
 			if pass == 50 {
 				t.Fatalf("the sweep still reports More after %d passes: %+v", pass, total)
 			}
-			r, err := s.sweep(store, newObjectStore(), data.Batch(1))
+			r, err := s.sweep(store, newObjectStore(), data.SweepOptions{Batch: 1})
 			if err != nil && !errors.Is(err, blobfs.ErrReferenced) {
 				t.Fatalf("pass %d: %v, want no error or ErrReferenced", pass, err)
 			}
@@ -507,7 +507,7 @@ func (s *suite) sweepRefusedRootAtBatchOne(t *testing.T) {
 		s.wantDirectoriesGone(t, free.top.ID, free.mid.ID, free.leaf.ID, stuck.mid.ID, stuck.leaf.ID)
 		s.wantFilesGone(t, append(branchFiles(stuck), branchFiles(free)...)...)
 		h := &hooks{s: s}
-		if r, err := s.sweep(store, newObjectStore(), data.OnRemoveDirectory(h.remove)); err != nil || r != (data.SweepResult{Directories: 1}) {
+		if r, err := s.sweep(store, newObjectStore(), data.SweepOptions{OnRemoveDirectory: h.remove}); err != nil || r != (data.SweepResult{Directories: 1}) {
 			t.Errorf("the finishing Sweep = %+v, %v, want the refused top removed", r, err)
 		}
 		s.wantDirectoriesGone(t, stuck.top.ID)
@@ -516,7 +516,7 @@ func (s *suite) sweepRefusedRootAtBatchOne(t *testing.T) {
 
 // sweepRefusedStaleAtBatchOne checks, against the baseline, that the
 // oldest stale row, refused on every pass by a consumer's reference, holds
-// back nothing at Batch(1): each pass reads past it and reclaims the next
+// back nothing at a Batch of 1: each pass reads past it and reclaims the next
 // row, with More while a row remains behind it.
 func (s *suite) sweepRefusedStaleAtBatchOne(t *testing.T) {
 	s.createFileReferences(t)
@@ -533,7 +533,7 @@ func (s *suite) sweepRefusedStaleAtBatchOne(t *testing.T) {
 			s.exec(t, "UPDATE blobfs_file SET updated_at = "+p(1)+" WHERE id = "+p(2), time.Now().Add(-time.Duration(4-age)*time.Hour), id)
 		}
 		for n, id := range later {
-			r, err := s.sweep(store, newObjectStore(), data.Batch(1), data.StaleOlderThan(time.Hour))
+			r, err := s.sweep(store, newObjectStore(), data.SweepOptions{Batch: 1, StaleOlderThan: time.Hour})
 			want := data.SweepResult{Stale: 1, More: n < len(later)-1}
 			if !errors.Is(err, blobfs.ErrReferenced) || r != want {
 				t.Errorf("pass %d = %+v, %v, want %+v and the oldest row's ErrReferenced", n+1, r, err, want)
@@ -570,7 +570,7 @@ func (s *suite) sweepStale(t *testing.T) {
 		for _, id := range []string{abandoned, young, available, stopped, starting} {
 			before[id] = s.file(t, id)
 		}
-		_, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "stopped.txt", "text/plain")
+		_, err := store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "stopped.txt", ContentType: "text/plain"}, data.CreateOptions{})
 		if errors.Is(err, blobfs.ErrNameTaken) {
 			t.Errorf("Create over the stopped delete's name = %v, want its DeletingError and not ErrNameTaken", err)
 		}
@@ -578,7 +578,7 @@ func (s *suite) sweepStale(t *testing.T) {
 		wantDeletingKind(t, err, false, stopped)
 
 		objects := newObjectStore()
-		if r, err := s.sweep(store, objects); err != nil || r != (data.SweepResult{}) || objects.calls != 0 {
+		if r, err := s.sweep(store, objects, data.SweepOptions{}); err != nil || r != (data.SweepResult{}) || objects.calls != 0 {
 			t.Errorf("Sweep without StaleOlderThan = %+v, %v with %d object deletes, want nothing done", r, err, objects.calls)
 		}
 		for _, id := range []string{abandoned, stopped} {
@@ -587,7 +587,7 @@ func (s *suite) sweepStale(t *testing.T) {
 			}
 		}
 
-		r, err := s.sweep(store, objects, data.StaleOlderThan(time.Hour))
+		r, err := s.sweep(store, objects, data.SweepOptions{StaleOlderThan: time.Hour})
 		if err != nil || r != (data.SweepResult{Stale: 2}) {
 			t.Errorf("Sweep with StaleOlderThan = %+v, %v, want the abandoned write and the stopped delete", r, err)
 		}
@@ -598,7 +598,7 @@ func (s *suite) sweepStale(t *testing.T) {
 				t.Errorf("the reclaim changed %s to\n%+v\nfrom\n%+v", f.Name, f, before[id])
 			}
 		}
-		if f, err := store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "stopped.txt", "text/plain"); err != nil || f.Status != blobfs.StatusPending {
+		if f, err := store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "stopped.txt", ContentType: "text/plain"}, data.CreateOptions{}); err != nil || f.Status != blobfs.StatusPending {
 			t.Errorf("Create over the finished delete's name = %+v, %v, want a new pending row", f, err)
 		}
 	}
@@ -632,22 +632,22 @@ func (s *suite) sweepConcurrent(t *testing.T) {
 			b := s.newBranch(t, fmt.Sprintf("concurrent-%d-%d-%s", i, j, t.Name()))
 			s.own(t, b.top.ID)
 			keys = append(keys, s.keys(t, branchFiles(b)...)...)
-			if _, err := s.mark(store, b.top.ID); err != nil {
+			if _, err := s.mark(store, b.top.ID, data.VersionOptions{}); err != nil {
 				t.Fatalf("MarkDeleting: %v", err)
 			}
 			branches = append(branches, b)
 		}
 		objects := &syncObjects{deleted: map[string]int{}}
-		hook := data.OnRemoveDirectory(func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error {
+		hook := func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error {
 			_, err := tx.ExecContext(ctx, "DELETE FROM datatest_owner WHERE directory_id = "+s.db.Dialect().Placeholder(1), dir.ID)
 			return err
-		})
+		}
 		var wg sync.WaitGroup
 		errs := make([]error, 4)
 		for p := range errs {
 			wg.Go(func() {
 				for range 50 {
-					r, err := s.sweep(store, objects, data.Batch(2), hook)
+					r, err := s.sweep(store, objects, data.SweepOptions{Batch: 2, OnRemoveDirectory: hook})
 					if err != nil {
 						errs[p] = err
 						return

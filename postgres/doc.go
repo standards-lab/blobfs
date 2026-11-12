@@ -10,7 +10,7 @@
 // A consumer selects the engine by importing the package and installing
 // Engine, with no registry, init, or flag:
 //
-//	store, err := data.New(catalog, dialect, data.WithEngine(postgres.Engine))
+//	store, err := data.New(catalog, dialect, data.Options{Engine: postgres.Engine})
 //
 // The variant embeds the baseline it is given and overrides all three
 // variation points: the tree lock is pg_advisory_xact_lock over

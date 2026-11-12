@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/standards-lab/sqlate"
@@ -10,83 +11,65 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// Option configures New beyond its required arguments.
-type Option func(*options)
-
-// options collects what the options set.
-type options struct {
-	engine Engine
+// Options configures New beyond its required arguments. The zero Options
+// binds the baseline.
+type Options struct {
+	// Engine makes the store forward its variation points to the variant
+	// it builds instead of the baseline; New calls it once. See Engine.
+	Engine Engine
 }
 
-// WithEngine makes the store forward its variation points to the variant
-// e builds instead of the baseline. New calls e once. See Engine.
-func WithEngine(e Engine) Option {
-	return func(o *options) { o.engine = e }
+// FileSpec names the file Files.Create or Files.Ensure writes: where it
+// goes, under what name, and the content type it declares. Every field is
+// required.
+type FileSpec struct {
+	// DirectoryID is the directory the file is created in, as
+	// blobfs.File's. A directory that is missing or deleting is the
+	// call's blobfs.ErrNotFound or blobfs.DeletingError.
+	DirectoryID string
+
+	// Name is the file's name in DirectoryID, normalized and checked with
+	// blobfs's name rules before any SQL; an invalid one, the empty name
+	// included, is a blobfs.NameError.
+	Name string
+
+	// ContentType is the content type the row declares for the object.
+	ContentType string
 }
 
-// CreateOption configures one call of an operation that creates a row,
+// CreateOptions configures one call of an operation that creates a row,
 // Create or Ensure, beyond its required arguments.
-type CreateOption func(*createOptions)
-
-// createOptions collects what the create options set.
-type createOptions struct {
-	id    string
-	hasID bool
+type CreateOptions struct {
+	// ID is the id of the row the call inserts, so a seeded row keeps its
+	// id across resets. A set ID is checked with blobfs.ParseID before any
+	// SQL; an empty ID mints one. A row an Ensure finds keeps its own id.
+	ID string
 }
 
-// WithID supplies the id of the row the call inserts, in place of a minted
-// one, so a seeded row keeps its id across resets. It is checked with
-// blobfs.ParseID before any SQL; a row an Ensure finds keeps its own id.
-func WithID(id string) CreateOption {
-	return func(o *createOptions) {
-		o.id = id
-		o.hasID = true
-	}
-}
-
-// VersionOption configures a call that acts on a row the caller read,
+// VersionOptions configures a call that acts on a row the caller read,
 // beyond its required arguments: Files.Hold, Files.Delete,
-// Directories.Delete, Directories.MarkDeleting, Store.RemoveFileID, and,
-// as a RemoveOption, Store.RemoveFile.
-type VersionOption func(*versionOptions)
-
-// versionOptions collects what the version options set.
-type versionOptions struct {
-	version    int64
-	hasVersion bool
+// Directories.Delete, Directories.MarkDeleting, and Store.RemoveFileID.
+type VersionOptions struct {
+	// Version makes the call act on the row only at that version, the
+	// value the caller read from a listing or an earlier read; a row at
+	// another version is query.ErrVersionMismatch and is left as it is. A
+	// row already deleting is Files.Delete's or Directories.MarkDeleting's
+	// retry, which converges. A zero Version leaves the call unguarded:
+	// row versions start at 1.
+	Version int64
 }
 
-// at is the version AtVersion gave, or nil when none did.
-func (o versionOptions) at() *int64 {
-	if !o.hasVersion {
+// at is the version Version guards, or nil when the call is unguarded.
+func (o VersionOptions) at() *int64 {
+	return versionAt(o.Version)
+}
+
+// versionAt is version as a guard: nil, which guards nothing, for zero.
+func versionAt(version int64) *int64 {
+	if version == 0 {
 		return nil
 	}
-	return &o.version
-}
-
-// AtVersion makes the call act on the row only at version, the value the
-// caller read from a listing or an earlier read; a row at another version
-// is query.ErrVersionMismatch and is left as it is. A row already deleting
-// is Files.Delete's or Directories.MarkDeleting's retry, which converges.
-func AtVersion(version int64) VersionOption {
-	return func(o *versionOptions) {
-		o.version = version
-		o.hasVersion = true
-	}
-}
-
-// applyRemove makes a VersionOption a RemoveOption, so Store.RemoveFile
-// takes AtVersion as the other version calls do.
-func (opt VersionOption) applyRemove(o *removeOptions) { opt(&o.versionOptions) }
-
-// atVersion resolves a call's version options: the version AtVersion
-// gave, or nil when none did.
-func atVersion(opts []VersionOption) *int64 {
-	var o versionOptions
-	for _, opt := range opts {
-		opt(&o)
-	}
-	return o.at()
+	return &version
 }
 
 // withVersion binds version into args for a statement whose version
@@ -99,129 +82,222 @@ func withVersion(args query.Args, version *int64) query.Args {
 	return args.With("version", *version)
 }
 
-// ListOption configures one call of a listing beyond its required
+// FileMove names where Files.Move puts the file and the version it
+// expects. Every field is required.
+type FileMove struct {
+	// DirectoryID is the directory the file moves into, as blobfs.File's;
+	// its own directory renames the file in place.
+	DirectoryID string
+
+	// Name is the file's name in DirectoryID, normalized and checked with
+	// blobfs's name rules before any SQL.
+	Name string
+
+	// Version guards the move: a row at another version is
+	// query.ErrVersionMismatch and is left as it is. Unlike
+	// VersionOptions.Version, a zero Version is not unguarded: row
+	// versions start at 1, so it matches no row and the call returns
+	// query.ErrVersionMismatch.
+	Version int64
+}
+
+// DirectoryMove names where Directories.Move puts the directory and the
+// version it expects. Every field is required.
+type DirectoryMove struct {
+	// ParentID is the directory the directory moves under, as
+	// blobfs.Directory's; its own parent renames it in place.
+	ParentID string
+
+	// Name is the directory's name under ParentID, normalized and checked
+	// with blobfs's name rules before any SQL.
+	Name string
+
+	// Version guards the move as FileMove.Version guards Files.Move: a
+	// zero Version matches no row and the call returns
+	// query.ErrVersionMismatch.
+	Version int64
+}
+
+// ListOptions configures one call of a listing beyond its required
 // arguments: Directories.List, Directories.Continue, Files.List, or
 // Files.Continue.
-type ListOption func(*listOptions)
-
-// listOptions collects what the list options set.
-type listOptions struct {
-	includeDeleting bool
+type ListOptions struct {
+	// IncludeDeleting makes the listing show deleting rows and list a
+	// deleting directory, which is how the work of a delete is found. A
+	// cursor continues only a listing called the same way, with
+	// IncludeDeleting set or without it. The zero value hides deleting
+	// rows and refuses a deleting directory. See Listings in
+	// docs/features.md.
+	IncludeDeleting bool
 }
 
-// IncludeDeleting makes a listing show deleting rows and list a deleting
-// directory, which is how the work of a delete is found. A cursor
-// continues only a listing called the same way, with the option or
-// without it. See Listings in docs/features.md.
-func IncludeDeleting() ListOption {
-	return func(o *listOptions) { o.includeDeleting = true }
+// CursorPage names the page Continue reads past a cursor, as query.Page
+// names one by number.
+type CursorPage struct {
+	// After is the Next of an earlier page of the listing called the same
+	// way; an empty After is refused before any SQL.
+	After query.Cursor
+
+	// Size is the number of rows the page reads; a Size below 1 is refused
+	// before any SQL.
+	Size int
 }
 
-// WriteOption configures one call of a write protocol, Store.WriteFile or
-// Store.EnsureFile, beyond its required arguments.
-type WriteOption func(*writeOptions)
+// WriteFileRequest names the write Store.WriteFile runs: the database, the
+// object store, the body, and the begin that creates the pending row, with
+// the hook its completion runs. DB, Objects, Body, and Begin are required:
+// WriteFile panics before any I/O when one is nil. An empty file passes
+// http.NoBody or an empty reader as its Body.
+type WriteFileRequest struct {
+	// DB is the database Begin's transaction and the completion's run on.
+	DB *sqlate.DB
 
-// writeOptions collects what the write options set.
-type writeOptions struct {
-	onComplete func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error
+	// Objects is the consumer's object store the body is put in and the
+	// abandon deletes from.
+	Objects ObjectStore
+
+	// Body is the object's content, read by the put outside any
+	// transaction.
+	Body io.Reader
+
+	// Size is the number of bytes of Body the put stores.
+	Size int64
+
+	// Begin runs Files.Create in one transaction on DB, where the caller
+	// checks its own scope, and returns the pending row. Its error, or its
+	// transaction's, is the call's as it came.
+	Begin func(*sqlate.Tx) (blobfs.File, error)
+
+	// OnComplete runs in the transaction that completes the file, after
+	// Files.Complete has made the row available, with the call's context
+	// and the completed File: where a consumer writes its own rows that
+	// must commit exactly when the file does. An error from it rolls the
+	// completion back and abandons the write as a failed completion does,
+	// the pending row deleted with its object; the call returns an error
+	// wrapping it. A nil OnComplete runs no hook.
+	OnComplete func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error
 }
 
-// writeOpts resolves a call's write options.
-func writeOpts(opts []WriteOption) writeOptions {
-	var o writeOptions
-	for _, opt := range opts {
-		opt(&o)
+// EnsureFileRequest names the write Store.EnsureFile runs: WriteFileRequest's
+// fields, with the fixed ID the file is written under and a Begin that runs
+// Files.Ensure. DB, Objects, Body, and Begin are required: EnsureFile panics
+// before any I/O when one is nil.
+type EnsureFileRequest struct {
+	// DB is the database Begin's transaction and the completion's run on.
+	DB *sqlate.DB
+
+	// Objects is the consumer's object store the body is put in and the
+	// abandon deletes from.
+	Objects ObjectStore
+
+	// ID is the id the file is written under, checked with blobfs.ParseID
+	// before any SQL; an invalid one, the empty id included, is the call's
+	// error.
+	ID string
+
+	// Body is the object's content, read by the put outside any
+	// transaction.
+	Body io.Reader
+
+	// Size is the number of bytes of Body the put stores.
+	Size int64
+
+	// Begin runs Files.Ensure with CreateOptions{ID: ID} in one transaction
+	// on DB and returns the row and what the call did.
+	Begin func(*sqlate.Tx) (blobfs.File, WriteOutcome, error)
+
+	// OnComplete runs as WriteFileRequest.OnComplete does, and only when
+	// the call completes the file itself: never for a row it finds
+	// available, or one another writer completed. A nil OnComplete runs no
+	// hook.
+	OnComplete func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error
+}
+
+// check panics before any I/O when a required field is nil, naming the
+// first of DB, Objects, Body, and Begin that is. An interface that holds a
+// nil pointer is set.
+func (r WriteFileRequest) check() {
+	switch {
+	case r.DB == nil:
+		panic("data: WriteFileRequest.DB is nil")
+	case r.Objects == nil:
+		panic("data: WriteFileRequest.Objects is nil")
+	case r.Body == nil:
+		panic("data: WriteFileRequest.Body is nil")
+	case r.Begin == nil:
+		panic("data: WriteFileRequest.Begin is nil")
 	}
-	return o
 }
 
-// OnComplete runs fn in the transaction that completes the file, after
-// Files.Complete has made the row available, with the call's context and
-// the completed File: where a consumer writes its own rows that must
-// commit exactly when the file does. An error from fn rolls the completion
-// back and abandons the write as a failed completion does, the pending row
-// deleted with its object; the call returns an error wrapping fn's.
-// Store.EnsureFile runs fn only when the call completes the file itself:
-// never for a row it finds available, or one another writer completed.
-func OnComplete(fn func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error) WriteOption {
-	return func(o *writeOptions) { o.onComplete = fn }
-}
-
-// RemoveOption configures one call of Store.RemoveFile beyond its required
-// arguments: AtVersion, a VersionOption, or OnDelete.
-type RemoveOption interface {
-	applyRemove(*removeOptions)
-}
-
-// removeOptions collects what the remove options set.
-type removeOptions struct {
-	versionOptions
-	onDelete func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error
-}
-
-// removeFunc is a RemoveOption that is not also a VersionOption.
-type removeFunc func(*removeOptions)
-
-func (opt removeFunc) applyRemove(o *removeOptions) { opt(o) }
-
-// removeOpts resolves a call's remove options.
-func removeOpts(opts []RemoveOption) removeOptions {
-	var o removeOptions
-	for _, opt := range opts {
-		opt.applyRemove(&o)
+// check panics as WriteFileRequest's does, naming EnsureFileRequest.
+func (r EnsureFileRequest) check() {
+	switch {
+	case r.DB == nil:
+		panic("data: EnsureFileRequest.DB is nil")
+	case r.Objects == nil:
+		panic("data: EnsureFileRequest.Objects is nil")
+	case r.Body == nil:
+		panic("data: EnsureFileRequest.Body is nil")
+	case r.Begin == nil:
+		panic("data: EnsureFileRequest.Begin is nil")
 	}
-	return o
 }
 
-// OnDelete runs fn in the transaction that begins the delete, after pick
-// and Files.Delete have marked the file deleting, with the call's context
-// and the File as marked: where a consumer writes its own rows that must
-// commit exactly when the delete begins. A retry, which finds the file
-// already deleting, runs no hook and finishes the delete. An error from fn
-// rolls the transaction back, leaving the file as it was and its object in
-// place; the call returns an error wrapping fn's.
-func OnDelete(fn func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error) RemoveOption {
-	return removeFunc(func(o *removeOptions) { o.onDelete = fn })
+// RemoveOptions configures one call of Store.RemoveFile beyond its
+// required arguments.
+type RemoveOptions struct {
+	// Version guards the delete as VersionOptions.Version guards
+	// Files.Delete. A zero Version leaves the call unguarded.
+	Version int64
+
+	// OnDelete runs in the transaction that begins the delete, after pick
+	// and Files.Delete have marked the file deleting, with the call's
+	// context and the File as marked: where a consumer writes its own rows
+	// that must commit exactly when the delete begins. A retry, which
+	// finds the file already deleting, runs no hook and finishes the
+	// delete. An error from it rolls the transaction back, leaving the
+	// file as it was and its object in place; the call returns an error
+	// wrapping it. A nil OnDelete runs no hook.
+	OnDelete func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error
 }
 
-// SweepOption configures one call of Store.Sweep beyond its required
-// arguments.
-type SweepOption func(*sweepOptions)
+// SweepOptions configures one call of Store.Sweep beyond its required
+// arguments. The zero SweepOptions runs passes of 100 records with no hook
+// and no stale reclaim.
+type SweepOptions struct {
+	// Batch bounds the records one pass handles: each file finished, each
+	// directory removed, and each stale row reclaimed counts one. A zero
+	// Batch means 100; a negative one is refused before any SQL.
+	Batch int
 
-// sweepOptions collects what the sweep options set.
-type sweepOptions struct {
-	batch    int
-	onRemove func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error
-	staleAge time.Duration
-	hasStale bool
+	// OnRemoveDirectory runs in the transaction that removes each
+	// directory of a branch, before the removal, with the call's context
+	// and the Directory: where a consumer removes its own rows that
+	// reference the directory. An error from it rolls the removal back for
+	// the next pass. A nil OnRemoveDirectory runs no hook.
+	OnRemoveDirectory func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error
+
+	// StaleOlderThan makes a pass also reclaim the pending and deleting
+	// file rows last written more than that long ago, oldest first. It
+	// must exceed the longest write the consumer lets run; see Stale rows
+	// and orphaned objects in docs/concepts.md. A zero StaleOlderThan
+	// reclaims no stale rows; a negative one is refused before any SQL.
+	StaleOlderThan time.Duration
 }
 
-// defaultBatch is the number of records a pass handles when Batch is not
-// given.
+// defaultBatch is the number of records a pass handles when
+// SweepOptions.Batch is zero.
 const defaultBatch = 100
 
-// Batch bounds the records one pass of Store.Sweep handles to n: each file
-// finished, each directory removed, and each stale row reclaimed counts
-// one. The default is 100; an n below 1 is refused before any SQL.
-func Batch(n int) SweepOption {
-	return func(o *sweepOptions) { o.batch = n }
-}
-
-// OnRemoveDirectory runs fn in the transaction that removes each directory
-// of a branch, before the removal: where a consumer removes its own rows
-// that reference the directory. An error from fn rolls the removal back
-// for the next pass.
-func OnRemoveDirectory(fn func(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory) error) SweepOption {
-	return func(o *sweepOptions) { o.onRemove = fn }
-}
-
-// StaleOlderThan makes a pass of Store.Sweep also reclaim the pending and
-// deleting file rows last written more than age ago, oldest first. age
-// must exceed the longest write the consumer lets run; see Stale rows and
-// orphaned objects in docs/concepts.md.
-func StaleOlderThan(age time.Duration) SweepOption {
-	return func(o *sweepOptions) {
-		o.staleAge = age
-		o.hasStale = true
+// batch is the bound of a pass: Batch, or defaultBatch when Batch is zero.
+func (o SweepOptions) batch() int {
+	if o.Batch == 0 {
+		return defaultBatch
 	}
+	return o.Batch
+}
+
+// stale reports whether a pass reclaims stale rows.
+func (o SweepOptions) stale() bool {
+	return o.StaleOlderThan > 0
 }

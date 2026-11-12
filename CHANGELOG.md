@@ -7,6 +7,218 @@ the `postgres` sub-module keeps its own.
 
 ## [Unreleased]
 
+## [v0.8.0] - 2026-11-12
+
+Configuration is one value, not variadic option functions or a long parameter list: every call
+of `data` that took options takes a required trailing options struct, whose zero value is the
+call's default, and the write protocols, the file create, and the moves take their arguments as
+one request value. The `sqlate` requirement moves to v0.7.0, which makes the same change to its
+transactions.
+
+### Added
+
+- `data.Options`, which configures `New`. `Engine` installs an engine; the zero value binds the
+  baseline.
+- `data.CreateOptions`, which configures `Directories.Create`, `Directories.Ensure`,
+  `Files.Create`, and `Files.Ensure`. `ID` supplies the id of the row the call inserts, checked
+  with `blobfs.ParseID` before any SQL; an empty `ID` mints one.
+- `data.VersionOptions`, which configures `Files.Hold`, `Files.Delete`, `Directories.Delete`,
+  `Directories.MarkDeleting`, and `Store.RemoveFileID`. `Version` guards the call; a zero
+  `Version` leaves it unguarded, since row versions start at 1.
+- `data.ListOptions`, which configures `Directories.List`, `Directories.Continue`, `Files.List`,
+  and `Files.Continue`. `IncludeDeleting` lists deleting rows too; the zero value hides them.
+- `data.CursorPage`, the page a `Continue` reads past a cursor: `After`, the cursor, and `Size`.
+  An empty `After` and a `Size` below 1 are refused before any SQL, with sqlate's errors.
+- `data.RemoveOptions`, which configures `Store.RemoveFile`. `Version` guards the delete as
+  `VersionOptions.Version` does, and `OnDelete` is the hook the `OnDelete` option set; nil runs
+  none.
+- `data.SweepOptions`, which configures `Store.Sweep`. `Batch` bounds a pass, zero meaning 100;
+  `OnRemoveDirectory` is the hook the option of that name set, nil running none; and
+  `StaleOlderThan` makes a pass reclaim stale rows older than it, zero reclaiming none. A
+  negative `Batch` or `StaleOlderThan` is refused before any SQL.
+- `data.FileSpec`, the file `Files.Create` and `Files.Ensure` write: `DirectoryID`, `Name`, and
+  `ContentType`, all required.
+- `data.FileMove`, where `Files.Move` puts the file: `DirectoryID`, `Name`, and `Version`, all
+  required.
+- `data.DirectoryMove`, where `Directories.Move` puts the directory: `ParentID`, `Name`, and
+  `Version`, all required.
+- `data.WriteFileRequest`, the write `Store.WriteFile` runs: `DB`, `Objects`, `Body`, `Size`,
+  `Begin`, and `OnComplete`, the hook the `OnComplete` option set, nil running none.
+  `WriteFile` panics before any I/O with `data: WriteFileRequest.DB is nil`, or the same message
+  naming `Objects`, `Body`, or `Begin`, checked in that order. An interface holding a nil
+  pointer is set.
+- `data.EnsureFileRequest`, the write `Store.EnsureFile` runs: `WriteFileRequest`'s fields with
+  the fixed `ID`. `EnsureFile` panics as `WriteFile` does, naming `EnsureFileRequest`, before it
+  checks the `ID`; an invalid or empty `ID` stays a returned `IDError`.
+
+### Changed
+
+- **Breaking:** The `sqlate` requirement is v0.7.0. `DB.Begin`, `DB.Transact`, and `Transact`
+  take a trailing `*sql.TxOptions` in place of variadic `TxOption` values, and `TxOption`,
+  `Isolation`, and `ReadOnly` are removed. sqlate's changelog migrates each. The store opens its
+  own transactions with nil, a default transaction, as before.
+- **Breaking:** `data.New(catalog, dialect, opts)` takes a `data.Options` in place of variadic
+  `data.Option` values.
+- **Breaking:** `Directories.Create` and `Directories.Ensure` take a trailing
+  `data.CreateOptions` in place of variadic `data.CreateOption` values.
+- **Breaking:** `Files.Create(ctx, sess, keys, spec, opts)` and
+  `Files.Ensure(ctx, sess, keys, spec, opts)` take a `data.FileSpec` in place of their
+  `directoryID`, `name`, and `contentType` parameters, and a trailing `data.CreateOptions` in
+  place of variadic `data.CreateOption` values.
+- **Breaking:** `Files.Move(ctx, sess, id, to)` takes a `data.FileMove` in place of its
+  `directoryID`, `name`, and `version` parameters, and `Directories.Move(ctx, tx, id, to)` a
+  `data.DirectoryMove` in place of its `parentID`, `name`, and `version` parameters.
+- **Breaking:** `Files.Hold`, `Files.Delete`, `Directories.Delete`, `Directories.MarkDeleting`,
+  and `Store.RemoveFileID` take a trailing `data.VersionOptions` in place of variadic
+  `data.VersionOption` values.
+- **Breaking:** `Directories.List` and `Files.List` take a trailing `data.ListOptions` in place
+  of variadic `data.ListOption` values, and `Directories.Continue` and `Files.Continue` take a
+  `data.CursorPage` in place of their `after` and `size` parameters and a trailing
+  `data.ListOptions`. The `data.Listing[T]` interface has both new signatures, so a consumer's
+  own implementation changes with them.
+- **Breaking:** `Store.WriteFile(ctx, req)` takes a `data.WriteFileRequest` in place of its
+  `db`, `objects`, `body`, `size`, and `begin` parameters and variadic `data.WriteOption`
+  values, and `Store.EnsureFile(ctx, req)` a `data.EnsureFileRequest` in place of the same and
+  its `id`. A nil `Body`, which reached the put before, now panics.
+- **Breaking:** `Store.RemoveFile` takes a trailing `data.RemoveOptions` in place of variadic
+  `data.RemoveOption` values.
+- **Breaking:** `Store.Sweep` takes a trailing `data.SweepOptions` in place of variadic
+  `data.SweepOption` values. A zero `Batch` or `StaleOlderThan`, which the option functions
+  refused, now means the default.
+- An empty `data.CreateOptions.ID` mints an id, where `WithID("")` was refused as an `IDError`.
+- `data/datatest`'s subtests `Deletes/AtVersion` and `Branches/MarkAtVersion` are named
+  `Guarded` and `MarkGuarded`, after the field; a `-run` filter naming the old names changes.
+
+### Removed
+
+- **Breaking:** `data.Option` and `data.WithEngine`, with no aliases. Set `Options.Engine`.
+- **Breaking:** `data.CreateOption` and `data.WithID`, with no aliases. Set `CreateOptions.ID`.
+- **Breaking:** `data.VersionOption` and `data.AtVersion`, with no aliases. Set
+  `VersionOptions.Version`, or `RemoveOptions.Version` for `Store.RemoveFile`.
+- **Breaking:** `data.ListOption` and `data.IncludeDeleting`, with no aliases. Set
+  `ListOptions.IncludeDeleting`.
+- **Breaking:** `data.WriteOption` and `data.OnComplete`, with no aliases. Set
+  `WriteFileRequest.OnComplete` or `EnsureFileRequest.OnComplete`.
+- **Breaking:** `data.RemoveOption` and `data.OnDelete`, with no aliases. Set
+  `RemoveOptions.OnDelete`.
+- **Breaking:** `data.SweepOption` and the `data.Batch`, `data.OnRemoveDirectory`, and
+  `data.StaleOlderThan` option functions, with no aliases. Set `SweepOptions.Batch`,
+  `SweepOptions.OnRemoveDirectory`, and `SweepOptions.StaleOlderThan`.
+
+### Migrating from v0.7.0
+
+- **Each option function becomes a field of the call's options struct.** Pass the struct's zero
+  value where no option was given; leave a field unset for its default.
+
+  | v0.7.0 | v0.8.0 |
+  |---|---|
+  | `data.WithEngine(e)` | `data.Options{Engine: e}` |
+  | `data.WithID(id)` | `data.CreateOptions{ID: id}` |
+  | `data.AtVersion(v)` | `data.VersionOptions{Version: v}`, or `data.RemoveOptions{Version: v}` for `RemoveFile` |
+  | `data.IncludeDeleting()` | `data.ListOptions{IncludeDeleting: true}` |
+  | `data.OnComplete(fn)` | `WriteFileRequest.OnComplete` or `EnsureFileRequest.OnComplete`: `fn` |
+  | `data.OnDelete(fn)` | `data.RemoveOptions{OnDelete: fn}` |
+  | `data.Batch(n)` | `data.SweepOptions{Batch: n}` |
+  | `data.OnRemoveDirectory(fn)` | `data.SweepOptions{OnRemoveDirectory: fn}` |
+  | `data.StaleOlderThan(age)` | `data.SweepOptions{StaleOlderThan: age}` |
+
+  ```go
+  // v0.7.0
+  store, err := data.New(catalog, dialect)
+  store, err := data.New(catalog, dialect, data.WithEngine(blobfspg.Engine))
+  dir, err := store.Directories.Create(ctx, db, parentID, "reports", data.WithID(id))
+  err := store.Files.Hold(ctx, tx, id)
+  marked, err := store.Directories.MarkDeleting(ctx, tx, id, data.AtVersion(v))
+  page, err := store.Files.List(ctx, db, dirID, req, query.Page{Number: 1, Size: 20})
+  err := store.RemoveFile(ctx, db, objects, pick, data.AtVersion(v), data.OnDelete(fn))
+  result, err := store.Sweep(ctx, db, objects, data.Batch(50), data.StaleOlderThan(time.Hour))
+
+  // v0.8.0
+  store, err := data.New(catalog, dialect, data.Options{})
+  store, err := data.New(catalog, dialect, data.Options{Engine: blobfspg.Engine})
+  dir, err := store.Directories.Create(ctx, db, parentID, "reports", data.CreateOptions{ID: id})
+  err := store.Files.Hold(ctx, tx, id, data.VersionOptions{})
+  marked, err := store.Directories.MarkDeleting(ctx, tx, id, data.VersionOptions{Version: v})
+  page, err := store.Files.List(ctx, db, dirID, req, query.Page{Number: 1, Size: 20},
+  	data.ListOptions{})
+  err := store.RemoveFile(ctx, db, objects, pick, data.RemoveOptions{Version: v, OnDelete: fn})
+  result, err := store.Sweep(ctx, db, objects,
+  	data.SweepOptions{Batch: 50, StaleOlderThan: time.Hour})
+  ```
+
+- **A file's create, the moves, and `Continue` take their arguments as one value.** The
+  positional parameters become fields of the same meaning; the row's own id and `keys` stay
+  positional.
+
+  ```go
+  // v0.7.0
+  file, err := store.Files.Create(ctx, tx, objects, dirID, name, contentType)
+  file, outcome, err := store.Files.Ensure(ctx, tx, objects, dirID, name, contentType,
+  	data.WithID(id))
+  file, err := store.Files.Move(ctx, tx, id, dirID, name, version)
+  dir, err := store.Directories.Move(ctx, tx, id, parentID, name, version)
+  next, err := store.Files.Continue(ctx, db, dirID, req, page.Next, 20, data.IncludeDeleting())
+
+  // v0.8.0
+  spec := data.FileSpec{DirectoryID: dirID, Name: name, ContentType: contentType}
+  file, err := store.Files.Create(ctx, tx, objects, spec, data.CreateOptions{})
+  file, outcome, err := store.Files.Ensure(ctx, tx, objects, spec, data.CreateOptions{ID: id})
+  file, err := store.Files.Move(ctx, tx, id,
+  	data.FileMove{DirectoryID: dirID, Name: name, Version: version})
+  dir, err := store.Directories.Move(ctx, tx, id,
+  	data.DirectoryMove{ParentID: parentID, Name: name, Version: version})
+  next, err := store.Files.Continue(ctx, db, dirID, req, data.CursorPage{After: page.Next, Size: 20},
+  	data.ListOptions{IncludeDeleting: true})
+  ```
+
+- **The write protocols take one request value.** Each parameter becomes a field of the same
+  meaning, and `OnComplete` a field, nil for none.
+
+  ```go
+  // v0.7.0
+  file, err := store.WriteFile(ctx, db, objects, body, size, begin)
+  file, err := store.WriteFile(ctx, db, objects, body, size, begin, data.OnComplete(fn))
+  file, stored, err := store.EnsureFile(ctx, db, objects, id, body, size, begin)
+
+  // v0.8.0
+  file, err := store.WriteFile(ctx, data.WriteFileRequest{
+  	DB: db, Objects: objects, Body: body, Size: size, Begin: begin,
+  })
+  file, err := store.WriteFile(ctx, data.WriteFileRequest{
+  	DB: db, Objects: objects, Body: body, Size: size, Begin: begin, OnComplete: fn,
+  })
+  file, stored, err := store.EnsureFile(ctx, data.EnsureFileRequest{
+  	DB: db, Objects: objects, ID: id, Body: body, Size: size, Begin: begin,
+  })
+  ```
+
+- **A nil `DB`, `Objects`, `Body`, or `Begin` on a write request panics.** Each is a wiring
+  mistake, and the call panics naming the field before any I/O. A nil `body`, which v0.7.0 passed
+  to the put, now panics, so an empty file passes `http.NoBody` or an empty reader such as
+  `strings.NewReader("")` as its `Body`.
+
+- **Zero values that were refused are now valid.** `data.Batch(0)` was refused, and a zero
+  `SweepOptions.Batch` means 100. `data.StaleOlderThan(0)` was refused, and a zero
+  `SweepOptions.StaleOlderThan` reclaims no stale rows, as a sweep without the option did.
+  `data.WithID("")` was refused as an `IDError`, and an empty `CreateOptions.ID` mints an id. A
+  negative `Batch` or `StaleOlderThan` is still refused, and `EnsureFileRequest.ID` still refuses
+  the empty id.
+
+- **`AtVersion(0)` becomes an unguarded call.** `data.AtVersion(0)` guarded the call at a
+  version no row has, so it matched no row and failed as `query.ErrVersionMismatch`; `VersionOptions{}` and
+  `RemoveOptions{}` leave the call unguarded. A caller that passed a version read from a row
+  passes it unchanged.
+
+- **A zero `FileMove.Version` or `DirectoryMove.Version` is still a guard.** A move is always
+  guarded: a zero `Version` matches no row and the call fails as `query.ErrVersionMismatch`,
+  as a zero `version` parameter did. Pass the version read from the row.
+
+- **sqlate's own transactions change too.** sqlate's changelog migrates `DB.Begin`,
+  `DB.Transact`, `Transact`, and a `Beginner`'s `Begin` to a trailing `*sql.TxOptions` from
+  v0.6.x, so a consumer's `sqlate.Transact(ctx, db, fn)` becomes
+  `sqlate.Transact(ctx, db, fn, nil)` and `sqlate.Isolation(sql.LevelSerializable)` becomes
+  `&sql.TxOptions{Isolation: sql.LevelSerializable}`.
+
 ## [v0.7.0] - 2026-10-15
 
 ### Added
@@ -286,7 +498,8 @@ library never calls.
 - `data/datatest`, the conformance suite: `Run` checks a store over any engine against the
   baseline on a live database, the hold's refusals and interleavings with a delete included.
 
-[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/standards-lab/blobfs/compare/v0.8.0...HEAD
+[v0.8.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.8.0
 [v0.7.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.7.0
 [v0.6.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.6.0
 [v0.5.0]: https://github.com/standards-lab/blobfs/releases/tag/v0.5.0

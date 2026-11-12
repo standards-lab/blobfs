@@ -78,13 +78,13 @@ is removed through the delete steps, which a pending row accepts, or by a sweep 
 [stale rows](#stale-rows-and-orphaned-objects).
 
 `data.Store.WriteFile` runs the three steps end to end. It runs the first step in one
-transaction around a callback of the consumer's, puts the object through the consumer's
+transaction around the consumer's `Begin` callback, puts the object through the consumer's
 `data.ObjectStore` outside any transaction, and completes the row in a transaction of its own,
-where `data.OnComplete` runs the consumer's function so its rows commit with the file; when the
-put or the completion fails, the function's error among them, it abandons the write.
-`data.Store.EnsureFile` is the retry-safe form of `WriteFile` for a file under a fixed id, and
-runs the function only when the call itself completes the file. A consumer calls the steps
-itself only when its write does not fit that shape; see [the
+where `data.WriteFileRequest.OnComplete` runs the consumer's function so its rows commit with
+the file; when the put or the completion fails, the function's error among them, it abandons
+the write. `data.Store.EnsureFile` is the retry-safe form of `WriteFile` for a file under a
+fixed id, and runs the function only when the call itself completes the file. A consumer calls
+the steps itself only when its write does not fit that shape; see [the
 protocols](features.md#the-protocols).
 
 ## The two-phase delete
@@ -98,24 +98,24 @@ A file is deleted in two steps around the object delete:
 3. `Files.Purge` removes the row.
 
 Every step is idempotent. `Delete` returns a row that is already deleting as it is, without
-advancing its version again. `Delete` with `data.AtVersion` moves the row only at the version
-the caller read, for a caller that acts on a listing without reading the row again. `Purge`
-succeeds when the row is already gone, because a retry after a crash cannot tell its own earlier
-success from a row that never existed; a caller that wants to report a missing file resolves it
-before `Delete`. `Purge` refuses a row that is not deleting with `blobfs.ErrNotDeleting`, since
-that row's object may still be wanted. A stop at any point is resumed by running the steps again
-from the first. A deleting row is hidden from the listings, so a delete that stops and is never
-resumed leaves a row only a read by id or name, a listing with `data.IncludeDeleting`, or a
-sweep finds.
+advancing its version again. `Delete` with `data.VersionOptions.Version` set moves the row only
+at the version the caller read, for a caller that acts on a listing without reading the row
+again. `Purge` succeeds when the row is already gone, because a retry after a crash cannot tell
+its own earlier success from a row that never existed; a caller that wants to report a missing
+file resolves it before `Delete`. `Purge` refuses a row that is not deleting with
+`blobfs.ErrNotDeleting`, since that row's object may still be wanted. A stop at any point is
+resumed by running the steps again from the first. A deleting row is hidden from the listings,
+so a delete that stops and is never resumed leaves a row only a read by id or name, a listing
+with `data.ListOptions.IncludeDeleting`, or a sweep finds.
 
 `data.Store.RemoveFile` runs the three steps end to end. It runs the first step in one
 transaction around a callback of the consumer's, in which the consumer removes its own
-references to the file, and where `data.OnDelete` runs the consumer's function once the row is
-deleting, so its rows commit as the delete begins; a retry over a row already deleting runs no
-function, and the function's error rolls the step back. `data.Store.RemoveFileID` is the same
-delete of a file the caller names by id. `data.Store.PurgeFile` runs the last two steps, for a
-consumer that began the delete in a transaction of its own; see [the
-protocols](features.md#the-protocols).
+references to the file, and where `data.RemoveOptions.OnDelete` runs the consumer's function
+once the row is deleting, so its rows commit as the delete begins; a retry over a row already
+deleting runs no function, and the function's error rolls the step back.
+`data.Store.RemoveFileID` is the same delete of a file the caller names by id.
+`data.Store.PurgeFile` runs the last two steps, for a consumer that began the delete in a
+transaction of its own; see [the protocols](features.md#the-protocols).
 
 Every mutation other than the delete steps refuses a deleting row with `blobfs.ErrDeleting`, so
 no operation acts on a row whose object is gone or about to be. The refusal is a
@@ -132,7 +132,7 @@ A step that refuses a deleting row, or a row in a deleting directory, reports
 `Files.Delete` and a [mark](#deleting-a-branch) advance the version of each row they change, so
 a writer or a mover that read the row before the delete began holds a version the row no longer
 carries, and a reread and retry could never resolve the mismatch; the refusal tells it why. The
-same holds for the delete steps themselves: a `Files.Delete` or a mark with `data.AtVersion`
+same holds for the delete steps themselves: a `Files.Delete` or a mark with a `Version` set
 that finds its row already deleting is the step's retry, which converges whatever the version.
 
 ## Statuses and their transitions
@@ -157,7 +157,7 @@ branch](#deleting-a-branch) sets and nothing undoes.
 
 | Step | Caller | Session |
 |---|---|---|
-| `Files.Create` or `Files.Ensure` | the consumer, often beside its own rows, or `Files.Create` in `Store.WriteFile`'s callback and `Files.Ensure` in `Store.EnsureFile`'s | the pool or a transaction |
+| `Files.Create` or `Files.Ensure` | the consumer, often beside its own rows, or `Files.Create` in `Store.WriteFile`'s `Begin` and `Files.Ensure` in `Store.EnsureFile`'s | the pool or a transaction |
 | the put | the consumer through its object store, or `Store.WriteFile` through the consumer's `ObjectStore` | none |
 | `Files.Complete` | the consumer, or `Store.WriteFile` | the pool or a transaction |
 | `Files.Delete` | the consumer, after its own reference check, or `Store.RemoveFile` after its callback | a transaction |
@@ -207,8 +207,9 @@ the mark waits on the directory's row is still marked, deleting under an active 
 swept. A consumer on the baseline takes one of three courses, for its moves and its marks alike:
 
 - runs every transaction that moves a directory or marks a branch at serializable isolation,
-  `sqlate.Isolation(sql.LevelSerializable)`, and retries on `sqlate.ErrSerializationFailure`,
-  which the engine returns for the second of two conflicting transactions;
+  `&sql.TxOptions{Isolation: sql.LevelSerializable}` passed to `Begin` or `Transact`, and
+  retries on `sqlate.ErrSerializationFailure`, which the engine returns for the second of two
+  conflicting transactions;
 - serializes directory moves and marks outside the database;
 - installs an engine whose variant takes a real lock, such as the PostgreSQL engine's advisory
   lock.
@@ -241,8 +242,8 @@ A listing hides deleting rows: the directories of a branch being deleted, and th
 delete began or whose branch was marked. It appends a filter on status after the caller's own,
 so neither the page nor the total holds them, and the listing of a directory that is itself
 deleting is refused with `blobfs.ErrDeleting`. A directory that does not exist still lists
-empty. `data.IncludeDeleting` shows deleting rows and lists a deleting directory: it is how a
-sweep, or a consumer's own tool, finds the work of a delete.
+empty. `data.ListOptions.IncludeDeleting` shows deleting rows and lists a deleting directory:
+it is how a sweep, or a consumer's own tool, finds the work of a delete.
 
 Each listing is a projection of sqlate's `query` package. Its base is an authored statement
 anchored on the directory, and the `query` package composes the caller's `query.Directives`
@@ -266,10 +267,10 @@ pages, so a caller walking a large directory by cursor reads the total once and 
 
 `Directories.Delete` removes one empty directory. It needs no version guard: the one change a
 stale version would catch, a child added since the caller read the directory, the foreign keys
-refuse already; `data.AtVersion` adds one for a caller that acts on the version its user saw. A
-branch, a directory with everything beneath it, is deleted in two stages instead, because its
-objects live in a store no transaction reaches and there may be more of them than one pass
-should hold:
+refuse already; `data.VersionOptions.Version` adds one for a caller that acts on the version its
+user saw. A branch, a directory with everything beneath it, is deleted in two stages instead,
+because its objects live in a store no transaction reaches and there may be more of them than
+one pass should hold:
 
 1. `Directories.MarkDeleting` marks the branch in one transaction: the directory it names, every
    directory beneath it, and every file in them move to `deleting`, each row's version advancing
@@ -287,7 +288,7 @@ its name under its active parent until the sweep removes it, as [a deleting row
 does](#the-two-phase-delete). A read by id, name, or path still finds its rows, with their
 status. A mark is never undone, and the root cannot be marked.
 
-The mark is guarded like the other steps a caller takes on a row it read. `data.AtVersion` marks
+The mark is guarded like the other steps a caller takes on a row it read. A set `Version` marks
 the branch only while its root is at the version the caller read, the directory its user saw and
 confirmed; a directory at another version is `query.ErrVersionMismatch`, and nothing is marked.
 A directory already deleting is the mark's retry and reports what it reached anew (see
@@ -317,41 +318,42 @@ the one any create that raced the mark meets: the sweep marks it and removes it,
 
 The sweep keeps no state. On every pass it finds its work in the database:
 `Directories.BranchRoots` returns the roots of the branches being deleted, each a deleting
-directory under an active parent, and the listings with `data.IncludeDeleting` reach the rest of
-each branch. Every step it takes is idempotent, so a pass stopped at any point, by an error or a
-crash, is finished by the next, and a row another pass removed first counts as done. A pass is
-bounded by `data.Batch`, a count of records and not of bytes, since a pass never reads an
-object's size, and reports `More` when work remains that it did not reach; a consumer runs
-passes while `More` is true, and again on a schedule of its own. A refusal leaves the row it
-meets, and the directories above it, which cannot be removed while it remains, for a later pass,
-and the pass goes on past it: to the row's siblings, to the next branch, and to the next stale
-row, each read past the ones the pass left, so a row refused on every pass holds back nothing
-behind it. A refusal spends none of the budget and is not `More`: the pass returns every refusal
-joined, with a result that counts what it did, and a later pass tries the row again.
+directory under an active parent, and the listings with `data.ListOptions.IncludeDeleting` reach
+the rest of each branch. Every step it takes is idempotent, so a pass stopped at any point, by
+an error or a crash, is finished by the next, and a row another pass removed first counts as
+done. A pass is bounded by `data.SweepOptions.Batch`, a count of records and not of bytes, since
+a pass never reads an object's size, and reports `More` when work remains that it did not reach;
+a consumer runs passes while `More` is true, and again on a schedule of its own. A refusal
+leaves the row it meets, and the directories above it, which cannot be removed while it remains,
+for a later pass, and the pass goes on past it: to the row's siblings, to the next branch, and
+to the next stale row, each read past the ones the pass left, so a row refused on every pass
+holds back nothing behind it. A refusal spends none of the budget and is not `More`: the pass
+returns every refusal joined, with a result that counts what it did, and a later pass tries the
+row again.
 
 ### The consumer's own rows
 
 A consumer's row that references a directory in the branch, such as the owner row that binds a
 top-level directory to a unit (see [ownership](#ownership-stays-with-the-consumer)), would
 refuse the directory's removal through its foreign key as `blobfs.ErrReferenced`.
-`data.OnRemoveDirectory` runs the consumer's function in the transaction that removes each
-directory, before the removal, so the consumer's row goes with the directory or neither goes. An
-error from the function leaves the directory deleting for the next pass. A consumer's reference
-to a file refuses the file's purge the same way: the file stays deleting, and each pass reports
-the refusal until the reference is gone. A consumer that holds its files before referencing them
-keeps the reference-then-delete rule across a branch: the mark waits on a hold as `Files.Delete`
-does.
+`data.SweepOptions.OnRemoveDirectory` runs the consumer's function in the transaction that
+removes each directory, before the removal, so the consumer's row goes with the directory or
+neither goes. An error from the function leaves the directory deleting for the next pass. A
+consumer's reference to a file refuses the file's purge the same way: the file stays deleting,
+and each pass reports the refusal until the reference is gone. A consumer that holds its files
+before referencing them keeps the reference-then-delete rule across a branch: the mark waits on
+a hold as `Files.Delete` does.
 
 ### Stale rows and orphaned objects
 
 Both file protocols can stop partway and never be resumed: a write after its first step leaves a
 pending row, and a delete after `Files.Delete` leaves a deleting row, hidden from the listings
-yet still holding its name. These are stale rows. With `data.StaleOlderThan(age)`, a pass also
-reclaims the stale rows last written longer ago than `age`, oldest first, from the budget the
-branches leave. It moves a pending row to deleting at the version the pass read, so a write that
-completed in the meantime is left as it is, then deletes the row's object and purges the row. A
-deleting row whose caller is still finishing its delete is harmless to finish twice, since each
-step is idempotent. Without the option a pass reclaims no stale row.
+yet still holding its name. These are stale rows. With `data.SweepOptions.StaleOlderThan` set, a
+pass also reclaims the stale rows last written longer ago than that age, oldest first, from the
+budget the branches leave. It moves a pending row to deleting at the version the pass read, so a
+write that completed in the meantime is left as it is, then deletes the row's object and purges
+the row. A deleting row whose caller is still finishing its delete is harmless to finish twice,
+since each step is idempotent. With a zero `StaleOlderThan` a pass reclaims no stale row.
 
 A sweep deletes an object before it purges the object's row, so no row it removes leaves an
 object behind. It cannot close one case: a write whose put lands after its pending row was
@@ -395,8 +397,8 @@ that writes a row version. The `data.Variant` interface names them, with `Serial
 baseline is the standard-tier variant `data.New` binds.
 
 An engine sub-module adds an engine's native forms and its DDL. It ships a `data.Engine`, which
-`data.New` calls with the baseline it compiled, and a consumer installs it with
-`data.WithEngine`. The PostgreSQL sub-module's variant takes a transaction-scoped advisory lock,
+`data.New` calls with the baseline it compiled, and a consumer installs it as
+`data.Options.Engine`. The PostgreSQL sub-module's variant takes a transaction-scoped advisory lock,
 resolves a path of any depth in one statement, and holds a file's row with a locking read that
 writes no row version. Each native statement declares its tier and a
 port note, the engine feature it uses and what a port to another engine must provide.

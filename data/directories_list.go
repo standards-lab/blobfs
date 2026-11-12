@@ -12,21 +12,20 @@ import (
 )
 
 // List reads one page, by number, of the directories under parentID under
-// req, hiding deleting ones unless IncludeDeleting is given. Refusals:
-// query.ErrDirectives before any SQL; blobfs.ErrDeleting for a deleting
-// parent. See Listings in docs/features.md.
-func (d *Directories) List(ctx context.Context, sess sqlate.Session, parentID string, req query.Directives, page query.Page, opts ...ListOption) (_ query.Collection[blobfs.Directory], err error) {
+// req, under opts. Refusals: query.ErrDirectives before any SQL;
+// blobfs.ErrDeleting for a deleting parent unless opts includes deleting.
+// See Listings in docs/features.md.
+func (d *Directories) List(ctx context.Context, sess sqlate.Session, parentID string, req query.Directives, page query.Page, opts ListOptions) (_ query.Collection[blobfs.Directory], err error) {
 	defer wrap(&err, "list directories under %s", parentID)
 	return d.list.list(ctx, sess, parentID, req, page, opts)
 }
 
-// Continue reads the size directories under parentID past after, the Next
-// of an earlier page of the listing called the same way. Refusals: List's,
-// and a query.CursorError before any SQL. See Listings in
-// docs/features.md.
-func (d *Directories) Continue(ctx context.Context, sess sqlate.Session, parentID string, req query.Directives, after query.Cursor, size int, opts ...ListOption) (_ query.Collection[blobfs.Directory], err error) {
+// Continue reads the page of directories under parentID past page.After,
+// under opts. Refusals: List's, and a query.CursorError before any SQL.
+// See Listings in docs/features.md.
+func (d *Directories) Continue(ctx context.Context, sess sqlate.Session, parentID string, req query.Directives, page CursorPage, opts ListOptions) (_ query.Collection[blobfs.Directory], err error) {
 	defer wrap(&err, "continue directories under %s", parentID)
-	return d.list.cont(ctx, sess, parentID, req, after, size, opts)
+	return d.list.cont(ctx, sess, parentID, req, page, opts)
 }
 
 // Listing is the interface of the two listings, Directories and Files,
@@ -35,8 +34,8 @@ func (d *Directories) Continue(ctx context.Context, sess sqlate.Session, parentI
 // consumer that reads either listing the same way takes a Listing of the
 // row type.
 type Listing[T any] interface {
-	List(ctx context.Context, sess sqlate.Session, id string, req query.Directives, page query.Page, opts ...ListOption) (query.Collection[T], error)
-	Continue(ctx context.Context, sess sqlate.Session, id string, req query.Directives, after query.Cursor, size int, opts ...ListOption) (query.Collection[T], error)
+	List(ctx context.Context, sess sqlate.Session, id string, req query.Directives, page query.Page, opts ListOptions) (query.Collection[T], error)
+	Continue(ctx context.Context, sess sqlate.Session, id string, req query.Directives, page CursorPage, opts ListOptions) (query.Collection[T], error)
 }
 
 var (
@@ -56,7 +55,7 @@ type listing[T any] struct {
 
 // list reads one page by number of the listing anchored on id. See
 // Directories.List and Files.List.
-func (l listing[T]) list(ctx context.Context, sess sqlate.Session, id string, req query.Directives, page query.Page, opts []ListOption) (query.Collection[T], error) {
+func (l listing[T]) list(ctx context.Context, sess sqlate.Session, id string, req query.Directives, page query.Page, opts ListOptions) (query.Collection[T], error) {
 	req, include := l.directives(req, opts)
 	c, err := l.projection.List(ctx, sess, req, page, query.With(l.anchor, id))
 	if err == nil && !include {
@@ -68,11 +67,11 @@ func (l listing[T]) list(ctx context.Context, sess sqlate.Session, id string, re
 	return c, nil
 }
 
-// cont reads the size rows past after of the listing anchored on id. See
+// cont reads the page past page.After of the listing anchored on id. See
 // Directories.Continue and Files.Continue.
-func (l listing[T]) cont(ctx context.Context, sess sqlate.Session, id string, req query.Directives, after query.Cursor, size int, opts []ListOption) (query.Collection[T], error) {
+func (l listing[T]) cont(ctx context.Context, sess sqlate.Session, id string, req query.Directives, page CursorPage, opts ListOptions) (query.Collection[T], error) {
 	req, include := l.directives(req, opts)
-	c, err := l.projection.Continue(ctx, sess, req, after, size, query.With(l.anchor, id))
+	c, err := l.projection.Continue(ctx, sess, req, page.After, page.Size, query.With(l.anchor, id))
 	if err == nil && !include {
 		err = l.dirs.listable(ctx, sess, id)
 	}
@@ -83,14 +82,10 @@ func (l listing[T]) cont(ctx context.Context, sess sqlate.Session, id string, re
 }
 
 // directives returns the directives the listing runs, with the status
-// filter appended unless IncludeDeleting was given, and whether it was.
+// filter appended unless opts includes deleting rows, and whether it does.
 // The caller's slice is never appended to in place.
-func (l listing[T]) directives(req query.Directives, opts []ListOption) (query.Directives, bool) {
-	var o listOptions
-	for _, opt := range opts {
-		opt(&o)
-	}
-	if o.includeDeleting {
+func (l listing[T]) directives(req query.Directives, opts ListOptions) (query.Directives, bool) {
+	if opts.IncludeDeleting {
 		return req, true
 	}
 	req.Filters = append(slices.Clip(req.Filters), query.Filter{Field: "status", Op: query.OpNe, Value: l.deleting})

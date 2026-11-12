@@ -51,17 +51,23 @@ func remark() []sqltest.Response {
 	return []sqltest.Response{{Affected: 0}, deletingRoot(), {Affected: 1}}
 }
 
-// TestSweepRefusesBeforeSQL proves a Batch below 1 and a StaleOlderThan
-// age that is not positive are refused before any SQL.
+// TestSweepRefusesBeforeSQL proves a negative Batch and a negative
+// StaleOlderThan are refused before any SQL, with their messages.
 func TestSweepRefusesBeforeSQL(t *testing.T) {
 	ctx := context.Background()
-	for _, opt := range []data.SweepOption{data.Batch(0), data.Batch(-1), data.StaleOlderThan(0), data.StaleOlderThan(-time.Hour)} {
+	for _, c := range []struct {
+		opts data.SweepOptions
+		want string
+	}{
+		{data.SweepOptions{Batch: -1}, "data: sweep: the batch -1 is below 1"},
+		{data.SweepOptions{StaleOlderThan: -time.Hour}, "data: sweep: the stale age -1h0m0s is not positive"},
+	} {
 		s, db, rec := openStore(t, fallback)
-		if _, err := s.Sweep(ctx, db, &objectLog{}, opt); err == nil || !strings.HasPrefix(err.Error(), "data: sweep: ") {
-			t.Errorf("Sweep with a refused option = %v, want a refusal", err)
+		if _, err := s.Sweep(ctx, db, &objectLog{}, c.opts); err == nil || err.Error() != c.want {
+			t.Errorf("Sweep with %+v = %v, want %q", c.opts, err, c.want)
 		}
 		if n := len(rec.Calls()); n != 0 {
-			t.Errorf("the refused option ran %d calls", n)
+			t.Errorf("the refused %+v ran %d calls", c.opts, n)
 		}
 	}
 }
@@ -72,7 +78,7 @@ func TestSweepNothingToDo(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, noDirectory())
 	objects := &objectLog{}
-	got, err := s.Sweep(ctx, db, objects)
+	got, err := s.Sweep(ctx, db, objects, data.SweepOptions{})
 	if err != nil || got != (data.SweepResult{}) {
 		t.Errorf("Sweep = %+v, %v, want a zero result", got, err)
 	}
@@ -82,7 +88,7 @@ func TestSweepNothingToDo(t *testing.T) {
 
 	s, db, rec = openStore(t, fallback, noDirectory(), noFile())
 	start := time.Now()
-	got, err = s.Sweep(ctx, db, objects, data.StaleOlderThan(time.Hour), data.Batch(7))
+	got, err = s.Sweep(ctx, db, objects, data.SweepOptions{Batch: 7, StaleOlderThan: time.Hour})
 	if err != nil || got != (data.SweepResult{}) {
 		t.Errorf("Sweep with StaleOlderThan = %+v, %v, want a zero result", got, err)
 	}
@@ -121,7 +127,7 @@ func TestSweepABranch(t *testing.T) {
 		hooked = append(hooked, dir.ID)
 		return nil
 	}
-	got, err := s.Sweep(ctx, db, objects, data.OnRemoveDirectory(hook))
+	got, err := s.Sweep(ctx, db, objects, data.SweepOptions{OnRemoveDirectory: hook})
 	if err != nil || got != (data.SweepResult{Files: 1, Directories: 1}) {
 		t.Fatalf("Sweep = %+v, %v, want one file and one directory", got, err)
 	}
@@ -147,7 +153,7 @@ func TestSweepBatch(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, deletingRoot(), files("D", "F", "G"), sqltest.Response{Affected: 1})
 	objects := &objectLog{}
-	got, err := s.Sweep(ctx, db, objects, data.Batch(1))
+	got, err := s.Sweep(ctx, db, objects, data.SweepOptions{Batch: 1})
 	if err != nil || got != (data.SweepResult{Files: 1, More: true}) {
 		t.Fatalf("Sweep = %+v, %v, want one file and More", got, err)
 	}
@@ -162,7 +168,7 @@ func TestSweepBatch(t *testing.T) {
 	// on the page read past F.
 	errStore := errors.New("the store is down")
 	s, db, rec = openStore(t, fallback, deletingRoot(), files("D", "F", "G"), files("D", "G"), sqltest.Response{Affected: 1})
-	got, err = s.Sweep(ctx, db, &failingKey{key: "F/f.txt", err: errStore}, data.Batch(1))
+	got, err = s.Sweep(ctx, db, &failingKey{key: "F/f.txt", err: errStore}, data.SweepOptions{Batch: 1})
 	if !errors.Is(err, errStore) || got != (data.SweepResult{Files: 1, More: true}) {
 		t.Fatalf("Sweep past a refused file = %+v, %v, want G finished, More, and the store's error", got, err)
 	}
@@ -199,7 +205,7 @@ func TestSweepStraggler(t *testing.T) {
 	responses := append([]sqltest.Response{deletingRoot(), straggler}, remark()...)
 	s, db, rec := openStore(t, fallback, append(responses,
 		files("D", "S"), sqltest.Response{Affected: 1}, noDirectory(), sqltest.Response{Affected: 1})...)
-	got, err := s.Sweep(ctx, db, &objectLog{})
+	got, err := s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{})
 	if err != nil || got != (data.SweepResult{Files: 1, Directories: 1}) {
 		t.Errorf("Sweep over a straggler = %+v, %v, want it marked and swept with the branch", got, err)
 	}
@@ -213,7 +219,7 @@ func TestSweepStraggler(t *testing.T) {
 
 	s, db, rec = openStore(t, fallback, append(responses, straggler)...)
 	objects := &objectLog{}
-	got, err = s.Sweep(ctx, db, objects)
+	got, err = s.Sweep(ctx, db, objects, data.SweepOptions{})
 	if err != nil || got != (data.SweepResult{More: true}) || len(objects.keys) != 0 {
 		t.Errorf("Sweep over a straggler after the mark = %+v, %v, deleted %v, want More and nothing done", got, err, objects.keys)
 	}
@@ -232,7 +238,7 @@ func TestSweepRefusals(t *testing.T) {
 	ctx := context.Background()
 	errStore := errors.New("the store is down")
 	s, db, rec := openStore(t, fallback, deletingRoot(), files("D", "F"), noDirectory())
-	got, err := s.Sweep(ctx, db, &objectLog{err: errStore})
+	got, err := s.Sweep(ctx, db, &objectLog{err: errStore}, data.SweepOptions{})
 	if !errors.Is(err, errStore) || got != (data.SweepResult{}) {
 		t.Errorf("Sweep over a failing store = %+v, %v, want the store's error", got, err)
 	}
@@ -242,7 +248,7 @@ func TestSweepRefusals(t *testing.T) {
 
 	errHook := errors.New("the owner row is locked")
 	s, db, rec = openStore(t, fallback, deletingRoot(), files("D"), noDirectory())
-	got, err = s.Sweep(ctx, db, &objectLog{}, data.OnRemoveDirectory(func(context.Context, *sqlate.Tx, blobfs.Directory) error { return errHook }))
+	got, err = s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{OnRemoveDirectory: func(context.Context, *sqlate.Tx, blobfs.Directory) error { return errHook }})
 	if !errors.Is(err, errHook) || got != (data.SweepResult{}) {
 		t.Errorf("Sweep under a failing hook = %+v, %v, want the hook's error", got, err)
 	}
@@ -258,7 +264,7 @@ func TestSweepRefusals(t *testing.T) {
 func TestSweepRemovalOutcomes(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, deletingRoot(), files("D"), noDirectory(), sqltest.Response{Affected: 0}, noDirectory())
-	got, err := s.Sweep(ctx, db, &objectLog{})
+	got, err := s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{})
 	if err != nil || got != (data.SweepResult{}) {
 		t.Errorf("Sweep of a directory gone before its removal = %+v, %v, want nothing counted and no error", got, err)
 	}
@@ -271,7 +277,7 @@ func TestSweepRemovalOutcomes(t *testing.T) {
 		violation(blobfs.ConstraintForeignKeyDirectoryParent, sqlate.ErrForeignKeyViolation),
 		sqltest.Response{Affected: 0}, deletingRoot(), sqltest.Response{Affected: 0},
 		files("D"), noDirectory(), sqltest.Response{Affected: 1})
-	got, err = s.Sweep(ctx, db, &objectLog{})
+	got, err = s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{})
 	if err != nil || got != (data.SweepResult{Directories: 1}) {
 		t.Errorf("Sweep of a directory refused as not empty = %+v, %v, want it marked again and removed", got, err)
 	}
@@ -281,7 +287,7 @@ func TestSweepRemovalOutcomes(t *testing.T) {
 	wantDone(t, rec)
 
 	s, db, rec = openStore(t, fallback, deletingRoot(), files("D"), noDirectory(), violation("fk_owner_directory", sqlate.ErrForeignKeyViolation))
-	got, err = s.Sweep(ctx, db, &objectLog{})
+	got, err = s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{})
 	if !errors.Is(err, blobfs.ErrReferenced) || got != (data.SweepResult{}) {
 		t.Errorf("Sweep of a directory a consumer references = %+v, %v, want ErrReferenced and nothing counted", got, err)
 	}
@@ -298,7 +304,7 @@ func TestSweepRemark(t *testing.T) {
 	ctx := context.Background()
 	straggler := fileIn("S", "D", "s.txt", blobfs.StatusAvailable, 1)
 	s, db, rec := openStore(t, fallback, deletingRoot(), straggler, sqltest.Response{Affected: 0}, noDirectory())
-	got, err := s.Sweep(ctx, db, &objectLog{})
+	got, err := s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{})
 	if err != nil || got != (data.SweepResult{}) {
 		t.Errorf("Sweep of a branch gone before its mark = %+v, %v, want nothing counted and no error", got, err)
 	}
@@ -309,7 +315,7 @@ func TestSweepRemark(t *testing.T) {
 
 	errMark := errors.New("the mark failed")
 	s, db, rec = openStore(t, fallback, deletingRoot(), straggler, sqltest.Response{Err: errMark})
-	got, err = s.Sweep(ctx, db, &objectLog{})
+	got, err = s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{})
 	if !errors.Is(err, errMark) || !strings.Contains(err.Error(), "branch D: mark directory D deleting: ") || got != (data.SweepResult{}) {
 		t.Errorf("Sweep under a failing mark = %+v, %v, want the mark's error against the branch", got, err)
 	}
@@ -317,7 +323,7 @@ func TestSweepRemark(t *testing.T) {
 
 	child := directoryIn("C", "D", "c", blobfs.DirectoryStatusActive, 1)
 	s, db, rec = openStore(t, fallback, deletingRoot(), files("D"), child, remark()[0], remark()[1], remark()[2], files("D"), child)
-	got, err = s.Sweep(ctx, db, &objectLog{})
+	got, err = s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{})
 	if err != nil || got != (data.SweepResult{More: true}) {
 		t.Errorf("Sweep over an active child directory = %+v, %v, want the branch marked once and More", got, err)
 	}
@@ -335,17 +341,17 @@ func TestSweepRemains(t *testing.T) {
 	other := directoryIn("E", blobfs.RootID, "e", blobfs.DirectoryStatusDeleting, 2)
 	for _, c := range []struct {
 		name  string
-		opts  []data.SweepOption
+		stale time.Duration
 		reads []sqltest.Response
 		more  bool
 	}{
-		{"a root", nil, []sqltest.Response{other}, true},
-		{"none", nil, []sqltest.Response{noDirectory()}, false},
-		{"a stale row", []data.SweepOption{data.StaleOlderThan(time.Hour)}, []sqltest.Response{noDirectory(), files("D", "F")}, true},
-		{"no stale row", []data.SweepOption{data.StaleOlderThan(time.Hour)}, []sqltest.Response{noDirectory(), noFile()}, false},
+		{"a root", 0, []sqltest.Response{other}, true},
+		{"none", 0, []sqltest.Response{noDirectory()}, false},
+		{"a stale row", time.Hour, []sqltest.Response{noDirectory(), files("D", "F")}, true},
+		{"no stale row", time.Hour, []sqltest.Response{noDirectory(), noFile()}, false},
 	} {
 		s, db, rec := openStore(t, fallback, append([]sqltest.Response{deletingRoot(), files("D"), noDirectory(), {Affected: 1}}, c.reads...)...)
-		got, err := s.Sweep(ctx, db, &objectLog{}, append(c.opts, data.Batch(1))...)
+		got, err := s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{Batch: 1, StaleOlderThan: c.stale})
 		if err != nil || got != (data.SweepResult{Directories: 1, More: c.more}) {
 			t.Errorf("%s: Sweep = %+v, %v, want the branch removed and More %v", c.name, got, err, c.more)
 		}
@@ -377,7 +383,7 @@ func TestSweepStale(t *testing.T) {
 		sqltest.Response{Affected: 0}, fileIn("Q", "D", "q.txt", blobfs.StatusAvailable, 2),
 	)
 	objects := &objectLog{}
-	got, err := s.Sweep(ctx, db, objects, data.StaleOlderThan(time.Hour))
+	got, err := s.Sweep(ctx, db, objects, data.SweepOptions{StaleOlderThan: time.Hour})
 	if err != nil || got != (data.SweepResult{Stale: 3}) {
 		t.Fatalf("Sweep = %+v, %v, want three stale rows reclaimed", got, err)
 	}
@@ -403,7 +409,7 @@ func TestSweepRefusedOnce(t *testing.T) {
 	errStore := errors.New("the store is down")
 	s, db, _ := openStore(t, fallback, deletingRoot(), files("D", "F"), noDirectory(), files("D", "F"))
 	objects := &objectLog{err: errStore}
-	got, err := s.Sweep(ctx, db, objects, data.StaleOlderThan(time.Hour))
+	got, err := s.Sweep(ctx, db, objects, data.SweepOptions{StaleOlderThan: time.Hour})
 	if !errors.Is(err, errStore) || got != (data.SweepResult{}) {
 		t.Errorf("Sweep = %+v, %v, want the store's error and nothing done", got, err)
 	}
@@ -412,9 +418,9 @@ func TestSweepRefusedOnce(t *testing.T) {
 	}
 }
 
-// The loop's scripts run passes of Batch(1) with the stale reclaim, so a
-// pass is a few statements over stale rows.
-var loopOpts = []data.SweepOption{data.Batch(1), data.StaleOlderThan(time.Hour)}
+// The loop's scripts run passes of a Batch of 1 with the stale reclaim, so
+// a pass is a few statements over stale rows.
+var loopOpts = data.SweepOptions{Batch: 1, StaleOlderThan: time.Hour}
 
 // staleRow scripts the read of one deleting file row past the stale age.
 func staleRow(id string) sqltest.Response {
@@ -451,9 +457,9 @@ func (p *passes) report(res data.SweepResult, err error) {
 
 // sweepPass is one pass of s's sweep over db with opts, as a consumer
 // hands it to the loop.
-func sweepPass(s *data.Store, db *sqlate.DB, opts ...data.SweepOption) func(context.Context) (data.SweepResult, error) {
+func sweepPass(s *data.Store, db *sqlate.DB, opts data.SweepOptions) func(context.Context) (data.SweepResult, error) {
 	return func(ctx context.Context) (data.SweepResult, error) {
-		return s.Sweep(ctx, db, &objectLog{}, opts...)
+		return s.Sweep(ctx, db, &objectLog{}, opts)
 	}
 }
 
@@ -464,7 +470,7 @@ func TestSweepUntilDone(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, slices.Concat(morePass("A", "B"), lastPass("B"))...)
 	var got passes
-	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, loopOpts...), got.report); err != nil {
+	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, loopOpts), got.report); err != nil {
 		t.Fatalf("SweepUntilDone = %v, want nil", err)
 	}
 	want := []data.SweepResult{{Stale: 1, More: true}, {Stale: 1}}
@@ -477,7 +483,7 @@ func TestSweepUntilDone(t *testing.T) {
 
 	s, db, rec = openStore(t, fallback, noDirectory(), noFile())
 	got = passes{}
-	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, loopOpts...), got.report); err != nil || len(got.results) != 1 || got.results[0] != (data.SweepResult{}) {
+	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, loopOpts), got.report); err != nil || len(got.results) != 1 || got.results[0] != (data.SweepResult{}) {
 		t.Errorf("SweepUntilDone with nothing to do = %v after %+v, want one empty pass", err, got.results)
 	}
 	if ops(rec) != "query query" {
@@ -487,7 +493,7 @@ func TestSweepUntilDone(t *testing.T) {
 	// A nil report discards each pass's result; the loop still runs until
 	// a pass reports no More.
 	s, db, rec = openStore(t, fallback, slices.Concat(morePass("A", "B"), lastPass("B"))...)
-	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, loopOpts...), nil); err != nil {
+	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, loopOpts), nil); err != nil {
 		t.Fatalf("SweepUntilDone with a nil report = %v, want nil", err)
 	}
 	if ops(rec) != passOps+" "+passOps {
@@ -510,7 +516,7 @@ func TestSweepUntilDoneRefusals(t *testing.T) {
 		noDirectory(), staleRow("C"), refused, noFile(),
 	)
 	var got passes
-	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, loopOpts...), got.report); err != nil {
+	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, loopOpts), got.report); err != nil {
 		t.Fatalf("SweepUntilDone = %v, want nil despite the refusals", err)
 	}
 	if len(got.errs) != 2 || !strings.Contains(fmt.Sprint(got.errs[0]), "the purge was refused") || got.results[0] != (data.SweepResult{Stale: 1, More: true}) || got.errs[1] == nil {
@@ -522,7 +528,7 @@ func TestSweepUntilDoneRefusals(t *testing.T) {
 
 	s, db, rec = openStore(t, fallback)
 	got = passes{}
-	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, data.Batch(0)), got.report); err != nil || len(got.results) != 1 || got.errs[0] == nil || len(rec.Calls()) != 0 {
+	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, data.SweepOptions{Batch: -1}), got.report); err != nil || len(got.results) != 1 || got.errs[0] == nil || len(rec.Calls()) != 0 {
 		t.Errorf("SweepUntilDone with a refused batch = %v after %+v, %v, want the refusal reported once and no statement", err, got.results, got.errs)
 	}
 }
@@ -536,7 +542,7 @@ func TestSweepUntilDoneStops(t *testing.T) {
 	cancel()
 	s, db, rec := openStore(t, fallback)
 	var got passes
-	if err := data.SweepUntilDone(ended, nil, sweepPass(s, db), got.report); !errors.Is(err, context.Canceled) || len(got.results) != 0 || len(rec.Calls()) != 0 {
+	if err := data.SweepUntilDone(ended, nil, sweepPass(s, db, data.SweepOptions{}), got.report); !errors.Is(err, context.Canceled) || len(got.results) != 0 || len(rec.Calls()) != 0 {
 		t.Errorf("SweepUntilDone on an ended context = %v after %d passes, want no pass", err, len(got.results))
 	}
 
@@ -547,7 +553,7 @@ func TestSweepUntilDoneStops(t *testing.T) {
 	calls := 0
 	// The second pass ends the context before it runs, so it reaches no
 	// statement.
-	pass := sweepPass(s, db, loopOpts...)
+	pass := sweepPass(s, db, loopOpts)
 	cancelling := func(ctx context.Context) (data.SweepResult, error) {
 		if calls++; calls == 2 {
 			cancel()
@@ -568,7 +574,7 @@ func TestSweepUntilDoneStops(t *testing.T) {
 		got.report(res, err)
 		close(stop)
 	}
-	if err := data.SweepUntilDone(context.Background(), stop, sweepPass(s, db, loopOpts...), report); err != nil {
+	if err := data.SweepUntilDone(context.Background(), stop, sweepPass(s, db, loopOpts), report); err != nil {
 		t.Fatalf("SweepUntilDone = %v, want nil once stop closes", err)
 	}
 	if len(got.results) != 1 || !got.results[0].More || ops(rec) != passOps {

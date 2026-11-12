@@ -10,6 +10,7 @@ import (
 	"github.com/standards-lab/sqlate/sqltest"
 
 	"github.com/standards-lab/blobfs"
+	"github.com/standards-lab/blobfs/data"
 )
 
 // driverText is a cause with the driver's text, as PostgreSQL reports a
@@ -85,7 +86,7 @@ func TestWriteClassification(t *testing.T) {
 	} {
 		in := &sqlate.ConstraintError{Constraint: c.constraint, Class: c.class, Err: cause}
 		s, db, _ := openStore(t, fallback, sqltest.Response{Err: in})
-		_, err := s.Directories.Create(ctx, db, blobfs.RootID, "docs")
+		_, err := s.Directories.Create(ctx, db, blobfs.RootID, "docs", data.CreateOptions{})
 		if c.want == nil {
 			wantUnclassified(t, "Create under "+c.constraint, err, in)
 			continue
@@ -93,7 +94,7 @@ func TestWriteClassification(t *testing.T) {
 		wantClassified(t, "Create", err, in, c.constraint, c.want)
 	}
 	s, db, _ := openStore(t, fallback, sqltest.Response{Err: cause})
-	_, err := s.Directories.Create(ctx, db, blobfs.RootID, "docs")
+	_, err := s.Directories.Create(ctx, db, blobfs.RootID, "docs", data.CreateOptions{})
 	wantUnclassified(t, "Create under a plain error", err, cause)
 }
 
@@ -121,7 +122,7 @@ func TestDeleteClassification(t *testing.T) {
 	} {
 		in := &sqlate.ConstraintError{Constraint: c.constraint, Class: c.class, Err: cause}
 		s, db, _ := openStore(t, fallback, sqltest.Response{Err: in})
-		err := s.Directories.Delete(ctx, db, "D")
+		err := s.Directories.Delete(ctx, db, "D", data.VersionOptions{})
 		if c.want == nil {
 			wantUnclassified(t, "Delete under "+c.constraint, err, in)
 			continue
@@ -132,5 +133,5 @@ func TestDeleteClassification(t *testing.T) {
 		}
 	}
 	s, db, _ := openStore(t, fallback, sqltest.Response{Err: cause})
-	wantUnclassified(t, "Delete under a plain error", s.Directories.Delete(ctx, db, "D"), cause)
+	wantUnclassified(t, "Delete under a plain error", s.Directories.Delete(ctx, db, "D", data.VersionOptions{}), cause)
 }

@@ -33,15 +33,11 @@ type Store struct {
 // Patterns() and the query library's from query.Patterns(); a catalog
 // without the blobfs namespace is refused before compiling, and any other
 // compile failure is returned as the loader reports it. The dialect
-// chooses the form of each returning command. With WithEngine, New passes
-// the baseline it bound to the Engine and runs the variant it returns; an
-// Engine's error is returned as "data: new store: engine: ...".
-func New(catalog *query.Catalog, dialect sqlate.Dialect, opts ...Option) (_ *Store, err error) {
+// chooses the form of each returning command. With opts.Engine set, New
+// passes the baseline it bound to the Engine and runs the variant it
+// returns; an Engine's error is returned as "data: new store: engine: ...".
+func New(catalog *query.Catalog, dialect sqlate.Dialect, opts Options) (_ *Store, err error) {
 	defer wrap(&err, "new store")
-	var o options
-	for _, opt := range opts {
-		opt(&o)
-	}
 	if !slices.Contains(catalog.Namespaces(), Namespace) {
 		return nil, fmt.Errorf("the catalog has no %q namespace; register data.Patterns() in it", Namespace)
 	}
@@ -52,8 +48,8 @@ func New(catalog *query.Catalog, dialect sqlate.Dialect, opts ...Option) (_ *Sto
 	dirs := newDirectoryReads(stmts)
 	base := newStandard(stmts, dirs)
 	var variant Variant = base
-	if o.engine != nil {
-		v, err := o.engine(catalog, dialect, base)
+	if opts.Engine != nil {
+		v, err := opts.Engine(catalog, dialect, base)
 		if err != nil {
 			return nil, fmt.Errorf("engine: %w", err)
 		}

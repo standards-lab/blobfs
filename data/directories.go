@@ -96,7 +96,7 @@ func (d *Directories) findByName(ctx context.Context, sess sqlate.Session, paren
 // row. The name and the id are checked before any SQL. A name a deleting
 // directory holds is refused with that directory's blobfs.DeletingError,
 // not blobfs.ErrNameTaken. See Directories in docs/features.md.
-func (d *Directories) Create(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (_ blobfs.Directory, err error) {
+func (d *Directories) Create(ctx context.Context, sess sqlate.Session, parentID, name string, opts CreateOptions) (_ blobfs.Directory, err error) {
 	defer wrap(&err, "create directory %q under %s", name, parentID)
 	if name, err = validName(name); err != nil {
 		return blobfs.Directory{}, err
@@ -114,7 +114,7 @@ func (d *Directories) Create(ctx context.Context, sess sqlate.Session, parentID,
 // are Create's, and blobfs.ErrNameTaken inside a transaction for a creator
 // that commits the name after the lookup. See Directories in
 // docs/features.md.
-func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID, name string, opts ...CreateOption) (_ blobfs.Directory, _ bool, err error) {
+func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID, name string, opts CreateOptions) (_ blobfs.Directory, _ bool, err error) {
 	defer wrap(&err, "ensure directory %q under %s", name, parentID)
 	if name, err = validName(name); err != nil {
 		return blobfs.Directory{}, false, err
@@ -175,13 +175,13 @@ func (d *Directories) refusedName(ctx context.Context, sess sqlate.Session, pare
 }
 
 // Delete removes the empty directory with id, only at the version
-// AtVersion names when it is given; a branch is deleted with MarkDeleting
+// opts.Version names when it is set; a branch is deleted with MarkDeleting
 // and Store.Sweep. Refusals: blobfs.ErrRootDirectory, blobfs.ErrNotEmpty,
 // blobfs.ErrReferenced, blobfs.ErrNotFound, and query.ErrVersionMismatch.
 // See Directories in docs/features.md.
-func (d *Directories) Delete(ctx context.Context, sess sqlate.Session, id string, opts ...VersionOption) (err error) {
+func (d *Directories) Delete(ctx context.Context, sess sqlate.Session, id string, opts VersionOptions) (err error) {
 	defer wrap(&err, "delete directory %s", id)
-	return d.deleteDirectory(ctx, sess, id, atVersion(opts))
+	return d.deleteDirectory(ctx, sess, id, opts.at())
 }
 
 // deleteDirectory is Delete's body, at version when it is not nil, with
@@ -229,10 +229,10 @@ type Marked struct {
 // and every file in them deleting, and reports the rows it changed. A
 // repeated mark converges and reaches a straggler. Refusals:
 // blobfs.ErrRootDirectory, blobfs.ErrNotFound, and query.ErrVersionMismatch
-// under AtVersion. See Deleting a branch in docs/features.md.
-func (d *Directories) MarkDeleting(ctx context.Context, tx *sqlate.Tx, id string, opts ...VersionOption) (_ Marked, err error) {
+// under opts.Version. See Deleting a branch in docs/features.md.
+func (d *Directories) MarkDeleting(ctx context.Context, tx *sqlate.Tx, id string, opts VersionOptions) (_ Marked, err error) {
 	defer wrap(&err, "mark directory %s deleting", id)
-	return d.markDeleting(ctx, tx, id, atVersion(opts))
+	return d.markDeleting(ctx, tx, id, opts.at())
 }
 
 // markDeleting is MarkDeleting's body, at version when it is not nil, with

@@ -33,7 +33,7 @@ func (s *suite) writes(t *testing.T) {
 func (s *suite) createFile(t *testing.T) {
 	dir := s.mkdir(t, "create-file-"+t.Name())
 	id := blobfs.NewID()
-	got, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, decomposed+".txt", "text/plain", data.WithID(id))
+	got, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: decomposed + ".txt", ContentType: "text/plain"}, data.CreateOptions{ID: id})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -45,7 +45,7 @@ func (s *suite) createFile(t *testing.T) {
 	if stored := s.file(t, id); !equalFile(got, stored) {
 		t.Errorf("Create returned\n%+v\nbut the database holds\n%+v", got, stored)
 	}
-	base, err := s.baseline.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "base.txt", "text/plain")
+	base, err := s.baseline.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "base.txt", ContentType: "text/plain"}, data.CreateOptions{})
 	if err != nil {
 		t.Fatalf("the baseline's Create: %v", err)
 	}
@@ -66,19 +66,19 @@ func (s *suite) createFileRefusals(t *testing.T) {
 	for _, c := range []struct {
 		name       string
 		dir, file  string
-		opts       []data.CreateOption
+		opts       data.CreateOptions
 		want       error
 		constraint string
 		// held names the row that holds the name, which Ensure finds.
 		held string
 	}{
-		{"NameTaken", dir.ID, "taken.txt", nil, blobfs.ErrNameTaken, blobfs.ConstraintUniqueFileDirectoryName, taken},
-		{"NameHeldByADeletingRow", dir.ID, "deleting.txt", nil, blobfs.ErrDeleting, "", holder},
-		{"MissingDirectory", blobfs.NewID(), "orphan.txt", nil, blobfs.ErrNotFound, "", ""},
-		{"IDTaken", dir.ID, "twin.txt", []data.CreateOption{data.WithID(taken)}, blobfs.ErrIDTaken, blobfs.ConstraintPrimaryKeyFile, ""},
+		{"NameTaken", dir.ID, "taken.txt", data.CreateOptions{}, blobfs.ErrNameTaken, blobfs.ConstraintUniqueFileDirectoryName, taken},
+		{"NameHeldByADeletingRow", dir.ID, "deleting.txt", data.CreateOptions{}, blobfs.ErrDeleting, "", holder},
+		{"MissingDirectory", blobfs.NewID(), "orphan.txt", data.CreateOptions{}, blobfs.ErrNotFound, "", ""},
+		{"IDTaken", dir.ID, "twin.txt", data.CreateOptions{ID: taken}, blobfs.ErrIDTaken, blobfs.ConstraintPrimaryKeyFile, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, c.dir, c.file, "text/plain", c.opts...)
+			_, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: c.dir, Name: c.file, ContentType: "text/plain"}, c.opts)
 			wantRefusal(t, err, c.want, c.constraint)
 			if c.want == blobfs.ErrDeleting {
 				wantDeletingKind(t, err, false, c.held)
@@ -86,10 +86,10 @@ func (s *suite) createFileRefusals(t *testing.T) {
 					t.Errorf("Create = %v, want the holder's delete and not ErrNameTaken", err)
 				}
 			}
-			_, base := s.baseline.Files.Create(s.ctx, s.db, acceptAll{}, c.dir, c.file, "text/plain", c.opts...)
+			_, base := s.baseline.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: c.dir, Name: c.file, ContentType: "text/plain"}, c.opts)
 			wantSameError(t, err, base)
-			found, outcome, err := s.store.Files.Ensure(s.ctx, s.db, acceptAll{}, c.dir, c.file, "text/plain", c.opts...)
-			_, _, base = s.baseline.Files.Ensure(s.ctx, s.db, acceptAll{}, c.dir, c.file, "text/plain", c.opts...)
+			found, outcome, err := s.store.Files.Ensure(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: c.dir, Name: c.file, ContentType: "text/plain"}, c.opts)
+			_, _, base = s.baseline.Files.Ensure(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: c.dir, Name: c.file, ContentType: "text/plain"}, c.opts)
 			if c.held != "" {
 				// The lookup runs first, so the held name is found.
 				if err != nil || base != nil || outcome != data.WritePresent || found.ID != c.held {
@@ -105,25 +105,25 @@ func (s *suite) createFileRefusals(t *testing.T) {
 		for _, c := range []struct {
 			file string
 			keys blobfs.KeyValidator
-			opts []data.CreateOption
+			opts data.CreateOptions
 			want error
 		}{
-			{"a/b.txt", acceptAll{}, nil, blobfs.ErrInvalidName},
-			{"", acceptAll{}, nil, blobfs.ErrInvalidName},
-			{"bad-id.txt", acceptAll{}, []data.CreateOption{data.WithID(blobfs.RootID)}, blobfs.ErrInvalidID},
-			{"bad-id.txt", acceptAll{}, []data.CreateOption{data.WithID("not-a-uuid")}, blobfs.ErrInvalidID},
-			{"refused-key.txt", refuseAll{}, nil, blobfs.ErrInvalidKey},
+			{"a/b.txt", acceptAll{}, data.CreateOptions{}, blobfs.ErrInvalidName},
+			{"", acceptAll{}, data.CreateOptions{}, blobfs.ErrInvalidName},
+			{"bad-id.txt", acceptAll{}, data.CreateOptions{ID: blobfs.RootID}, blobfs.ErrInvalidID},
+			{"bad-id.txt", acceptAll{}, data.CreateOptions{ID: "not-a-uuid"}, blobfs.ErrInvalidID},
+			{"refused-key.txt", refuseAll{}, data.CreateOptions{}, blobfs.ErrInvalidKey},
 		} {
-			_, err := s.store.Files.Create(s.ctx, s.db, c.keys, dir.ID, c.file, "text/plain", c.opts...)
+			_, err := s.store.Files.Create(s.ctx, s.db, c.keys, data.FileSpec{DirectoryID: dir.ID, Name: c.file, ContentType: "text/plain"}, c.opts)
 			if !errors.Is(err, c.want) {
 				t.Errorf("Create(%q) = %v, want %v", c.file, err, c.want)
 			}
-			_, _, err = s.store.Files.Ensure(s.ctx, s.db, c.keys, dir.ID, c.file, "text/plain", c.opts...)
+			_, _, err = s.store.Files.Ensure(s.ctx, s.db, c.keys, data.FileSpec{DirectoryID: dir.ID, Name: c.file, ContentType: "text/plain"}, c.opts)
 			if !errors.Is(err, c.want) {
 				t.Errorf("Ensure(%q) = %v, want %v", c.file, err, c.want)
 			}
 		}
-		if _, err := s.store.Files.Create(s.ctx, s.db, refuseAll{}, dir.ID, "refused-key.txt", "text/plain"); !errors.Is(err, errRefusedKey) {
+		if _, err := s.store.Files.Create(s.ctx, s.db, refuseAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "refused-key.txt", ContentType: "text/plain"}, data.CreateOptions{}); !errors.Is(err, errRefusedKey) {
 			t.Errorf("a refused key = %v, want the store's own reason reachable", err)
 		}
 		if n := s.count(t, s.db, "SELECT COUNT(*) FROM blobfs_file WHERE directory_id = "+s.db.Dialect().Placeholder(1), dir.ID); n != 2 {
@@ -143,11 +143,11 @@ func (s *suite) ensureFile(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			id := blobfs.NewID()
 			n := decomposed + "-" + tier.name + ".txt"
-			created, outcome, err := tier.store.Files.Ensure(s.ctx, s.db, acceptAll{}, dir.ID, n, "text/plain", data.WithID(id))
+			created, outcome, err := tier.store.Files.Ensure(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: n, ContentType: "text/plain"}, data.CreateOptions{ID: id})
 			if err != nil || outcome != data.WriteCreated || created.ID != id || created.Status != blobfs.StatusPending || created.Key != id+"/"+blobfs.NormalizeName(n) {
 				t.Fatalf("the first Ensure = %+v, %s, %v; want the pending row created under the id", created, outcome, err)
 			}
-			resumed, outcome, err := tier.store.Files.Ensure(s.ctx, s.db, acceptAll{}, dir.ID, blobfs.NormalizeName(n), "text/plain", data.WithID(blobfs.NewID()))
+			resumed, outcome, err := tier.store.Files.Ensure(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: blobfs.NormalizeName(n), ContentType: "text/plain"}, data.CreateOptions{ID: blobfs.NewID()})
 			if err != nil || outcome != data.WriteResumed || !equalFile(created, resumed) {
 				t.Fatalf("the second Ensure = %+v, %s, %v; want the same pending row resumed", resumed, outcome, err)
 			}
@@ -155,12 +155,12 @@ func (s *suite) ensureFile(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Complete: %v", err)
 			}
-			present, outcome, err := tier.store.Files.Ensure(s.ctx, s.db, acceptAll{}, dir.ID, n, "text/plain")
+			present, outcome, err := tier.store.Files.Ensure(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: n, ContentType: "text/plain"}, data.CreateOptions{})
 			if err != nil || outcome != data.WritePresent || !equalFile(completed, present) {
 				t.Fatalf("Ensure over the available row = %+v, %s, %v; want the row as it is", present, outcome, err)
 			}
 			deleting := s.beginDelete(t, id)
-			present, outcome, err = tier.store.Files.Ensure(s.ctx, s.db, acceptAll{}, dir.ID, n, "text/plain")
+			present, outcome, err = tier.store.Files.Ensure(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: n, ContentType: "text/plain"}, data.CreateOptions{})
 			if err != nil || outcome != data.WritePresent || !equalFile(deleting, present) {
 				t.Errorf("Ensure over the deleting row = %+v, %s, %v; want the row as it is", present, outcome, err)
 			}
@@ -174,7 +174,7 @@ func (s *suite) ensureFile(t *testing.T) {
 // ensureFileConcurrent checks the race on the pool, forced as the
 // directory's is: one caller creates, the other resumes the same row.
 func (s *suite) ensureFileConcurrent(t *testing.T) {
-	s.ensureFileRace(t)
+	s.ensureFileRace(t, data.CreateOptions{})
 }
 
 // ensureFileConcurrentUnderOneID checks the race of two callers that
@@ -182,14 +182,14 @@ func (s *suite) ensureFileConcurrent(t *testing.T) {
 // constraint: one creates, the other resumes the row under the id.
 func (s *suite) ensureFileConcurrentUnderOneID(t *testing.T) {
 	id := blobfs.NewID()
-	if f := s.ensureFileRace(t, data.WithID(id)); f.ID != id {
+	if f := s.ensureFileRace(t, data.CreateOptions{ID: id}); f.ID != id {
 		t.Errorf("the row's id is %s, want %s", f.ID, id)
 	}
 }
 
 // ensureFileRace forces two Ensure calls under opts to race and returns
 // the row they share.
-func (s *suite) ensureFileRace(t *testing.T, opts ...data.CreateOption) blobfs.File {
+func (s *suite) ensureFileRace(t *testing.T, opts data.CreateOptions) blobfs.File {
 	dir := s.mkdir(t, "ensure-file-concurrent-"+t.Name())
 	pool := s.racingPool(t, "file_by_name")
 	var (
@@ -203,7 +203,7 @@ func (s *suite) ensureFileRace(t *testing.T, opts ...data.CreateOption) blobfs.F
 	for range 2 {
 		done.Go(func() {
 			start.Wait()
-			f, outcome, err := s.store.Files.Ensure(s.ctx, pool, acceptAll{}, dir.ID, "shared.txt", "text/plain", opts...)
+			f, outcome, err := s.store.Files.Ensure(s.ctx, pool, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "shared.txt", ContentType: "text/plain"}, opts)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -240,7 +240,7 @@ func (s *suite) ensureFileRace(t *testing.T, opts ...data.CreateOption) blobfs.F
 // the next version with the object's facts, and nothing else changed.
 func (s *suite) completeFile(t *testing.T) {
 	dir := s.mkdir(t, "complete-"+t.Name())
-	pending, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "complete.txt", "application/octet-stream")
+	pending, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "complete.txt", ContentType: "application/octet-stream"}, data.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -256,7 +256,7 @@ func (s *suite) completeFile(t *testing.T) {
 	if stored := s.file(t, pending.ID); !equalFile(got, stored) {
 		t.Errorf("Complete returned\n%+v\nbut the database holds\n%+v", got, stored)
 	}
-	basePending, err := s.baseline.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "complete-base.txt", "application/octet-stream")
+	basePending, err := s.baseline.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "complete-base.txt", ContentType: "application/octet-stream"}, data.CreateOptions{})
 	if err != nil {
 		t.Fatalf("the baseline's Create: %v", err)
 	}
@@ -275,14 +275,14 @@ func (s *suite) completeFile(t *testing.T) {
 // DeletingError.
 func (s *suite) completeFileRefusals(t *testing.T) {
 	dir := s.mkdir(t, "complete-refusals-"+t.Name())
-	available, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "refused.txt", "text/plain")
+	available, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "refused.txt", ContentType: "text/plain"}, data.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if available, err = s.store.Files.Complete(s.ctx, s.db, available.ID, available.Version, object); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	pending, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "deleting.txt", "text/plain")
+	pending, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "deleting.txt", ContentType: "text/plain"}, data.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -334,7 +334,7 @@ func (s *suite) writeInTransaction(t *testing.T) {
 	id := blobfs.NewID()
 	write := func(fail bool) (blobfs.File, error) {
 		return s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
-			f, err := s.store.Files.Create(s.ctx, tx, acceptAll{}, dir.ID, "plan.txt", "text/plain", data.WithID(id))
+			f, err := s.store.Files.Create(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "plan.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id})
 			if err != nil {
 				return blobfs.File{}, err
 			}
@@ -343,7 +343,7 @@ func (s *suite) writeInTransaction(t *testing.T) {
 				return blobfs.File{}, abort
 			}
 			return f, nil
-		})
+		}, nil)
 	}
 	if _, err := write(true); !errors.Is(err, abort) {
 		t.Fatalf("the aborted transaction = %v, want the consumer's error", err)
@@ -373,7 +373,7 @@ func (s *suite) writeInTransaction(t *testing.T) {
 // directory then holds the one row, available, with the retry's facts.
 func (s *suite) retryWrite(t *testing.T) {
 	dir := s.mkdir(t, "retry-"+t.Name())
-	first, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "report.pdf", "application/pdf")
+	first, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "report.pdf", ContentType: "application/pdf"}, data.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -401,13 +401,13 @@ func (s *suite) retryWrite(t *testing.T) {
 func (s *suite) suppliedFileIDs(t *testing.T) {
 	dir := s.mkdir(t, "supplied-"+t.Name())
 	id := blobfs.NewID()
-	f, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "fixture.txt", "text/plain", data.WithID(id))
+	f, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "fixture.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id})
 	if err != nil || f.ID != id || f.Key != id+"/fixture.txt" {
 		t.Fatalf("Create with an id = %+v, %v; want the row and the key under the id", f, err)
 	}
 	s.beginDelete(t, id)
 	s.purge(t, id)
-	again, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "fixture.txt", "text/plain", data.WithID(id))
+	again, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "fixture.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id})
 	if err != nil || again.ID != id || again.Key != f.Key || again.Version != 1 {
 		t.Errorf("Create under the freed id = %+v, %v; want a fresh row under the same id and key", again, err)
 	}

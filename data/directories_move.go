@@ -44,19 +44,21 @@ func (d *Directories) Serializes() bool {
 	return d.variant.Serializes()
 }
 
-// Move moves the directory with id under parentID as name, guarded by
-// version, and returns the row; its children and files follow it. It runs
-// in tx under the tree lock, after the cycle check. Refusals:
-// blobfs.ErrRootDirectory, blobfs.NameError, blobfs.ErrCycle,
+// Move moves the directory with id under to's ParentID as its Name,
+// guarded by its Version, and returns the row; its children and files
+// follow it. It runs in tx under the tree lock, after the cycle check.
+// Refusals: blobfs.ErrRootDirectory, blobfs.NameError, blobfs.ErrCycle,
 // blobfs.ErrNotFound, blobfs.ErrNameTaken, a blobfs.DeletingError,
 // query.ErrVersionMismatch, and sqlate.ErrSerializationFailure above read
 // committed. See Moves in docs/concepts.md.
-func (d *Directories) Move(ctx context.Context, tx *sqlate.Tx, id, parentID, name string, version int64) (_ blobfs.Directory, err error) {
-	defer wrap(&err, "move directory %s under %s as %q", id, parentID, name)
+func (d *Directories) Move(ctx context.Context, tx *sqlate.Tx, id string, to DirectoryMove) (_ blobfs.Directory, err error) {
+	defer wrap(&err, "move directory %s under %s as %q", id, to.ParentID, to.Name)
+	parentID, version := to.ParentID, to.Version
 	if isRoot(id) {
 		return blobfs.Directory{}, blobfs.ErrRootDirectory
 	}
-	if name, err = validName(name); err != nil {
+	name, err := validName(to.Name)
+	if err != nil {
 		return blobfs.Directory{}, err
 	}
 	if err := d.variant.LockTree(ctx, tx); err != nil {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/standards-lab/blobfs"
+	"github.com/standards-lab/blobfs/data"
 )
 
 // hostileNames are directory names that would break a path spliced into
@@ -142,7 +143,7 @@ func (s *suite) paths(t *testing.T) {
 		for _, n := range hostileNames {
 			// Created through the store directly: the suite's naming helper
 			// rewrites backslashes.
-			d, err := s.store.Directories.Create(s.ctx, s.db, hostile.ID, n)
+			d, err := s.store.Directories.Create(s.ctx, s.db, hostile.ID, n, data.CreateOptions{})
 			if err != nil {
 				t.Fatalf("Create(%q): %v", n, err)
 			}

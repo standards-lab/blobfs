@@ -49,9 +49,9 @@ var fallback = forms[0]
 
 // newStore compiles the store against the consumer's catalog under the
 // form's dialect.
-func newStore(t *testing.T, f form, opts ...data.Option) *data.Store {
+func newStore(t *testing.T, f form, opts data.Options) *data.Store {
 	t.Helper()
-	s, err := data.New(catalog(t), f.dialect, opts...)
+	s, err := data.New(catalog(t), f.dialect, opts)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -63,14 +63,14 @@ func newStore(t *testing.T, f form, opts ...data.Option) *data.Store {
 func openStore(t *testing.T, f form, responses ...sqltest.Response) (*data.Store, *sqlate.DB, *sqltest.Recorder) {
 	t.Helper()
 	pool, rec := sqltest.Open(t, responses...)
-	return newStore(t, f), sqlate.Wrap(pool, f.dialect), rec
+	return newStore(t, f, data.Options{}), sqlate.Wrap(pool, f.dialect), rec
 }
 
 // begin opens a transaction on db, rolled back when the test ends unless
 // the test commits it first.
 func begin(t *testing.T, db *sqlate.DB) *sqlate.Tx {
 	t.Helper()
-	tx, err := db.Begin(context.Background())
+	tx, err := db.Begin(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -145,7 +145,7 @@ func names(stmts []query.Statement) []string {
 func TestNew(t *testing.T) {
 	for _, f := range forms {
 		t.Run(f.name, func(t *testing.T) {
-			stmts := newStore(t, f).Statements()
+			stmts := newStore(t, f, data.Options{}).Statements()
 			listed := names(stmts)
 			if len(listed) == 0 {
 				t.Fatal("Statements() is empty")
@@ -196,7 +196,7 @@ func TestNewWithoutPatterns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)
 	}
-	_, err = data.New(c, sqltest.Dialect{})
+	_, err = data.New(c, sqltest.Dialect{}, data.Options{})
 	if err == nil || !strings.Contains(err.Error(), `"blobfs"`) {
 		t.Fatalf("New without the blobfs namespace = %v, want an error naming the namespace", err)
 	}
@@ -204,7 +204,7 @@ func TestNewWithoutPatterns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)
 	}
-	_, err = data.New(c, sqltest.Dialect{})
+	_, err = data.New(c, sqltest.Dialect{}, data.Options{})
 	if err == nil || !strings.Contains(err.Error(), `namespace "sql"`) {
 		t.Fatalf("New without the query library's namespace = %v, want an error naming the sql namespace", err)
 	}
@@ -292,20 +292,20 @@ func probeEngine(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Va
 // of an engine's error and of no variant.
 func TestEngineSharesTheBaseline(t *testing.T) {
 	ctx := context.Background()
-	s := newStore(t, fallback, data.WithEngine(probeEngine))
-	want := append(names(newStore(t, fallback).Statements()), "probe_engine")
+	s := newStore(t, fallback, data.Options{Engine: probeEngine})
+	want := append(names(newStore(t, fallback, data.Options{}).Statements()), "probe_engine")
 	if got := names(s.Statements()); !slices.Equal(got, want) {
 		t.Errorf("Statements() = %v, want the package's own and then probe_engine: %v", got, want)
 	}
 	// A consumer's wrapper that embeds the engine's variant inherits its
 	// inventory, so the engine's statement is still listed.
-	wrapped := newStore(t, fallback, data.WithEngine(func(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Variant, error) {
+	wrapped := newStore(t, fallback, data.Options{Engine: func(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Variant, error) {
 		v, err := probeEngine(c, d, base)
 		if err != nil {
 			return nil, err
 		}
 		return failingLock{Variant: v}, nil
-	}))
+	}})
 	if got := names(wrapped.Statements()); !slices.Equal(got, want) {
 		t.Errorf("a wrapper over the engine's variant lists %v, want the package's own and then probe_engine: %v", got, want)
 	}
@@ -337,15 +337,15 @@ func TestEngineSharesTheBaseline(t *testing.T) {
 	}
 
 	errEngine := errors.New("no native statements")
-	_, err := data.New(catalog(t), sqltest.Dialect{}, data.WithEngine(func(*query.Catalog, sqlate.Dialect, data.Variant) (data.Variant, error) {
+	_, err := data.New(catalog(t), sqltest.Dialect{}, data.Options{Engine: func(*query.Catalog, sqlate.Dialect, data.Variant) (data.Variant, error) {
 		return nil, errEngine
-	}))
+	}})
 	if !errors.Is(err, errEngine) || !strings.HasPrefix(err.Error(), "data: new store: engine: ") {
 		t.Errorf("New with a failing engine = %v, want the engine's error wrapped as data: new store: engine", err)
 	}
-	_, err = data.New(catalog(t), sqltest.Dialect{}, data.WithEngine(func(*query.Catalog, sqlate.Dialect, data.Variant) (data.Variant, error) {
+	_, err = data.New(catalog(t), sqltest.Dialect{}, data.Options{Engine: func(*query.Catalog, sqlate.Dialect, data.Variant) (data.Variant, error) {
 		return nil, nil
-	}))
+	}})
 	if err == nil {
 		t.Error("New with an engine that returned no variant succeeded")
 	}
@@ -409,7 +409,7 @@ func TestConsumerEngineSwapsOneMethod(t *testing.T) {
 		v = &lockOverride{Variant: base}
 		return v, nil
 	}
-	s, err := data.New(c, sqltest.Dialect{}, data.WithEngine(engine))
+	s, err := data.New(c, sqltest.Dialect{}, data.Options{Engine: engine})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -431,17 +431,17 @@ func TestConsumerEngineSwapsOneMethod(t *testing.T) {
 	if n := len(rec.SQL(sqltest.OpQuery)); n != 2 {
 		t.Errorf("the walk ran %d queries, want the baseline's 2", n)
 	}
-	if got, want := names(s.Statements()), names(newStore(t, fallback).Statements()); !slices.Equal(got, want) {
+	if got, want := names(s.Statements()), names(newStore(t, fallback, data.Options{}).Statements()); !slices.Equal(got, want) {
 		t.Errorf("Statements() = %v, want the persistence package's own %v", got, want)
 	}
 
 	failing := func(_ *query.Catalog, _ sqlate.Dialect, base data.Variant) (data.Variant, error) {
 		return failingLock{Variant: base}, nil
 	}
-	s = newStore(t, fallback, data.WithEngine(failing))
+	s = newStore(t, fallback, data.Options{Engine: failing})
 	pool, rec = sqltest.Open(t)
 	tx = begin(t, sqlate.Wrap(pool, sqltest.Dialect{}))
-	if _, err := s.Directories.Move(ctx, tx, "D", "P", "d", 1); !errors.Is(err, errLock) {
+	if _, err := s.Directories.Move(ctx, tx, "D", data.DirectoryMove{ParentID: "P", Name: "d", Version: 1}); !errors.Is(err, errLock) {
 		t.Errorf("Move under a failing lock = %v, want the lock's error", err)
 	}
 	if got := ops(rec); got != "begin" {
@@ -469,14 +469,14 @@ func (v *holdOverride) HoldFile(_ context.Context, _ *sqlate.Tx, id string, vers
 func TestHoldIsAVariationPoint(t *testing.T) {
 	ctx := context.Background()
 	v := &holdOverride{held: true}
-	s := newStore(t, fallback, data.WithEngine(func(_ *query.Catalog, _ sqlate.Dialect, base data.Variant) (data.Variant, error) {
+	s := newStore(t, fallback, data.Options{Engine: func(_ *query.Catalog, _ sqlate.Dialect, base data.Variant) (data.Variant, error) {
 		v.Variant = base
 		return v, nil
-	}))
+	}})
 	pool, rec := sqltest.Open(t, fileResponse("F", "a.txt", blobfs.StatusDeleting, 2), directoryResponse(blobfs.RootID, "", "/", 1))
 	tx := begin(t, sqlate.Wrap(pool, sqltest.Dialect{}))
 	defer func() { _ = tx.Rollback() }()
-	if err := s.Files.Hold(ctx, tx, "F", data.AtVersion(1)); err != nil {
+	if err := s.Files.Hold(ctx, tx, "F", data.VersionOptions{Version: 1}); err != nil {
 		t.Fatalf("Hold over a variant that holds = %v", err)
 	}
 	if v.id != "F" || v.version == nil || *v.version != 1 {
@@ -486,11 +486,11 @@ func TestHoldIsAVariationPoint(t *testing.T) {
 		t.Errorf("the held hold ran %q, want no statement of the store's own", got)
 	}
 	v.held = false
-	if err := s.Files.Hold(ctx, tx, "F"); !errors.Is(err, blobfs.ErrDeleting) {
+	if err := s.Files.Hold(ctx, tx, "F", data.VersionOptions{}); !errors.Is(err, blobfs.ErrDeleting) {
 		t.Errorf("Hold the variant refused over a deleting row = %v, want ErrDeleting", err)
 	}
 	if v.version != nil {
-		t.Errorf("HoldFile got the version %v without AtVersion, want nil", *v.version)
+		t.Errorf("HoldFile got the version %v under the zero VersionOptions, want nil", *v.version)
 	}
 	if got := ops(rec); got != "begin query query" {
 		t.Errorf("the refused hold ran %q, want the classifying read and its directory's", got)
@@ -517,44 +517,44 @@ func TestErrorsNamedOnce(t *testing.T) {
 	_, err = s.Files.Find(ctx, db, "F")
 	check(t, "Files.Find of a missing row", err, blobfs.ErrNotFound)
 	tx := begin(t, db)
-	check(t, "Hold of a missing row", s.Files.Hold(ctx, tx, "F"), blobfs.ErrNotFound)
+	check(t, "Hold of a missing row", s.Files.Hold(ctx, tx, "F", data.VersionOptions{}), blobfs.ErrNotFound)
 	_ = tx.Rollback()
-	_, err = s.Directories.Create(ctx, db, blobfs.RootID, "a/b")
+	_, err = s.Directories.Create(ctx, db, blobfs.RootID, "a/b", data.CreateOptions{})
 	check(t, "Directories.Create of a refused name", err, blobfs.ErrInvalidName)
-	_, _, err = s.Files.Ensure(ctx, db, accepting{}, blobfs.RootID, "", "text/plain")
+	_, _, err = s.Files.Ensure(ctx, db, accepting{}, data.FileSpec{DirectoryID: blobfs.RootID, Name: "", ContentType: "text/plain"}, data.CreateOptions{})
 	check(t, "Files.Ensure of an empty name", err, blobfs.ErrInvalidName)
 	_, err = s.Directories.FindByPath(ctx, db, blobfs.RootID, "/a")
 	check(t, "FindByPath of an absolute path", err, blobfs.ErrInvalidPath)
-	check(t, "Directories.Delete of the root", s.Directories.Delete(ctx, db, blobfs.RootID), blobfs.ErrRootDirectory)
+	check(t, "Directories.Delete of the root", s.Directories.Delete(ctx, db, blobfs.RootID, data.VersionOptions{}), blobfs.ErrRootDirectory)
 	_, err = s.Directories.BranchRoots(ctx, db, 0)
 	check(t, "BranchRoots below 1", err, err)
-	_, err = s.Sweep(ctx, db, &objectLog{}, data.Batch(0))
+	_, err = s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{Batch: -1})
 	check(t, "Sweep of a refused batch", err, err)
 
-	failing := newStore(t, fallback, data.WithEngine(func(_ *query.Catalog, _ sqlate.Dialect, base data.Variant) (data.Variant, error) {
+	failing := newStore(t, fallback, data.Options{Engine: func(_ *query.Catalog, _ sqlate.Dialect, base data.Variant) (data.Variant, error) {
 		return failingLock{Variant: base}, nil
-	}))
+	}})
 	pool, _ := sqltest.Open(t)
 	tx = begin(t, sqlate.Wrap(pool, sqltest.Dialect{}))
-	_, err = failing.Directories.Move(ctx, tx, "D", "P", "d", 1)
+	_, err = failing.Directories.Move(ctx, tx, "D", data.DirectoryMove{ParentID: "P", Name: "d", Version: 1})
 	check(t, "Move under a failing lock", err, errLock)
-	_, err = failing.Directories.MarkDeleting(ctx, tx, "D")
+	_, err = failing.Directories.MarkDeleting(ctx, tx, "D", data.VersionOptions{})
 	check(t, "MarkDeleting under a failing lock", err, errLock)
 	check(t, "LockTree that fails", failing.Directories.LockTree(ctx, tx), errLock)
 
 	s, db, _ = openStore(t, fallback, within(1))
-	_, err = s.Directories.Move(ctx, begin(t, db), "D", "P", "d", 1)
+	_, err = s.Directories.Move(ctx, begin(t, db), "D", data.DirectoryMove{ParentID: "P", Name: "d", Version: 1})
 	check(t, "Move under a descendant", err, blobfs.ErrCycle)
 
 	errEngine := errors.New("no native statements")
-	_, err = data.New(catalog(t), sqltest.Dialect{}, data.WithEngine(func(*query.Catalog, sqlate.Dialect, data.Variant) (data.Variant, error) {
+	_, err = data.New(catalog(t), sqltest.Dialect{}, data.Options{Engine: func(*query.Catalog, sqlate.Dialect, data.Variant) (data.Variant, error) {
 		return nil, errEngine
-	}))
+	}})
 	check(t, "New with a failing engine", err, errEngine)
 
 	// A purge the consumer's key refuses, inside a branch's walk.
 	s, db, _ = openStore(t, fallback, deletingRoot(), files("D", "F"), violation("fk_bookmark_file", sqlate.ErrForeignKeyViolation), noDirectory())
-	_, err = s.Sweep(ctx, db, &objectLog{})
+	_, err = s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{})
 	check(t, "Sweep over a referenced file", err, blobfs.ErrReferenced)
 	if err != nil && !strings.Contains(err.Error(), "branch D: purge file F: ") {
 		t.Errorf("Sweep over a referenced file = %q, want the branch and the step named", err)

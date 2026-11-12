@@ -38,9 +38,9 @@ func (s *suite) heldRowUnchanged(t *testing.T, dir string) {
 	for _, status := range []blobfs.Status{blobfs.StatusAvailable, blobfs.StatusPending} {
 		id := s.insertFile(t, dir, "held-"+status.String()+".txt", status)
 		before := s.file(t, id)
-		for _, opts := range [][]data.VersionOption{nil, {data.AtVersion(before.Version)}} {
-			if err := s.holdIn(id, opts...); err != nil {
-				t.Fatalf("Hold of a %s row with %d options: %v", status, len(opts), err)
+		for _, opts := range []data.VersionOptions{{}, {Version: before.Version}} {
+			if err := s.holdIn(id, opts); err != nil {
+				t.Fatalf("Hold of a %s row at version %d: %v", status, opts.Version, err)
 			}
 		}
 		if after := s.file(t, id); !equalFile(before, after) {
@@ -59,18 +59,18 @@ func (s *suite) holdRefusals(t *testing.T, dir string) {
 	for _, c := range []struct {
 		name string
 		id   string
-		opts []data.VersionOption
+		opts data.VersionOptions
 		want error
 		not  error
 	}{
-		{"StaleVersion", stale, []data.VersionOption{data.AtVersion(2)}, query.ErrVersionMismatch, blobfs.ErrDeleting},
-		{"Deleting", deletingID, nil, blobfs.ErrDeleting, query.ErrVersionMismatch},
-		{"DeletingAtItsOldVersion", deletingID, []data.VersionOption{data.AtVersion(before.Version)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
-		{"DeletingAtItsVersion", deletingID, []data.VersionOption{data.AtVersion(deleting.Version)}, blobfs.ErrDeleting, query.ErrVersionMismatch},
-		{"Missing", blobfs.NewID(), nil, blobfs.ErrNotFound, blobfs.ErrDeleting},
+		{"StaleVersion", stale, data.VersionOptions{Version: 2}, query.ErrVersionMismatch, blobfs.ErrDeleting},
+		{"Deleting", deletingID, data.VersionOptions{}, blobfs.ErrDeleting, query.ErrVersionMismatch},
+		{"DeletingAtItsOldVersion", deletingID, data.VersionOptions{Version: before.Version}, blobfs.ErrDeleting, query.ErrVersionMismatch},
+		{"DeletingAtItsVersion", deletingID, data.VersionOptions{Version: deleting.Version}, blobfs.ErrDeleting, query.ErrVersionMismatch},
+		{"Missing", blobfs.NewID(), data.VersionOptions{}, blobfs.ErrNotFound, blobfs.ErrDeleting},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			err := s.holdIn(c.id, c.opts...)
+			err := s.holdIn(c.id, c.opts)
 			if !errors.Is(err, c.want) || errors.Is(err, c.not) {
 				t.Errorf("Hold = %v, want %v and not %v", err, c.want, c.not)
 			}
@@ -78,8 +78,8 @@ func (s *suite) holdRefusals(t *testing.T, dir string) {
 				wantDeletingKind(t, err, false, c.id)
 			}
 			_, base := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (struct{}, error) {
-				return struct{}{}, s.baseline.Files.Hold(s.ctx, tx, c.id, c.opts...)
-			})
+				return struct{}{}, s.baseline.Files.Hold(s.ctx, tx, c.id, c.opts)
+			}, nil)
 			wantSameError(t, err, base)
 		})
 	}
@@ -96,14 +96,14 @@ func (s *suite) holdRefusals(t *testing.T, dir string) {
 func (s *suite) holdThenDelete(t *testing.T, dir string) {
 	s.createFileReferences(t)
 	id := s.insertFile(t, dir, "held-then-deleted.txt", blobfs.StatusAvailable)
-	holder := s.beginTx(t)
+	holder := s.beginTx(t, nil)
 	ended := false
 	defer func() {
 		if !ended {
 			_ = holder.Rollback()
 		}
 	}()
-	if err := s.store.Files.Hold(s.ctx, holder, id); err != nil {
+	if err := s.store.Files.Hold(s.ctx, holder, id, data.VersionOptions{}); err != nil {
 		t.Fatalf("Hold: %v", err)
 	}
 	s.reference(t, holder, id)
@@ -156,20 +156,20 @@ func (s *suite) deleteThenHold(t *testing.T, dir string) {
 	} {
 		t.Run(end.name, func(t *testing.T) {
 			id := s.insertFile(t, dir, "deleted-then-held-"+end.name+".txt", blobfs.StatusAvailable)
-			deleter := s.beginTx(t)
+			deleter := s.beginTx(t, nil)
 			ended := false
 			defer func() {
 				if !ended {
 					_ = deleter.Rollback()
 				}
 			}()
-			if _, err := s.store.Files.Delete(s.ctx, deleter, id); err != nil {
+			if _, err := s.store.Files.Delete(s.ctx, deleter, id, data.VersionOptions{}); err != nil {
 				t.Fatalf("Delete: %v", err)
 			}
-			holder := s.beginTx(t)
+			holder := s.beginTx(t, nil)
 			defer func() { _ = holder.Rollback() }()
 			held := make(chan error, 1)
-			go func() { held <- s.store.Files.Hold(s.ctx, holder, id) }()
+			go func() { held <- s.store.Files.Hold(s.ctx, holder, id, data.VersionOptions{}) }()
 			select {
 			case err := <-held:
 				t.Fatalf("the hold returned (%v) while the Delete's transaction was open", err)
@@ -199,9 +199,9 @@ type deleteResult struct {
 
 // holdIn runs Hold through the store under test in a transaction of its
 // own and commits it.
-func (s *suite) holdIn(id string, opts ...data.VersionOption) error {
+func (s *suite) holdIn(id string, opts data.VersionOptions) error {
 	_, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (struct{}, error) {
-		return struct{}{}, s.store.Files.Hold(s.ctx, tx, id, opts...)
-	})
+		return struct{}{}, s.store.Files.Hold(s.ctx, tx, id, opts)
+	}, nil)
 	return err
 }

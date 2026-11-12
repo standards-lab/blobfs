@@ -69,42 +69,42 @@ func (s *suite) storesUnder() []struct {
 // writeFile runs Store.WriteFile through store of body as the file n in
 // dir, its begin creating the pending row with Files.Create.
 func (s *suite) writeFile(store *data.Store, objects data.ObjectStore, dir, n, body string) (blobfs.File, error) {
-	return store.WriteFile(s.ctx, s.db, objects, strings.NewReader(body), int64(len(body)), func(tx *sqlate.Tx) (blobfs.File, error) {
-		return store.Files.Create(s.ctx, tx, acceptAll{}, dir, n, "text/plain")
-	})
+	return store.WriteFile(s.ctx, data.WriteFileRequest{DB: s.db, Objects: objects, Body: strings.NewReader(body), Size: int64(len(body)), Begin: func(tx *sqlate.Tx) (blobfs.File, error) {
+		return store.Files.Create(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir, Name: n, ContentType: "text/plain"}, data.CreateOptions{})
+	}})
 }
 
 // ensureWrite runs Store.EnsureFile through store of body as the file n
-// in dir under id, its begin running Files.Ensure with WithID(id), under
-// opts.
-func (s *suite) ensureWrite(store *data.Store, objects data.ObjectStore, dir, n, id, body string, opts ...data.WriteOption) (blobfs.File, bool, error) {
-	return store.EnsureFile(s.ctx, s.db, objects, id, strings.NewReader(body), int64(len(body)), func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
-		return store.Files.Ensure(s.ctx, tx, acceptAll{}, dir, n, "text/plain", data.WithID(id))
-	}, opts...)
+// in dir under id, its begin running Files.Ensure with
+// CreateOptions{ID: id}, with onComplete, which may be nil, as its hook.
+func (s *suite) ensureWrite(store *data.Store, objects data.ObjectStore, dir, n, id, body string, onComplete func(context.Context, *sqlate.Tx, blobfs.File) error) (blobfs.File, bool, error) {
+	return store.EnsureFile(s.ctx, data.EnsureFileRequest{DB: s.db, Objects: objects, ID: id, Body: strings.NewReader(body), Size: int64(len(body)), Begin: func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
+		return store.Files.Ensure(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir, Name: n, ContentType: "text/plain"}, data.CreateOptions{ID: id})
+	}, OnComplete: onComplete})
 }
 
 // referencing is a completion hook that inserts a reference to the
 // completed file in the completion's transaction and counts its runs in
 // ran.
-func (s *suite) referencing(t *testing.T, ran *int) data.WriteOption {
-	return data.OnComplete(func(_ context.Context, tx *sqlate.Tx, f blobfs.File) error {
+func (s *suite) referencing(t *testing.T, ran *int) func(context.Context, *sqlate.Tx, blobfs.File) error {
+	return func(_ context.Context, tx *sqlate.Tx, f blobfs.File) error {
 		*ran++
 		s.reference(t, tx, f.ID)
 		return nil
-	})
+	}
 }
 
 // removeFile runs Store.RemoveFile through store of the file with id, its
 // pick naming the file.
 func (s *suite) removeFile(store *data.Store, objects data.ObjectDeleter, id string) error {
-	return store.RemoveFile(s.ctx, s.db, objects, func(*sqlate.Tx) (string, error) { return id, nil })
+	return store.RemoveFile(s.ctx, s.db, objects, func(*sqlate.Tx) (string, error) { return id, nil }, data.RemoveOptions{})
 }
 
 // unreferencing is a delete hook that removes the references to the file
 // in the delete's transaction, counts its runs in ran, and records the
 // file it received in hooked and the row it read there in read.
-func (s *suite) unreferencing(store *data.Store, ran *int, hooked, read *blobfs.File) data.RemoveOption {
-	return data.OnDelete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+func (s *suite) unreferencing(store *data.Store, ran *int, hooked, read *blobfs.File) func(context.Context, *sqlate.Tx, blobfs.File) error {
+	return func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
 		*ran++
 		*hooked = f
 		var err error
@@ -113,7 +113,7 @@ func (s *suite) unreferencing(store *data.Store, ran *int, hooked, read *blobfs.
 		}
 		_, err = tx.ExecContext(ctx, "DELETE FROM datatest_reference WHERE file_id = "+s.db.Dialect().Placeholder(1), f.ID)
 		return err
-	})
+	}
 }
 
 // wantWritten checks that got is the available row the database holds,
@@ -198,7 +198,7 @@ func (s *suite) protocolWriteRefusedCompletion(t *testing.T) {
 			var key string
 			objects.beforePut = func(k string) {
 				key = k
-				if _, err := s.mark(tier.store, dir.ID); err != nil {
+				if _, err := s.mark(tier.store, dir.ID, data.VersionOptions{}); err != nil {
 					t.Errorf("MarkDeleting inside the put: %v", err)
 				}
 			}
@@ -218,7 +218,7 @@ func (s *suite) protocolWriteRefusedCompletion(t *testing.T) {
 				t.Errorf("the refused write left %+v, want its row deleting for the sweep", f)
 			}
 			sweeper := newObjectStore()
-			if r, err := s.sweep(tier.store, sweeper); err != nil || r != (data.SweepResult{Files: 1, Directories: 1}) {
+			if r, err := s.sweep(tier.store, sweeper, data.SweepOptions{}); err != nil || r != (data.SweepResult{Files: 1, Directories: 1}) {
 				t.Errorf("the Sweep after the refusal = %+v, %v, want the row and its directory finished", r, err)
 			}
 			s.wantFilesGone(t, ids...)
@@ -237,9 +237,9 @@ func (s *suite) protocolWriteOnComplete(t *testing.T) {
 			dir := s.mkdir(t, "write-on-complete-"+t.Name())
 			objects := newObjectStore()
 			var hooked, read blobfs.File
-			got, err := tier.store.WriteFile(s.ctx, s.db, objects, strings.NewReader("report"), 6, func(tx *sqlate.Tx) (blobfs.File, error) {
-				return tier.store.Files.Create(s.ctx, tx, acceptAll{}, dir.ID, "report.txt", "text/plain")
-			}, data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+			got, err := tier.store.WriteFile(s.ctx, data.WriteFileRequest{DB: s.db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: func(tx *sqlate.Tx) (blobfs.File, error) {
+				return tier.store.Files.Create(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{})
+			}, OnComplete: func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
 				hooked = f
 				var err error
 				if read, err = tier.store.Files.Find(ctx, tx, f.ID); err != nil {
@@ -247,7 +247,7 @@ func (s *suite) protocolWriteOnComplete(t *testing.T) {
 				}
 				s.reference(t, tx, f.ID)
 				return nil
-			}))
+			}})
 			if err != nil {
 				t.Fatalf("Write with a hook: %v", err)
 			}
@@ -275,13 +275,13 @@ func (s *suite) protocolWriteOnCompleteRefuses(t *testing.T) {
 			dir := s.mkdir(t, "write-on-complete-refuses-"+t.Name())
 			objects := newObjectStore()
 			var id, key string
-			_, err := tier.store.WriteFile(s.ctx, s.db, objects, strings.NewReader("report"), 6, func(tx *sqlate.Tx) (blobfs.File, error) {
-				return tier.store.Files.Create(s.ctx, tx, acceptAll{}, dir.ID, "report.txt", "text/plain")
-			}, data.OnComplete(func(_ context.Context, tx *sqlate.Tx, f blobfs.File) error {
+			_, err := tier.store.WriteFile(s.ctx, data.WriteFileRequest{DB: s.db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: func(tx *sqlate.Tx) (blobfs.File, error) {
+				return tier.store.Files.Create(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{})
+			}, OnComplete: func(_ context.Context, tx *sqlate.Tx, f blobfs.File) error {
 				id, key = f.ID, f.Key
 				s.reference(t, tx, f.ID)
 				return refused
-			}))
+			}})
 			if !errors.Is(err, refused) {
 				t.Fatalf("Write under a refusing hook = %v, want the hook's error", err)
 			}
@@ -308,12 +308,12 @@ func (s *suite) protocolWriteRefusedBegin(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			dir := s.mkdir(t, "write-refused-begin-"+t.Name())
 			objects := newObjectStore()
-			_, err := tier.store.WriteFile(s.ctx, s.db, objects, strings.NewReader("report"), 6, func(tx *sqlate.Tx) (blobfs.File, error) {
-				if _, err := tier.store.Files.Create(s.ctx, tx, acceptAll{}, dir.ID, "report.txt", "text/plain"); err != nil {
+			_, err := tier.store.WriteFile(s.ctx, data.WriteFileRequest{DB: s.db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: func(tx *sqlate.Tx) (blobfs.File, error) {
+				if _, err := tier.store.Files.Create(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{}); err != nil {
 					return blobfs.File{}, err
 				}
 				return blobfs.File{}, errBegin
-			})
+			}})
 			if !errors.Is(err, errBegin) || strings.Contains(err.Error(), "data: ") {
 				t.Errorf("Write under a refusing begin = %v, want its error as it came", err)
 			}
@@ -339,10 +339,10 @@ func (s *suite) protocolWriteRefusesAvailable(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Write: %v", err)
 			}
-			_, err = tier.store.WriteFile(s.ctx, s.db, objects, strings.NewReader("other"), 5, func(tx *sqlate.Tx) (blobfs.File, error) {
-				f, _, err := tier.store.Files.Ensure(s.ctx, tx, acceptAll{}, dir.ID, "report.txt", "text/plain")
+			_, err = tier.store.WriteFile(s.ctx, data.WriteFileRequest{DB: s.db, Objects: objects, Body: strings.NewReader("other"), Size: 5, Begin: func(tx *sqlate.Tx) (blobfs.File, error) {
+				f, _, err := tier.store.Files.Ensure(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{})
 				return f, err
-			})
+			}})
 			var te *blobfs.TransitionError
 			if !errors.As(err, &te) || te.From != blobfs.StatusAvailable || errors.Is(err, blobfs.ErrDeleting) {
 				t.Errorf("Write over an available row = %v, want its TransitionError", err)
@@ -369,14 +369,14 @@ func (s *suite) protocolWriteUnderADeletingName(t *testing.T) {
 			holder := s.file(t, s.insertFile(t, dir.ID, "report.txt", blobfs.StatusDeleting))
 			objects := newObjectStore()
 			var after error
-			_, err := tier.store.WriteFile(s.ctx, s.db, objects, strings.NewReader("report"), 6, func(tx *sqlate.Tx) (blobfs.File, error) {
-				f, err := tier.store.Files.Create(s.ctx, tx, acceptAll{}, dir.ID, "report.txt", "text/plain")
+			_, err := tier.store.WriteFile(s.ctx, data.WriteFileRequest{DB: s.db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: func(tx *sqlate.Tx) (blobfs.File, error) {
+				f, err := tier.store.Files.Create(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{})
 				if err == nil {
 					return f, nil
 				}
 				_, after = tier.store.Files.FindByName(s.ctx, tx, dir.ID, "report.txt")
 				return blobfs.File{}, err
-			})
+			}})
 			if errors.Is(err, blobfs.ErrNameTaken) {
 				t.Errorf("Write under a deleting row's name = %v, want no ErrNameTaken", err)
 			}
@@ -403,12 +403,12 @@ func (s *suite) protocolEnsureCreates(t *testing.T) {
 			dir := s.mkdir(t, "ensure-write-"+t.Name())
 			id := blobfs.NewID()
 			objects := newObjectStore()
-			got, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", id, "seed")
+			got, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", id, "seed", nil)
 			if err != nil || !stored || got.ID != id || got.Key != id+"/seed.txt" {
 				t.Fatalf("the first Ensure = %+v, %v, %v, want the row created under the id and stored", got, stored, err)
 			}
 			s.wantWritten(t, objects, got, "seed")
-			again, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", id, "seed")
+			again, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", id, "seed", nil)
 			if err != nil || stored || !equalFile(got, again) || objects.puts != 1 {
 				t.Errorf("the second Ensure = %+v, %v, %v after %d puts, want the row as it stands, stored false, and one put", again, stored, err, objects.puts)
 			}
@@ -424,12 +424,12 @@ func (s *suite) protocolEnsureResumes(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			dir := s.mkdir(t, "ensure-resume-"+t.Name())
 			id := blobfs.NewID()
-			pending, err := tier.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "seed.txt", "text/plain", data.WithID(id))
+			pending, err := tier.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "seed.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id})
 			if err != nil {
 				t.Fatalf("Create: %v", err)
 			}
 			objects := newObjectStore()
-			got, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", id, "seed")
+			got, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", id, "seed", nil)
 			if err != nil || !stored || got.ID != id || got.Version != pending.Version+1 || !got.CreatedAt.Equal(pending.CreatedAt) {
 				t.Fatalf("Ensure over the pending row = %+v, %v, %v, want it resumed and completed", got, stored, err)
 			}
@@ -452,7 +452,7 @@ func (s *suite) protocolEnsureNameTaken(t *testing.T) {
 				n := "taken-" + status.String() + ".txt"
 				before := s.file(t, s.insertFile(t, dir.ID, n, status))
 				objects := newObjectStore()
-				_, stored, err := s.ensureWrite(tier.store, objects, dir.ID, n, blobfs.NewID(), "seed")
+				_, stored, err := s.ensureWrite(tier.store, objects, dir.ID, n, blobfs.NewID(), "seed", nil)
 				if !errors.Is(err, blobfs.ErrNameTaken) || stored {
 					t.Errorf("Ensure over a %s row under another id = %v, %v, want ErrNameTaken", status, stored, err)
 				}
@@ -476,7 +476,7 @@ func (s *suite) protocolEnsureNameHeldByADeletingRow(t *testing.T) {
 			dir := s.mkdir(t, "ensure-deleting-name-"+t.Name())
 			before := s.file(t, s.insertFile(t, dir.ID, "seed.txt", blobfs.StatusDeleting))
 			objects := newObjectStore()
-			_, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", blobfs.NewID(), "seed")
+			_, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", blobfs.NewID(), "seed", nil)
 			if errors.Is(err, blobfs.ErrNameTaken) || stored {
 				t.Errorf("Ensure over a deleting row under another id = %v, %v, want its DeletingError", stored, err)
 			}
@@ -499,12 +499,12 @@ func (s *suite) protocolEnsureDeleting(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			dir := s.mkdir(t, "ensure-deleting-"+t.Name())
 			id := blobfs.NewID()
-			if _, err := tier.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "seed.txt", "text/plain", data.WithID(id)); err != nil {
+			if _, err := tier.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "seed.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id}); err != nil {
 				t.Fatalf("Create: %v", err)
 			}
 			deleting := s.beginDelete(t, id)
 			objects := newObjectStore()
-			_, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", id, "seed")
+			_, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", id, "seed", nil)
 			if !errors.Is(err, blobfs.ErrDeleting) || stored {
 				t.Errorf("Ensure over a deleting row = %v, %v, want ErrDeleting", stored, err)
 			}
@@ -535,11 +535,11 @@ func (s *suite) protocolEnsureShares(t *testing.T) {
 			first.beforePut = func(string) {
 				var stored bool
 				var err error
-				if won, stored, err = s.ensureWrite(tier.store, second, dir.ID, "seed.txt", id, "seed"); err != nil || !stored {
+				if won, stored, err = s.ensureWrite(tier.store, second, dir.ID, "seed.txt", id, "seed", nil); err != nil || !stored {
 					t.Errorf("the second Ensure inside the put = %v, %v, want the row resumed and stored", stored, err)
 				}
 			}
-			got, stored, err := s.ensureWrite(tier.store, first, dir.ID, "seed.txt", id, "seed")
+			got, stored, err := s.ensureWrite(tier.store, first, dir.ID, "seed.txt", id, "seed", nil)
 			if err != nil || stored || !equalFile(got, won) {
 				t.Fatalf("the first Ensure = %+v, %v, %v, want the second's row\n%+v\nfound, stored false", got, stored, err, won)
 			}
@@ -568,18 +568,18 @@ func (s *suite) protocolEnsureLostInsert(t *testing.T) {
 			var competing blobfs.File
 			begin := func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
 				if begun++; begun > 1 {
-					return tier.store.Files.Ensure(s.ctx, tx, acceptAll{}, dir.ID, "seed.txt", "text/plain", data.WithID(id))
+					return tier.store.Files.Ensure(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "seed.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id})
 				}
 				// The competing writer commits between this writer's lookup,
 				// which found nothing, and its insert.
 				var err error
-				if competing, err = tier.store.Files.Create(s.ctx, s.db, acceptAll{}, dir.ID, "seed.txt", "text/plain", data.WithID(id)); err != nil {
+				if competing, err = tier.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "seed.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id}); err != nil {
 					t.Errorf("the competing Create: %v", err)
 				}
-				f, err := tier.store.Files.Create(s.ctx, tx, acceptAll{}, dir.ID, "seed.txt", "text/plain", data.WithID(id))
+				f, err := tier.store.Files.Create(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "seed.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id})
 				return f, data.WriteCreated, err
 			}
-			got, stored, err := tier.store.EnsureFile(s.ctx, s.db, objects, id, strings.NewReader("seed"), 4, begin)
+			got, stored, err := tier.store.EnsureFile(s.ctx, data.EnsureFileRequest{DB: s.db, Objects: objects, ID: id, Body: strings.NewReader("seed"), Size: 4, Begin: begin})
 			if err != nil || !stored || begun != 2 || got.ID != id || got.Version != competing.Version+1 || !got.CreatedAt.Equal(competing.CreatedAt) {
 				t.Fatalf("Ensure after a lost insert = %+v, %v, %v after %d begins, want the competing row resumed and stored", got, stored, err, begun)
 			}
@@ -601,7 +601,7 @@ func (s *suite) protocolEnsureOnComplete(t *testing.T) {
 			objects := newObjectStore()
 			var ran int
 			var hooked, read blobfs.File
-			got, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", id, "seed", data.OnComplete(func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
+			got, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", id, "seed", func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
 				ran++
 				hooked = f
 				var err error
@@ -610,7 +610,7 @@ func (s *suite) protocolEnsureOnComplete(t *testing.T) {
 				}
 				s.reference(t, tx, f.ID)
 				return nil
-			}))
+			})
 			if err != nil || !stored {
 				t.Fatalf("Ensure with a hook = %v, %v, want the file stored", stored, err)
 			}
@@ -635,7 +635,7 @@ func (s *suite) protocolEnsureOnCompletePresent(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			dir := s.mkdir(t, "ensure-on-complete-present-"+t.Name())
 			id := blobfs.NewID()
-			written, _, err := s.ensureWrite(tier.store, newObjectStore(), dir.ID, "seed.txt", id, "seed")
+			written, _, err := s.ensureWrite(tier.store, newObjectStore(), dir.ID, "seed.txt", id, "seed", nil)
 			if err != nil {
 				t.Fatalf("the earlier Ensure: %v", err)
 			}
@@ -702,11 +702,11 @@ func (s *suite) protocolEnsureOnCompleteRefuses(t *testing.T) {
 				id := blobfs.NewID()
 				objects := newObjectStore()
 				var key string
-				_, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", id, "seed", data.OnComplete(func(_ context.Context, tx *sqlate.Tx, f blobfs.File) error {
+				_, stored, err := s.ensureWrite(tier.store, objects, dir.ID, "seed.txt", id, "seed", func(_ context.Context, tx *sqlate.Tx, f blobfs.File) error {
 					key = f.Key
 					s.reference(t, tx, f.ID)
 					return refused
-				}))
+				})
 				if !errors.Is(err, refused) || stored {
 					t.Fatalf("Ensure under a refusing hook = %v, %v, want the hook's error", stored, err)
 				}
@@ -766,14 +766,14 @@ func (s *suite) protocolRemoveFailedDelete(t *testing.T) {
 			id := s.insertFile(t, dir.ID, "report.txt", blobfs.StatusAvailable)
 			objects := newObjectStore()
 			objects.failAt = 1
-			if err := tier.store.RemoveFileID(s.ctx, s.db, objects, id); !errors.Is(err, errObjectStore) {
+			if err := tier.store.RemoveFileID(s.ctx, s.db, objects, id, data.VersionOptions{}); !errors.Is(err, errObjectStore) {
 				t.Fatalf("Remove under a failing delete = %v, want the store's error", err)
 			}
 			f := s.file(t, id)
 			if f.Status != blobfs.StatusDeleting {
 				t.Errorf("the failed Remove left the row %s, want deleting", f.Status)
 			}
-			if err := tier.store.RemoveFileID(s.ctx, s.db, objects, id); err != nil {
+			if err := tier.store.RemoveFileID(s.ctx, s.db, objects, id, data.VersionOptions{}); err != nil {
 				t.Fatalf("the retried Remove: %v", err)
 			}
 			if objects.deleted[f.Key] != 1 || objects.calls != 2 {
@@ -792,7 +792,7 @@ func (s *suite) protocolRemoveRefusedPick(t *testing.T) {
 			dir := s.mkdir(t, "remove-refused-"+t.Name())
 			before := s.file(t, s.insertFile(t, dir.ID, "report.txt", blobfs.StatusAvailable))
 			objects := newObjectStore()
-			err := tier.store.RemoveFile(s.ctx, s.db, objects, func(*sqlate.Tx) (string, error) { return before.ID, errBegin })
+			err := tier.store.RemoveFile(s.ctx, s.db, objects, func(*sqlate.Tx) (string, error) { return before.ID, errBegin }, data.RemoveOptions{})
 			if !errors.Is(err, errBegin) || strings.Contains(err.Error(), "data: ") {
 				t.Errorf("Remove under a refusing pick = %v, want its error as it came", err)
 			}
@@ -824,7 +824,7 @@ func (s *suite) protocolRemoveOnDelete(t *testing.T) {
 			var ran int
 			var hooked, read blobfs.File
 			err = tier.store.RemoveFile(s.ctx, s.db, objects, func(*sqlate.Tx) (string, error) { return f.ID, nil },
-				s.unreferencing(tier.store, &ran, &hooked, &read))
+				data.RemoveOptions{OnDelete: s.unreferencing(tier.store, &ran, &hooked, &read)})
 			if err != nil {
 				s.unreference(t, f.ID)
 				t.Fatalf("Remove with a hook: %v", err)
@@ -862,16 +862,16 @@ func (s *suite) protocolRemoveOnDeleteRetried(t *testing.T) {
 			}
 			var ran int
 			var hooked, read blobfs.File
-			hook := s.unreferencing(tier.store, &ran, &hooked, &read)
+			remove := data.RemoveOptions{OnDelete: s.unreferencing(tier.store, &ran, &hooked, &read)}
 			pick := func(*sqlate.Tx) (string, error) { return f.ID, nil }
 			objects.failAt = 1
-			if err := tier.store.RemoveFile(s.ctx, s.db, objects, pick, hook); !errors.Is(err, errObjectStore) {
+			if err := tier.store.RemoveFile(s.ctx, s.db, objects, pick, remove); !errors.Is(err, errObjectStore) {
 				t.Fatalf("Remove under a failing delete = %v, want the store's error", err)
 			}
 			if got := s.file(t, f.ID); got.Status != blobfs.StatusDeleting || ran != 1 {
 				t.Fatalf("the failed Remove left the row %s after %d hooks, want deleting after one", got.Status, ran)
 			}
-			if err := tier.store.RemoveFile(s.ctx, s.db, objects, pick, hook); err != nil {
+			if err := tier.store.RemoveFile(s.ctx, s.db, objects, pick, remove); err != nil {
 				t.Fatalf("the retried Remove: %v", err)
 			}
 			if ran != 1 {
@@ -902,11 +902,11 @@ func (s *suite) protocolRemoveOnDeleteRefuses(t *testing.T) {
 			before := s.file(t, f.ID)
 			ran := 0
 			err = tier.store.RemoveFile(s.ctx, s.db, objects, func(*sqlate.Tx) (string, error) { return f.ID, nil },
-				data.OnDelete(func(_ context.Context, tx *sqlate.Tx, f blobfs.File) error {
+				data.RemoveOptions{OnDelete: func(_ context.Context, tx *sqlate.Tx, f blobfs.File) error {
 					ran++
 					s.reference(t, tx, f.ID)
 					return refused
-				}))
+				}})
 			if !errors.Is(err, refused) {
 				t.Fatalf("Remove under a refusing hook = %v, want the hook's error", err)
 			}
@@ -939,8 +939,8 @@ func (s *suite) protocolPurge(t *testing.T) {
 				t.Fatalf("Write: %v", err)
 			}
 			deleting, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
-				return tier.store.Files.Delete(s.ctx, tx, f.ID)
-			})
+				return tier.store.Files.Delete(s.ctx, tx, f.ID, data.VersionOptions{})
+			}, nil)
 			if err != nil {
 				t.Fatalf("Files.Delete: %v", err)
 			}
@@ -973,15 +973,15 @@ func (p *passes) report(r data.SweepResult, err error) {
 
 // pass is one pass of store's sweep through objects with opts, counted in
 // ran, as a consumer hands it to SweepUntilDone.
-func (p *passes) pass(s *suite, store *data.Store, objects *objectStore, opts ...data.SweepOption) func(context.Context) (data.SweepResult, error) {
+func (p *passes) pass(s *suite, store *data.Store, objects *objectStore, opts data.SweepOptions) func(context.Context) (data.SweepResult, error) {
 	return func(ctx context.Context) (data.SweepResult, error) {
 		p.ran++
-		return store.Sweep(ctx, s.db, objects, opts...)
+		return store.Sweep(ctx, s.db, objects, opts)
 	}
 }
 
 // protocolSweepUntilDone checks that SweepUntilDone drains a backlog
-// larger than one batch: a branch of eight records at Batch(3) takes the
+// larger than one batch: a branch of eight records at a Batch of 3 takes the
 // three passes sweepBatch counts, the loop runs each once, report sees
 // each with no error, and the branch is gone with each object deleted once.
 func (s *suite) protocolSweepUntilDone(t *testing.T) {
@@ -990,12 +990,12 @@ func (s *suite) protocolSweepUntilDone(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			b := s.newBranch(t, "until-done-"+t.Name())
 			keys := s.keys(t, branchFiles(b)...)
-			if _, err := s.mark(tier.store, b.top.ID); err != nil {
+			if _, err := s.mark(tier.store, b.top.ID, data.VersionOptions{}); err != nil {
 				t.Fatalf("MarkDeleting: %v", err)
 			}
 			objects := newObjectStore()
 			var got passes
-			if err := data.SweepUntilDone(s.ctx, nil, got.pass(s, tier.store, objects, data.Batch(3)), got.report); err != nil {
+			if err := data.SweepUntilDone(s.ctx, nil, got.pass(s, tier.store, objects, data.SweepOptions{Batch: 3}), got.report); err != nil {
 				t.Fatalf("SweepUntilDone: %v", err)
 			}
 			if !slices.Equal(got.results, want) || !slices.Equal(got.errs, make([]error, len(want))) || got.ran != len(want) {
@@ -1015,21 +1015,21 @@ func (s *suite) protocolSweepUntilDoneStopped(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
 			b := s.newBranch(t, "until-stopped-"+t.Name())
-			if _, err := s.mark(tier.store, b.top.ID); err != nil {
+			if _, err := s.mark(tier.store, b.top.ID, data.VersionOptions{}); err != nil {
 				t.Fatalf("MarkDeleting: %v", err)
 			}
 			stop := make(chan struct{})
 			close(stop)
 			objects := newObjectStore()
 			var got passes
-			if err := data.SweepUntilDone(s.ctx, stop, got.pass(s, tier.store, objects), got.report); err != nil || len(got.results) != 0 || got.ran != 0 || objects.calls != 0 {
+			if err := data.SweepUntilDone(s.ctx, stop, got.pass(s, tier.store, objects, data.SweepOptions{}), got.report); err != nil || len(got.results) != 0 || got.ran != 0 || objects.calls != 0 {
 				t.Errorf("SweepUntilDone with a closed stop = %v after %d passes reported and %d run, %d deletes, want nothing run", err, len(got.results), got.ran, objects.calls)
 			}
 			if d := s.directory(t, b.top.ID); d.Status != blobfs.DirectoryStatusDeleting {
 				t.Errorf("the stopped loop left the branch %s, want deleting", d.Status)
 			}
 			got = passes{}
-			if err := data.SweepUntilDone(s.ctx, nil, got.pass(s, tier.store, objects), got.report); err != nil || len(got.results) != 1 ||
+			if err := data.SweepUntilDone(s.ctx, nil, got.pass(s, tier.store, objects, data.SweepOptions{}), got.report); err != nil || len(got.results) != 1 ||
 				got.results[0] != (data.SweepResult{Files: 5, Directories: 3}) {
 				t.Errorf("the unstopped SweepUntilDone = %v after %+v, want the branch in one pass", err, got.results)
 			}

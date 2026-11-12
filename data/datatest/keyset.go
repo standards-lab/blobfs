@@ -74,10 +74,10 @@ func (s *suite) walks(t *testing.T, dir string) {
 			list := func(store *data.Store) lister[blobfs.File] {
 				return lister[blobfs.File]{
 					list: func(req query.Directives, page query.Page) (query.Collection[blobfs.File], error) {
-						return store.Files.List(s.ctx, s.db, dir, req, page)
+						return store.Files.List(s.ctx, s.db, dir, req, page, data.ListOptions{})
 					},
 					cont: func(req query.Directives, after query.Cursor, size int) (query.Collection[blobfs.File], error) {
-						return store.Files.Continue(s.ctx, s.db, dir, req, after, size)
+						return store.Files.Continue(s.ctx, s.db, dir, req, data.CursorPage{After: after, Size: size}, data.ListOptions{})
 					},
 				}
 			}
@@ -99,10 +99,10 @@ func (s *suite) walks(t *testing.T, dir string) {
 			list := func(store *data.Store) lister[blobfs.Directory] {
 				return lister[blobfs.Directory]{
 					list: func(req query.Directives, page query.Page) (query.Collection[blobfs.Directory], error) {
-						return store.Directories.List(s.ctx, s.db, dir, req, page)
+						return store.Directories.List(s.ctx, s.db, dir, req, page, data.ListOptions{})
 					},
 					cont: func(req query.Directives, after query.Cursor, size int) (query.Collection[blobfs.Directory], error) {
-						return store.Directories.Continue(s.ctx, s.db, dir, req, after, size)
+						return store.Directories.Continue(s.ctx, s.db, dir, req, data.CursorPage{After: after, Size: size}, data.ListOptions{})
 					},
 				}
 			}
