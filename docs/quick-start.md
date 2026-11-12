@@ -331,10 +331,10 @@ of the cursor predicate, `sqlatepg.Patterns()`, and blobfs's published patterns,
 PostgreSQL engine as `data.Options.Engine`; the program's own statements compile against the same
 catalog. `Verify` prepares both against the migrated schema.
 
-`Upload` runs `Store.WriteFile` and `Delete` runs `Store.RemoveFile`, each with a callback of the
-program's inside the protocol's first transaction, `Begin` in a `data.WriteFileRequest` and
-`pick`; [the protocols](features.md#the-protocols)
-states what each runs and refuses. Both callbacks first check the program's scope: the file's
+`Upload` runs `Store.WriteFile` and `Delete` runs `Store.RemoveFile`. Each passes a callback
+that runs inside the protocol's first transaction: `Upload` sets the `data.WriteFileRequest`'s
+`Begin`, and `Delete` passes `pick`. [The protocols](features.md#the-protocols) states what each
+runs and refuses. Both callbacks first check the program's scope: the file's
 directory must lie within the area the caller may reach, which `Directories.IsWithin` answers.
 
 - `Upload`'s `Begin` inserts the pending row with `Files.Create` and nothing that references it,

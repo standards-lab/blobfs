@@ -367,11 +367,11 @@ satisfies. `ObjectStore` embeds three interfaces:
 - `ObjectDeleter`: `DeleteObject(ctx, key) error`, idempotent over a missing object, which the
   delete protocols and [the sweep](#the-sweep) take alone.
 
-Each protocol takes the `*sqlate.DB`, the write protocols as their request's `DB`, and runs its
-first transaction around a callback of the consumer's, the write protocols' `Begin`, in which
-the consumer checks its own scope and writes or removes its own rows. The protocol returns the
-callback's error, or its transaction's, as it came, and names every other error once as `data:
-<op> file <id>: ...`.
+Each protocol takes the `*sqlate.DB`, which the write protocols take as their request's `DB`.
+It runs its first transaction around a callback of the consumer's, which the write protocols
+take as their request's `Begin`. In that callback the consumer checks its own scope and writes
+or removes its own rows. The protocol returns the callback's error, or its transaction's, as it
+came, and names every other error once as `data: <op> file <id>: ...`.
 
 | Method | What it does | Refusals |
 |---|---|---|

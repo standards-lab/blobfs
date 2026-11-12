@@ -7,7 +7,7 @@
 //   - Namespace is the pattern namespace blobfs publishes, and Patterns its
 //     pattern source, which a consumer registers in its catalog.
 //   - New compiles the statements once against that catalog into a Store;
-//     Options configures it, and its Engine installs an Engine.
+//     Options configures it, and its Engine field installs an Engine.
 //   - Engine builds a Variant, the variation points an engine implements
 //     natively, over the baseline it is given.
 //   - Store.Statements lists the compiled inventory, and Store.Verify
@@ -25,7 +25,7 @@
 //   - Listing is the interface both handles' listings satisfy.
 //   - Marked counts the rows Directories.MarkDeleting changed.
 //
-// The options:
+// The options and request values:
 //
 //   - ListOptions configures a listing; its IncludeDeleting lists deleting
 //     rows too. CursorPage names the page a Continue reads past a cursor.

@@ -21,8 +21,7 @@ type Options struct {
 
 // FileSpec names the file Files.Create or Files.Ensure writes: where it
 // goes, under what name, and the content type it declares. Every field is
-// required; the call refuses what it refuses for the positional values,
-// with the same errors.
+// required.
 type FileSpec struct {
 	// DirectoryID is the directory the file is created in, as
 	// blobfs.File's. A directory that is missing or deleting is the
@@ -150,7 +149,7 @@ type CursorPage struct {
 // WriteFile panics before any I/O when one is nil. An empty file passes
 // http.NoBody or an empty reader as its Body.
 type WriteFileRequest struct {
-	// DB is the database begin's transaction and the completion's run on.
+	// DB is the database Begin's transaction and the completion's run on.
 	DB *sqlate.DB
 
 	// Objects is the consumer's object store the body is put in and the
@@ -184,7 +183,7 @@ type WriteFileRequest struct {
 // Files.Ensure. DB, Objects, Body, and Begin are required: EnsureFile panics
 // before any I/O when one is nil.
 type EnsureFileRequest struct {
-	// DB is the database begin's transaction and the completion's run on.
+	// DB is the database Begin's transaction and the completion's run on.
 	DB *sqlate.DB
 
 	// Objects is the consumer's object store the body is put in and the
