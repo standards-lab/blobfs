@@ -7,6 +7,13 @@ changelog covers this sub-module only; the base module keeps its own.
 
 ## [Unreleased]
 
+### Changed
+
+- The integration tier's throwaway databases come from `sqlate/postgres/pgtest`, created on the
+  server `BLOBFS_DSN` names as `blobfs_test_<hex>` and dropped `WITH (FORCE)` when the test
+  ends, in place of the module's own internal helper; the tier's assertions are unchanged. The
+  `sqlate/postgres` requirement moves to v0.8.0, which carries `pgtest`.
+
 ## [v0.6.0] - 2026-11-12
 
 ### Changed
