@@ -1,7 +1,7 @@
 # The development stack's PostgreSQL: the database the integration tier and
 # the example connect to through BLOBFS_DSN. This FROM line is PostgreSQL's
 # one pin.
-FROM postgres:18.6-alpine
+FROM postgres:18.7-alpine
 
 # The user, password, and database BLOBFS_DSN names; development values, not
 # secrets.
