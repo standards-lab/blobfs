@@ -6,7 +6,7 @@ require (
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/standards-lab/blobfs v0.8.0
 	github.com/standards-lab/sqlate v0.7.0
-	github.com/standards-lab/sqlate/postgres v0.7.0
+	github.com/standards-lab/sqlate/postgres v0.8.0
 )
 
 require (

@@ -8,6 +8,7 @@ import (
 
 	"github.com/standards-lab/sqlate"
 	sqlatepg "github.com/standards-lab/sqlate/postgres"
+	"github.com/standards-lab/sqlate/postgres/pgtest"
 	"github.com/standards-lab/sqlate/query"
 
 	"github.com/standards-lab/blobfs/data"
@@ -51,7 +52,7 @@ func TestConformance(t *testing.T) {
 // catalog built from patterns and blobfs's own, over the PostgreSQL engine
 // or the baseline.
 func conform(t *testing.T, dialect sqlate.Dialect, patterns query.Source, native bool) {
-	d := dbtest.Migrated(t)
+	d := pgtest.Migrated(t, dbtest.Env, dbtest.Prefix, dbtest.Migrations(t))
 	c, err := query.NewCatalog(patterns, data.Patterns())
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)
@@ -67,15 +68,18 @@ func conform(t *testing.T, dialect sqlate.Dialect, patterns query.Source, native
 	if store.Directories.Serializes() != native {
 		t.Fatalf("the store reports Serializes %v over the %s", store.Directories.Serializes(), map[bool]string{true: "Postgres engine", false: "baseline"}[native])
 	}
-	datatest.Run(t, d.Session(dialect), c, engine)
+	// The suite runs under dialect, which may be the fallback wrapper
+	// rather than postgres.Dialect, so the pool is wrapped here, not
+	// through Database.Session.
+	datatest.Run(t, sqlate.Wrap(d.Pool, dialect), c, engine)
 }
 
 // TestTreeLockIsAnAdvisoryLock checks LockTree takes a transaction-scoped
 // advisory lock under TreeLockKey, seen in pg_locks until commit.
 func TestTreeLockIsAnAdvisoryLock(t *testing.T) {
 	ctx := context.Background()
-	d := dbtest.Migrated(t)
-	db := d.Session(sqlatepg.Dialect{})
+	d := pgtest.Migrated(t, dbtest.Env, dbtest.Prefix, dbtest.Migrations(t))
+	db := d.Session()
 	c, err := query.NewCatalog(sqlatepg.Patterns(), data.Patterns())
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)

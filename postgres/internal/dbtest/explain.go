@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 )
 
 // Explainer runs EXPLAIN (ANALYZE, BUFFERS) for the cost assertions. It

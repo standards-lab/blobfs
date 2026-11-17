@@ -20,6 +20,7 @@ import (
 
 	"github.com/standards-lab/sqlate"
 	sqlatepg "github.com/standards-lab/sqlate/postgres"
+	"github.com/standards-lab/sqlate/postgres/pgtest"
 	"github.com/standards-lab/sqlate/query"
 
 	"github.com/standards-lab/blobfs"
@@ -65,8 +66,8 @@ type costEnv struct {
 func openCost(t *testing.T, sizes dbtest.Sizes) costEnv {
 	t.Helper()
 	ctx := context.Background()
-	d := dbtest.Migrated(t)
-	db := d.Session(sqlatepg.Dialect{})
+	d := pgtest.Migrated(t, dbtest.Env, dbtest.Prefix, dbtest.Migrations(t))
+	db := d.Session()
 	c, err := query.NewCatalog(sqlatepg.Patterns(), data.Patterns())
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)

@@ -9,7 +9,7 @@ import (
 
 	"github.com/standards-lab/sqlate"
 	"github.com/standards-lab/sqlate/migrate"
-	sqlatepg "github.com/standards-lab/sqlate/postgres"
+	"github.com/standards-lab/sqlate/postgres/pgtest"
 
 	"github.com/standards-lab/blobfs"
 	"github.com/standards-lab/blobfs/postgres"
@@ -35,11 +35,8 @@ var consumerSet = migrate.Set{
 // and a replay from zero.
 func TestMigrationsWithAConsumerSet(t *testing.T) {
 	ctx := context.Background()
-	db := dbtest.Create(t).Session(sqlatepg.Dialect{})
-	set, err := postgres.Migrations()
-	if err != nil {
-		t.Fatalf("Migrations: %v", err)
-	}
+	db := pgtest.Create(t, dbtest.Env, dbtest.Prefix).Session()
+	set := dbtest.Migrations(t)
 	m, err := migrate.New(db, []migrate.Set{set, consumerSet}, migrate.Options{})
 	if err != nil {
 		t.Fatalf("migrate.New: %v", err)
@@ -127,7 +124,7 @@ func insertFile(ctx context.Context, db *sqlate.DB, dir, name, status string) (s
 // through the store in the conformance suite.
 func TestConstraints(t *testing.T) {
 	ctx := context.Background()
-	db := dbtest.Migrated(t).Session(sqlatepg.Dialect{})
+	db := pgtest.Migrated(t, dbtest.Env, dbtest.Prefix, dbtest.Migrations(t)).Session()
 	root := blobfs.RootID
 	docs, err := insertDirectory(ctx, db, &root, ptr("docs"))
 	if err != nil {

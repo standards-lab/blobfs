@@ -4,129 +4,34 @@ package dbtest
 
 import (
 	"context"
-	"crypto/rand"
-	"database/sql"
-	"encoding/hex"
 	"errors"
-	"net/url"
-	"os"
 	"testing"
-	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/standards-lab/sqlate"
 	"github.com/standards-lab/sqlate/migrate"
-	sqlatepg "github.com/standards-lab/sqlate/postgres"
 
 	"github.com/standards-lab/blobfs/postgres"
 )
 
-// Database is one test's throwaway database: the pool over it and its DSN.
-type Database struct {
-	Pool *sql.DB
-	DSN  string
-}
+// Env names the environment variable that holds the admin DSN of the
+// server the integration tier creates its databases on, and Prefix starts
+// their names, blobfs_test_<hex>. A test passes both to pgtest.Create or
+// pgtest.Migrated, which create the database and drop it when the test
+// ends.
+const (
+	Env    = "BLOBFS_DSN"
+	Prefix = "blobfs"
+)
 
-// Session wraps the pool with dialect. The integration tier's tests wrap
-// one pool twice: under sqlate's postgres dialect for the migrator, which
-// needs its lock and catalog, and under the dialect the run under test
-// compiles its store for.
-func (d Database) Session(dialect sqlate.Dialect) *sqlate.DB {
-	return sqlate.Wrap(d.Pool, dialect)
-}
-
-// Create makes a uniquely named database on the server BLOBFS_DSN names
-// and opens a pool to it. The pool is closed and the database dropped,
-// with FORCE so open sessions do not block the drop, when the test ends.
-func Create(t testing.TB) Database {
+// Migrations returns blobfs's migration set, for pgtest.Migrated or a
+// migrator a test builds itself, failing the test when it does not load.
+func Migrations(t testing.TB) migrate.Set {
 	t.Helper()
-	dsn := os.Getenv("BLOBFS_DSN")
-	if dsn == "" {
-		t.Fatal("BLOBFS_DSN is not set; run under mise with the compose stack up")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	admin, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatalf("open %s: %v", dsn, err)
-	}
-	name := "blobfs_test_" + suffix(t)
-	if _, err := admin.ExecContext(ctx, "CREATE DATABASE "+name); err != nil {
-		_ = admin.Close()
-		t.Fatalf("create database %s: %v", name, err)
-	}
-	t.Cleanup(func() {
-		// WITH (FORCE) terminates the database's other sessions, and under
-		// load the engine can report that one is still closing. Each attempt
-		// gets its own deadline, so one long stall does not use up the
-		// retries.
-		var err error
-		for range 4 {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_, err = admin.ExecContext(ctx, "DROP DATABASE "+name+" WITH (FORCE)")
-			cancel()
-			if err == nil {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-		if err != nil {
-			t.Errorf("drop database %s: %v", name, err)
-		}
-		_ = admin.Close()
-	})
-
-	testDSN := databaseDSN(t, dsn, name)
-	pool, err := sql.Open("pgx", testDSN)
-	if err != nil {
-		t.Fatalf("open %s: %v", name, err)
-	}
-	t.Cleanup(func() { _ = pool.Close() })
-	if err := pool.PingContext(ctx); err != nil {
-		t.Fatalf("ping %s: %v", name, err)
-	}
-	return Database{Pool: pool, DSN: testDSN}
-}
-
-// Migrated is Create with blobfs's migration set applied through
-// migrate.New under sqlate's postgres dialect.
-func Migrated(t testing.TB) Database {
-	t.Helper()
-	d := Create(t)
 	set, err := postgres.Migrations()
 	if err != nil {
 		t.Fatalf("Migrations: %v", err)
 	}
-	m, err := migrate.New(d.Session(sqlatepg.Dialect{}), []migrate.Set{set}, migrate.Options{})
-	if err != nil {
-		t.Fatalf("migrate.New: %v", err)
-	}
-	if err := m.Up(context.Background()); err != nil {
-		t.Fatalf("Up: %v", err)
-	}
-	return d
-}
-
-// suffix returns eight random hex characters, so parallel packages never
-// pick the same database name.
-func suffix(t testing.TB) string {
-	var b [4]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		t.Fatalf("random suffix: %v", err)
-	}
-	return hex.EncodeToString(b[:])
-}
-
-// databaseDSN returns dsn with its database replaced by name.
-func databaseDSN(t testing.TB, dsn, name string) string {
-	t.Helper()
-	u, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatalf("parse %s: %v", dsn, err)
-	}
-	u.Path = "/" + name
-	return u.String()
+	return set
 }
 
 // Constraint returns the constraint name a classified violation carries,
