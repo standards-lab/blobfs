@@ -11,9 +11,6 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// directoryIDs lists the directories under parentID through store, called
-// with opts, in one page of up to 100, and returns their ids in name order
-// and the total.
 func (s *suite) directoryIDs(t *testing.T, store *data.Store, parentID string, opts data.ListOptions) ([]string, int) {
 	t.Helper()
 	c, err := store.Directories.List(s.ctx, s.db, parentID, listAll(), firstPage(100), opts)
@@ -27,8 +24,6 @@ func (s *suite) directoryIDs(t *testing.T, store *data.Store, parentID string, o
 	return ids, c.Total
 }
 
-// fileIDs lists the files in dir through store, called with opts, in one
-// page of up to 100, and returns their ids in name order and the total.
 func (s *suite) fileIDs(t *testing.T, store *data.Store, dir string, opts data.ListOptions) ([]string, int) {
 	t.Helper()
 	c, err := store.Files.List(s.ctx, s.db, dir, listAll(), firstPage(100), opts)
@@ -42,8 +37,6 @@ func (s *suite) fileIDs(t *testing.T, store *data.Store, dir string, opts data.L
 	return ids, c.Total
 }
 
-// deleteFile runs the first step of a file's delete through the store
-// under test in a transaction of its own and commits it.
 func (s *suite) deleteFile(t *testing.T, id string) {
 	t.Helper()
 	if _, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
@@ -53,8 +46,6 @@ func (s *suite) deleteFile(t *testing.T, id string) {
 	}
 }
 
-// listingsHideTheBranch checks on both stores that a marked branch and a
-// deleting file vanish from their listings, and IncludeDeleting shows them.
 func (s *suite) listingsHideTheBranch(t *testing.T) {
 	holder := s.mkdir(t, "hide-"+t.Name())
 	keep := s.mkdirUnder(t, holder.ID, "keep")
@@ -98,9 +89,6 @@ func (s *suite) listingsHideTheBranch(t *testing.T) {
 	}
 }
 
-// listingADeletingDirectory checks, against the baseline, that List and
-// Continue of a deleting directory are ErrDeleting, and IncludeDeleting
-// lists it.
 func (s *suite) listingADeletingDirectory(t *testing.T) {
 	b := s.newBranch(t, "list-deleting-"+t.Name())
 	s.mkdirUnder(t, b.top.ID, "second")
@@ -158,8 +146,6 @@ func (s *suite) listingADeletingDirectory(t *testing.T) {
 	}
 }
 
-// cursorAcrossAMark checks a cursor taken before a mark continues without
-// the rows marked since, and is ErrDeleting once its directory is marked.
 func (s *suite) cursorAcrossAMark(t *testing.T) {
 	holder := s.mkdir(t, "across-"+t.Name())
 	dirs := map[string]string{}
@@ -203,13 +189,8 @@ func (s *suite) cursorAcrossAMark(t *testing.T) {
 	}
 }
 
-// deletingRoots is the plain query of the roots of the branches being
-// deleted, which Directories.BranchRoots must match.
 const deletingRoots = "SELECT d.id FROM blobfs_directory d JOIN blobfs_directory p ON p.id = d.parent_id WHERE d.status = 'deleting' AND p.status = 'active' ORDER BY d.id"
 
-// branchRootsFindsTheRoots checks Directories.BranchRoots against the baseline
-// and a plain query over branches marked at the top, the middle, and both,
-// and its limit.
 func (s *suite) branchRootsFindsTheRoots(t *testing.T) {
 	top := s.newBranch(t, "roots-top-"+t.Name())
 	middle := s.newBranch(t, "roots-middle-"+t.Name())
@@ -260,10 +241,6 @@ func (s *suite) branchRootsFindsTheRoots(t *testing.T) {
 	wantSameError(t, err, base)
 }
 
-// branchRootsFindsNone checks that Directories.BranchRoots of a tree with no
-// branch being deleted returns no rows and no error, on both stores. The
-// suite's database holds marked branches by now, so the check runs in a
-// transaction that makes every directory active again and rolls back.
 func (s *suite) branchRootsFindsNone(t *testing.T) {
 	tx := s.beginTx(t, nil)
 	defer func() { _ = tx.Rollback() }()

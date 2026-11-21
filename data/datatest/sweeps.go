@@ -16,9 +16,6 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// sweeps checks Store.Sweep. It first drains the branches the earlier
-// groups marked; every later case starts from nothing to sweep and runs
-// over the store under test and then the baseline.
 func (s *suite) sweeps(t *testing.T) {
 	s.createDirectoryReferences(t)
 	t.Run("DrainsTheSuite", s.sweepDrains)
@@ -35,44 +32,27 @@ func (s *suite) sweeps(t *testing.T) {
 	t.Run("ConcurrentPasses", s.sweepConcurrent)
 }
 
-// errObjectStore is what a failing objectStore reports.
 var errObjectStore = errors.New("datatest: the object store failed")
 
-// errHook is what a failing hook reports.
 var errHook = errors.New("datatest: the hook failed")
 
-// objectStore is the object store the groups pass: an ObjectStore over
-// a map. The Sweeps group passes it as an ObjectDeleter: it records how
-// often each key was deleted, and fails the delete numbered failAt,
-// counting from 1, having deleted the object first when deleteFirst is
-// set, as a crash between the object's delete and the row's purge leaves
-// it. The Protocols group passes it as an ObjectStore: it accepts every
-// key, holds each put's body under its key until a delete of the key
-// succeeds, counts the puts, and fails every put while failPut is set.
 type objectStore struct {
 	acceptAll
 	deleted     map[string]int
 	calls       int
 	failAt      int
 	deleteFirst bool
-	// objects holds the bodies put and not deleted since, by key.
-	objects map[string]string
-	// puts counts the calls to PutObject, and put is the object the last
-	// one that stored reported.
-	puts    int
-	put     blobfs.Object
-	failPut bool
-	// beforePut, when set, runs inside each put with its key, before the
-	// put stores or fails.
-	beforePut func(key string)
+	objects     map[string]string
+	puts        int
+	put         blobfs.Object
+	failPut     bool
+	beforePut   func(key string)
 }
 
 func newObjectStore() *objectStore {
 	return &objectStore{deleted: map[string]int{}, objects: map[string]string{}}
 }
 
-// PutObject stores the body under key, reporting its size, the content
-// type it was given, and an entity tag of the put's number.
 func (o *objectStore) PutObject(_ context.Context, key string, body io.Reader, contentType string, size int64) (blobfs.Object, error) {
 	o.puts++
 	if o.beforePut != nil {
@@ -107,10 +87,6 @@ func (o *objectStore) DeleteObject(_ context.Context, key string) error {
 	return nil
 }
 
-// hooks records the directories OnRemoveDirectory was called with, in
-// order, and unbinds each one's owner row from the suite's stand-in for a
-// consumer's owner table inside the removal's transaction; it fails for
-// the directory failOn.
 type hooks struct {
 	s      *suite
 	ids    []string
@@ -126,20 +102,15 @@ func (h *hooks) remove(ctx context.Context, tx *sqlate.Tx, dir blobfs.Directory)
 	return err
 }
 
-// own inserts an owner row for the directory with id into the suite's
-// stand-in for a consumer's owner table, whose foreign key refuses the
-// directory's removal while the row remains.
 func (s *suite) own(t *testing.T, id string) {
 	t.Helper()
 	s.exec(t, "INSERT INTO datatest_owner (directory_id) VALUES ("+s.db.Dialect().Placeholder(1)+")", id)
 }
 
-// sweep runs one pass through store with objects and opts.
 func (s *suite) sweep(store *data.Store, objects data.ObjectDeleter, opts data.SweepOptions) (data.SweepResult, error) {
 	return store.Sweep(s.ctx, s.db, objects, opts)
 }
 
-// keys reads the keys of the files with ids, which a sweep deletes.
 func (s *suite) keys(t *testing.T, ids ...string) []string {
 	t.Helper()
 	var out []string
@@ -149,13 +120,10 @@ func (s *suite) keys(t *testing.T, ids ...string) []string {
 	return out
 }
 
-// branchFiles is every file of b, those a mark counts and the one already
-// deleting.
 func branchFiles(b branch) []string {
 	return append(slices.Clone(b.files), b.deleting)
 }
 
-// wantDirectoriesGone checks each directory with ids is gone.
 func (s *suite) wantDirectoriesGone(t *testing.T, ids ...string) {
 	t.Helper()
 	for _, id := range ids {
@@ -165,7 +133,6 @@ func (s *suite) wantDirectoriesGone(t *testing.T, ids ...string) {
 	}
 }
 
-// wantFilesGone checks each file with ids is gone.
 func (s *suite) wantFilesGone(t *testing.T, ids ...string) {
 	t.Helper()
 	for _, id := range ids {
@@ -175,8 +142,6 @@ func (s *suite) wantFilesGone(t *testing.T, ids ...string) {
 	}
 }
 
-// wantDeletedOnce checks every key was deleted exactly once and nothing
-// else was deleted.
 func wantDeletedOnce(t *testing.T, objects *objectStore, keys []string) {
 	t.Helper()
 	for _, key := range keys {
@@ -189,10 +154,6 @@ func wantDeletedOnce(t *testing.T, objects *objectStore, keys []string) {
 	}
 }
 
-// sweepDrains sweeps what the earlier groups left, pass after pass while
-// More: every branch being deleted is removed, the directories and files
-// the passes report are the rows that left the tables, each object is
-// deleted once, and no directory is left deleting.
 func (s *suite) sweepDrains(t *testing.T) {
 	dirs := s.count(t, s.db, "SELECT COUNT(*) FROM blobfs_directory")
 	files := s.count(t, s.db, "SELECT COUNT(*) FROM blobfs_file")
@@ -233,9 +194,6 @@ func (s *suite) sweepDrains(t *testing.T) {
 	}
 }
 
-// sweepNothing checks a pass over a tree with nothing to sweep, on both
-// stores and with the stale reclaim or without: a zero result, no
-// object deleted, and no hook called.
 func (s *suite) sweepNothing(t *testing.T) {
 	for _, store := range []*data.Store{s.store, s.baseline} {
 		for _, stale := range []time.Duration{0, time.Hour} {
@@ -249,9 +207,6 @@ func (s *suite) sweepNothing(t *testing.T) {
 	}
 }
 
-// sweepBranch checks a full sweep of a three-level branch a consumer owns,
-// against the baseline: every row gone in one pass, each object deleted
-// once, the hook called deepest first, the counts, and a sibling untouched.
 func (s *suite) sweepBranch(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("sweep-%d-%s", i, t.Name()))
@@ -283,9 +238,6 @@ func (s *suite) sweepBranch(t *testing.T) {
 	}
 }
 
-// sweepCrash checks a pass stopped between an object's delete and its
-// row's purge, which walks on past the refused file and keeps only the
-// directories above it, and the next pass finishing the branch.
 func (s *suite) sweepCrash(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("crash-%d-%s", i, t.Name()))
@@ -333,10 +285,6 @@ func (s *suite) sweepCrash(t *testing.T) {
 	}
 }
 
-// sweepStragglers checks, against the baseline, that the rows a create
-// that raced the mark left active in the branch, a directory under the
-// leaf with a pending file and an available file in the middle, are
-// marked by the pass once its walk meets them, and swept with the branch.
 func (s *suite) sweepStragglers(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("stragglers-%d-%s", i, t.Name()))
@@ -359,8 +307,6 @@ func (s *suite) sweepStragglers(t *testing.T) {
 	}
 }
 
-// sweepBatch checks the bound over a branch of eight records: a batch of
-// three takes three passes, and a batch of four two, the last with no More.
 func (s *suite) sweepBatch(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		for _, c := range []struct {
@@ -387,8 +333,6 @@ func (s *suite) sweepBatch(t *testing.T) {
 	}
 }
 
-// sweepHookAborts checks a failing hook aborts its removal, a pass without
-// the hook is refused by the owner row, and a pass with it finishes.
 func (s *suite) sweepHookAborts(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("hook-%d-%s", i, t.Name()))
@@ -424,8 +368,6 @@ func (s *suite) sweepHookAborts(t *testing.T) {
 	}
 }
 
-// sweepRefusalDoesNotBlock checks a branch refused on every pass holds back
-// no branch behind it.
 func (s *suite) sweepRefusalDoesNotBlock(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		stuck := s.newBranch(t, fmt.Sprintf("stuck-%d-%s", i, t.Name()))
@@ -456,11 +398,6 @@ func (s *suite) sweepRefusalDoesNotBlock(t *testing.T) {
 	}
 }
 
-// sweepRefusedRootAtBatchOne checks, against the baseline, that a branch
-// refused on every pass and first in id order holds back nothing at a
-// Batch of 1: every pass reads past it and spends its one record, the
-// branch behind it is swept over the passes, and More stays true while
-// that branch remains.
 func (s *suite) sweepRefusedRootAtBatchOne(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		stuck := s.newBranch(t, fmt.Sprintf("stuck-one-%d-%s", i, t.Name()))
@@ -514,10 +451,6 @@ func (s *suite) sweepRefusedRootAtBatchOne(t *testing.T) {
 	}
 }
 
-// sweepRefusedStaleAtBatchOne checks, against the baseline, that the
-// oldest stale row, refused on every pass by a consumer's reference, holds
-// back nothing at a Batch of 1: each pass reads past it and reclaims the next
-// row, with More while a row remains behind it.
 func (s *suite) sweepRefusedStaleAtBatchOne(t *testing.T) {
 	s.createFileReferences(t)
 	p := s.db.Dialect().Placeholder
@@ -548,9 +481,6 @@ func (s *suite) sweepRefusedStaleAtBatchOne(t *testing.T) {
 	}
 }
 
-// sweepStale checks the reclaim with and without StaleOlderThan: old
-// pending and deleting rows finished, their names freed, and younger rows
-// and available rows left as they were.
 func (s *suite) sweepStale(t *testing.T) {
 	old := time.Now().Add(-2 * time.Hour)
 	for i, store := range []*data.Store{s.store, s.baseline} {
@@ -574,7 +504,6 @@ func (s *suite) sweepStale(t *testing.T) {
 		if errors.Is(err, blobfs.ErrNameTaken) {
 			t.Errorf("Create over the stopped delete's name = %v, want its DeletingError and not ErrNameTaken", err)
 		}
-		// The stopped delete's row holds its name until the reclaim.
 		wantDeletingKind(t, err, false, stopped)
 
 		objects := newObjectStore()
@@ -604,8 +533,6 @@ func (s *suite) sweepStale(t *testing.T) {
 	}
 }
 
-// syncObjects is an ObjectDeleter safe for concurrent passes: it counts
-// each key's deletes under a lock.
 type syncObjects struct {
 	mu      sync.Mutex
 	deleted map[string]int
@@ -618,12 +545,6 @@ func (o *syncObjects) DeleteObject(_ context.Context, key string) error {
 	return nil
 }
 
-// sweepConcurrent checks that passes running at the same time converge,
-// against the baseline: four passes of a small batch, each looping while
-// More, sweep two marked branches with owner rows on their tops. Every
-// pass ends without error, every row and owner row is gone, and every
-// object was deleted at least once; a pass that loses a race to another
-// finds the row gone and counts it done.
 func (s *suite) sweepConcurrent(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		var branches []branch
