@@ -1,10 +1,14 @@
+# See docs/development.md
+[settings]
+task.run_auto_install = false
+
 [tools]
+"github:standards-lab/claude-plugins" = { version = "0.22.0", version_prefix = "marathon/v" }
 go = "1.27.4"
 golangci-lint = "2.15.0"
 jq = "1.8.2"
 "aqua:google/go-containerregistry" = "0.22.1"
 
-# See docs/development.md
 [env]
 GO_MODULES = ". postgres example"
 BLOBFS_DSN = "postgres://app:app@127.0.0.1:{{ get_env(name='POSTGRES_PORT', default='5434') }}/app?sslmode=disable"
@@ -14,7 +18,7 @@ BLOBFS_STORAGE_KEY = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4
 BLOBFS_STORAGE_CONTAINER = "blobfs"
 
 [tasks.check]
-description = "Build, vet, format, fix, tidy, test, and lint every module, then sqlint the repository; writes nothing"
+description = "Build, vet, format, fix, tidy, test, and lint every module, then sqlint the repository, then run lint-context and lint-references; writes nothing"
 run = '''
 set -eu
 export GOWORK=off
@@ -34,6 +38,16 @@ echo "check: sqlint"
 cd "$MISE_PROJECT_ROOT"
 env -u GOWORK go mod download github.com/standards-lab/sqlate/postgres
 env -u GOWORK go run github.com/standards-lab/sqlate/sqlint/cmd/sqlint .
+fail=0
+for lint in lint-context lint-references; do
+  if ! command -v "$lint" >/dev/null; then
+    echo "FAIL: $lint is not on PATH; run mise install" >&2
+    fail=1
+  elif ! "$lint"; then
+    fail=1
+  fi
+done
+exit "$fail"
 '''
 
 [tasks.currency]

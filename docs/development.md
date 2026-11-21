@@ -13,12 +13,14 @@ minor, with no `toolchain` line.
 
 ## The check
 
-The check is read-only and deterministic, and stops at the first failure. It builds, vets,
-formats, fixes, tidies, tests, and lints each module with the workspace off, so each resolves
-its own pins. sqlint then runs with the workspace on: it resolves the modules `sqlint.toml`
-names with `go list -m`, which the base module reaches only through the committed `go.work`.
-`go list -m` does not download, so the check fetches the engine module first; the `lint` task
-does the same.
+The check is read-only and deterministic, and stops at the first failure before its two context
+lints. It builds, vets, formats, fixes, tidies, tests, and lints each module with the workspace
+off, so each resolves its own pins. sqlint then runs with the workspace on: it resolves the modules
+`sqlint.toml` names with `go list -m`, which the base module reaches only through the committed
+`go.work`. `go list -m` does not download, so the check fetches the engine module first; the `lint`
+task does the same. Last, the check runs lint-context and lint-references, both of them even when
+the first fails, and fails if either does; a lint missing from PATH fails the check with a message
+naming `mise install`.
 
 ## SQL conventions
 

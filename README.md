@@ -122,7 +122,7 @@ The repository is a Go workspace of three modules, `.`, `postgres`, and `example
 through [mise](https://mise.jdx.dev):
 
 ```sh
-mise run check         # build, vet, format, fix, tidy, test, and lint every module, then sqlint; writes nothing
+mise run check         # build, vet, format, fix, tidy, test, and lint every module, then sqlint, lint-context, and lint-references; writes nothing
 mise run currency      # report requirements, Go, tools, actions, and images behind their latest
 mise run upgrade       # upgrade every module's go directive and requirements, and the tools, to their latest
 mise run test          # the unit tier, every module, nothing installed
