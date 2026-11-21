@@ -435,5 +435,5 @@ The design rests on these assumptions:
   against Azurite, which accepts keys the real service refuses.
 - The consumer-side ownership composition, an owner row per top-level directory or a join row per
   file, generalizes to a second domain once one exists.
-- No concurrency beyond the suite's paired transactions and the listing stress in `sqlate` was
-  measured; plan shapes and buffer counts carry across machines, timings do not.
+- Concurrency is measured only by the suite's paired transactions and sqlate's listing stress;
+  plan shapes and buffer counts carry across machines, timings do not.

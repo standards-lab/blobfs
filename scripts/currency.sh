@@ -6,10 +6,7 @@
 # requirements, and go list's standard error is shown only when it fails. The
 # workflows it reads for actions and images are the project root's and, when
 # the repository nests the project in a subdirectory, the git top-level's.
-#
-# Each scan captures its command's output in a variable before reading it, so
-# under set -e a scan command that fails (a go list missing a go.sum entry)
-# fails currency instead of reporting nothing.
+# A scan command that fails fails currency.
 set -euo pipefail
 cd "$MISE_PROJECT_ROOT"
 export GOWORK=off
