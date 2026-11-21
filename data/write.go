@@ -12,7 +12,6 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// validName returns name normalized and validated, or a blobfs.NameError.
 func validName(name string) (string, error) {
 	name = blobfs.NormalizeName(name)
 	if err := blobfs.ValidateName(name); err != nil {
@@ -21,8 +20,6 @@ func validName(name string) (string, error) {
 	return name, nil
 }
 
-// rowID returns the id o supplies, in canonical form, or a minted one
-// when it supplies none.
 func rowID(o CreateOptions) (string, error) {
 	if o.ID == "" {
 		return blobfs.NewID(), nil
@@ -30,27 +27,11 @@ func rowID(o CreateOptions) (string, error) {
 	return blobfs.ParseID(o.ID)
 }
 
-// inTransaction reports whether sess is a transaction, where a failed
-// statement may have aborted it.
 func inTransaction(sess sqlate.Session) bool {
 	_, ok := sess.(*sqlate.Tx)
 	return ok
 }
 
-// insertOrFind runs find, then create only when find returned
-// sql.ErrNoRows, and reports whether it created the row, whose id is id.
-// When a concurrent creator refuses the create, insertOrFind looks the
-// name up again:
-//
-//   - for a holderError, on the pool and inside a transaction, since its
-//     insert failed no statement;
-//   - on the pool, for blobfs.ErrNameTaken;
-//   - on the pool, for blobfs.ErrIDTaken, returning the row found only when
-//     it carries id, since PostgreSQL checks the primary key before the
-//     name's constraint. A lookup that fails is joined to the ErrIDTaken.
-//
-// Inside a transaction a violation is returned, since it may have aborted
-// the transaction.
 func insertOrFind[T any](ctx context.Context, sess sqlate.Session, id string, idOf func(T) string, find, create func(context.Context, sqlate.Session) (T, error)) (T, bool, error) {
 	var zero T
 	row, err := find(ctx, sess)
@@ -90,9 +71,6 @@ func insertOrFind[T any](ctx context.Context, sess sqlate.Session, id string, id
 	return zero, false, fmt.Errorf("after a concurrent create: %w", notFound(ferr))
 }
 
-// holderError is the refusal by the deleting row that holds the name a
-// create or a move asked for, marked with the holder's kind and id so it
-// reads apart from the moved row's own.
 type holderError struct {
 	kind string
 	id   string
@@ -105,10 +83,6 @@ func (e *holderError) Error() string {
 
 func (e *holderError) Unwrap() error { return e.err }
 
-// rerunOnce runs attempt again when it reports its refusal unexplained. At
-// read committed the statement and the reads after it take separate
-// snapshots, so the holder the statement saw may be gone by the reads; the
-// statement failed nothing, so the rerun is safe inside a transaction.
 func rerunOnce[T any](attempt func() (T, bool, error)) (T, error) {
 	row, unexplained, err := attempt()
 	if unexplained {
@@ -117,14 +91,11 @@ func rerunOnce[T any](attempt func() (T, bool, error)) (T, error) {
 	return row, err
 }
 
-// directoryReads are the directory reads, by id and by parent and name,
-// that Directories, Files, and the baseline share.
 type directoryReads struct {
 	byID   query.Rows[blobfs.Directory]
 	byName query.Rows[blobfs.Directory]
 }
 
-// newDirectoryReads binds the directory reads of a compiled set.
 func newDirectoryReads(stmts *query.Statements) directoryReads {
 	directory := query.Scanner[blobfs.Directory]()
 	return directoryReads{
@@ -133,8 +104,6 @@ func newDirectoryReads(stmts *query.Statements) directoryReads {
 	}
 }
 
-// active reads the directory with id: nil when it is active, else
-// blobfs.ErrNotFound naming the directory or its blobfs.DeletingError.
 func (r directoryReads) active(ctx context.Context, sess sqlate.Session, id string) error {
 	dir, err := r.byID.One(ctx, sess, query.Args{"id": id})
 	if err != nil {
@@ -143,8 +112,6 @@ func (r directoryReads) active(ctx context.Context, sess sqlate.Session, id stri
 	return closed(dir)
 }
 
-// closed is nil while dir is active and, once it is deleting, the
-// blobfs.DeletingError naming it.
 func closed(dir blobfs.Directory) error {
 	if dir.Status.Mutable() {
 		return nil
@@ -152,9 +119,6 @@ func closed(dir blobfs.Directory) error {
 	return &blobfs.DeletingError{Directory: true, ID: dir.ID}
 }
 
-// deletingFile builds the refusal of a mutation of the deleting file,
-// wrapping cause: the file's own DeletingError while its directory is
-// active, and the directory's once it is deleting or gone.
 func (r directoryReads) deletingFile(ctx context.Context, sess sqlate.Session, file blobfs.File, cause error) error {
 	dir, err := r.byID.One(ctx, sess, query.Args{"id": file.DirectoryID})
 	switch {
@@ -168,11 +132,6 @@ func (r directoryReads) deletingFile(ctx context.Context, sess sqlate.Session, f
 	return &blobfs.DeletingError{ID: file.ID, Err: cause}
 }
 
-// refusedUnder classifies an insert that selected no row from parentID. It
-// reads the parent, for blobfs.ErrNotFound or the parent's
-// blobfs.DeletingError, and then calls held, for the refusal of a deleting
-// row that holds the name. When neither explains the insert, unexplained
-// is true and the refusal is untyped, for rerunOnce.
 func (r directoryReads) refusedUnder(ctx context.Context, sess sqlate.Session, parentID string, held func() error) (unexplained bool, _ error) {
 	if err := r.active(ctx, sess, parentID); err != nil {
 		return false, err
@@ -183,11 +142,6 @@ func (r directoryReads) refusedUnder(ctx context.Context, sess sqlate.Session, p
 	return true, fmt.Errorf("the insert selected no row, yet the directory %s is %s and no deleting row holds the name", parentID, blobfs.DirectoryStatusActive)
 }
 
-// refusedMove classifies a move of a row that is not deleting whose update
-// changed nothing, by reading from, its current parent (nil for the
-// root), and to, its new one. The refusal is blobfs.ErrDeleting, then
-// query.ErrVersionMismatch, then blobfs.ErrNotFound for a missing new
-// parent; nil means none explains it.
 func (r directoryReads) refusedMove(ctx context.Context, sess sqlate.Session, from *string, to string, expected, current int64) error {
 	if from != nil {
 		if err := r.active(ctx, sess, *from); err != nil && !errors.Is(err, blobfs.ErrNotFound) {

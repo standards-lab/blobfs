@@ -30,7 +30,6 @@ type Files struct {
 	stale    query.Rows[blobfs.File]
 }
 
-// newFiles binds the file statements of a compiled set.
 func newFiles(stmts *query.Statements, dirs directoryReads, variant Variant) *Files {
 	file := query.Scanner[blobfs.File]()
 	return &Files{
@@ -80,8 +79,6 @@ func (f *Files) FindByName(ctx context.Context, sess sqlate.Session, directoryID
 	return file, nil
 }
 
-// findByName reads the file of directoryID named name, already normalized;
-// sql.ErrNoRows is returned unmapped.
 func (f *Files) findByName(ctx context.Context, sess sqlate.Session, directoryID, name string) (blobfs.File, error) {
 	return f.byName.One(ctx, sess, query.Args{"directory_id": directoryID, "name": name})
 }
@@ -150,8 +147,6 @@ func (f *Files) Ensure(ctx context.Context, sess sqlate.Session, keys blobfs.Key
 	return file, WritePresent, nil
 }
 
-// newFile runs a file insert's checks before any SQL and returns the
-// normalized name, the id, and the key, or the refusal bare.
 func newFile(keys blobfs.KeyValidator, name string, opts CreateOptions) (string, string, string, error) {
 	name, err := validName(name)
 	if err != nil {
@@ -168,8 +163,6 @@ func newFile(keys blobfs.KeyValidator, name string, opts CreateOptions) (string,
 	return name, id, key, nil
 }
 
-// insert runs create_file and classifies its refusal bare, rerunning an
-// unexplained one once.
 func (f *Files) insert(ctx context.Context, sess sqlate.Session, id, directoryID, name, key, contentType string) (blobfs.File, error) {
 	args := query.Args{"id": id, "directory_id": directoryID, "name": name, "key": key, "content_type": contentType}
 	return rerunOnce(func() (blobfs.File, bool, error) {
@@ -187,9 +180,6 @@ func (f *Files) insert(ctx context.Context, sess sqlate.Session, id, directoryID
 	})
 }
 
-// refusedName reads the file that holds name in directoryID after a create
-// or a move selected no row: a deleting holder is refused, in a
-// holderError; nil means none explains the refusal.
 func (f *Files) refusedName(ctx context.Context, sess sqlate.Session, directoryID, name string) error {
 	holder, err := f.findByName(ctx, sess, directoryID, name)
 	switch {
@@ -214,7 +204,6 @@ func (f *Files) Complete(ctx context.Context, sess sqlate.Session, id string, ve
 	return f.completeFile(ctx, sess, id, version, obj)
 }
 
-// completeFile is Complete's body, with its errors bare for Store.WriteFile.
 func (f *Files) completeFile(ctx context.Context, sess sqlate.Session, id string, version int64, obj blobfs.Object) (blobfs.File, error) {
 	file, changed, err := f.complete.One(ctx, sess, query.Args{
 		"id": id, "size": obj.Size, "content_type": obj.ContentType, "etag": obj.ETag, "version": version,
@@ -227,8 +216,6 @@ func (f *Files) completeFile(ctx context.Context, sess sqlate.Session, id string
 	case changed:
 		return file, nil
 	case !file.Status.Mutable() || file.Version == version:
-		// Deleting outranks the stale version; a row at the expected
-		// version is no longer pending.
 		switch err := blobfs.Transition(file.Status, blobfs.StatusAvailable); {
 		case err != nil && !file.Status.Mutable():
 			return blobfs.File{}, f.dirs.deletingFile(ctx, sess, file, err)
@@ -263,12 +250,8 @@ func (f *Files) Move(ctx context.Context, sess sqlate.Session, id string, to Fil
 		case changed:
 			return file, false, nil
 		case !file.Status.Mutable():
-			// Deleting outranks the stale version.
 			return blobfs.File{}, false, f.dirs.deletingFile(ctx, sess, file, nil)
 		}
-		// The directories tell a closed or missing one from a stale
-		// version, and then the name's holder tells a deleting one; an
-		// update none explains runs once more, as rerunOnce says.
 		if err := f.dirs.refusedMove(ctx, sess, &file.DirectoryID, directoryID, version, file.Version); err != nil {
 			return blobfs.File{}, false, err
 		}

@@ -59,12 +59,10 @@ type VersionOptions struct {
 	Version int64
 }
 
-// at is the version Version guards, or nil when the call is unguarded.
 func (o VersionOptions) at() *int64 {
 	return versionAt(o.Version)
 }
 
-// versionAt is version as a guard: nil, which guards nothing, for zero.
 func versionAt(version int64) *int64 {
 	if version == 0 {
 		return nil
@@ -72,9 +70,6 @@ func versionAt(version int64) *int64 {
 	return &version
 }
 
-// withVersion binds version into args for a statement whose version
-// predicate is nullable: NULL when version is nil, which guards nothing, and
-// the version otherwise.
 func withVersion(args query.Args, version *int64) query.Args {
 	if version == nil {
 		return args.With("version", nil)
@@ -213,9 +208,6 @@ type EnsureFileRequest struct {
 	OnComplete func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error
 }
 
-// check panics before any I/O when a required field is nil, naming the
-// first of DB, Objects, Body, and Begin that is. An interface that holds a
-// nil pointer is set.
 func (r WriteFileRequest) check() {
 	switch {
 	case r.DB == nil:
@@ -229,7 +221,6 @@ func (r WriteFileRequest) check() {
 	}
 }
 
-// check panics as WriteFileRequest's does, naming EnsureFileRequest.
 func (r EnsureFileRequest) check() {
 	switch {
 	case r.DB == nil:
@@ -285,11 +276,8 @@ type SweepOptions struct {
 	StaleOlderThan time.Duration
 }
 
-// defaultBatch is the number of records a pass handles when
-// SweepOptions.Batch is zero.
 const defaultBatch = 100
 
-// batch is the bound of a pass: Batch, or defaultBatch when Batch is zero.
 func (o SweepOptions) batch() int {
 	if o.Batch == 0 {
 		return defaultBatch
@@ -297,7 +285,6 @@ func (o SweepOptions) batch() int {
 	return o.Batch
 }
 
-// stale reports whether a pass reclaims stale rows.
 func (o SweepOptions) stale() bool {
 	return o.StaleOlderThan > 0
 }

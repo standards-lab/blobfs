@@ -42,9 +42,9 @@ func (s *Store) Sweep(ctx context.Context, db *sqlate.DB, objects ObjectDeleter,
 	case opts.StaleOlderThan < 0:
 		return SweepResult{}, fmt.Errorf("the stale age %s is not positive", opts.StaleOlderThan)
 	}
-	w := &sweep{store: s, db: db, objects: objects, opts: opts, budget: opts.batch(), refused: map[string]bool{}}
+	w := &sweep{store: s, db: db, objects: objects, opts: opts, budget: opts.batch(), refusedFiles: map[string]bool{}}
 	if opts.stale() {
-		w.before = time.Now().Add(-opts.StaleOlderThan)
+		w.staleBefore = time.Now().Add(-opts.StaleOlderThan)
 	}
 	err = w.run(ctx)
 	return w.result, err
@@ -77,53 +77,31 @@ func SweepUntilDone(ctx context.Context, stop <-chan struct{}, pass func(context
 	}
 }
 
-// sweep is one pass's state.
 type sweep struct {
-	store   *Store
-	db      *sqlate.DB
-	objects ObjectDeleter
-	opts    SweepOptions
-	// before is the stale rows' cutoff, set only with StaleOlderThan.
-	before time.Time
-	budget int
-	result SweepResult
-	// errs are the pass's refusals, joined when it ends.
-	errs []error
-	// refused holds the files this pass was refused, so neither a second
-	// walk of their directory nor the stale read tries them again.
-	refused map[string]bool
-	// leftRoots and leftStale count the roots and stale rows this pass read
-	// and left in place, the offset each next read of them starts at, so a
-	// row refused on every pass holds back nothing behind it.
+	store                *Store
+	db                   *sqlate.DB
+	objects              ObjectDeleter
+	opts                 SweepOptions
+	staleBefore          time.Time
+	budget               int
+	result               SweepResult
+	errs                 []error
+	refusedFiles         map[string]bool
 	leftRoots, leftStale int
-	// root is the branch being walked, and remarked whether this pass has
-	// marked it again.
-	root     blobfs.Directory
-	remarked bool
+	root                 blobfs.Directory
+	remarked             bool
 }
 
-// walk is how the walk of a directory ended.
 type walk int
 
 const (
-	// removed is a directory gone, by this pass or another.
 	removed walk = iota
-	// emptied is a directory whose contents are gone, ready for removal.
 	emptied
-	// kept is a directory a refusal inside it, or of it, keeps; the walk
-	// goes on with its siblings.
 	kept
-	// straggler is a directory holding an active row, or refused as not
-	// empty.
 	straggler
-	// stopped ends the branch's walk: the budget is spent, a straggler is
-	// left, or a read failed.
 	stopped
 )
 
-// run is the pass: the branches, then the stale rows, then, when the
-// budget is spent and nothing has shown that work remains, the read of
-// whether it does.
 func (w *sweep) run(ctx context.Context) error {
 	if err := w.branches(ctx); err != nil {
 		return errors.Join(append(w.errs, err)...)
@@ -143,9 +121,6 @@ func (w *sweep) run(ctx context.Context) error {
 	return errors.Join(w.errs...)
 }
 
-// branches walks the branches in id order, reading their roots a page at
-// a time past the roots it left, until the budget is spent or a short page
-// shows no root remains. A root it did not reach sets More.
 func (w *sweep) branches(ctx context.Context) error {
 	for w.budget > 0 {
 		fetch := w.budget
@@ -169,7 +144,6 @@ func (w *sweep) branches(ctx context.Context) error {
 	return nil
 }
 
-// branch walks root's branch and reports how the root's walk ended.
 func (w *sweep) branch(ctx context.Context, root blobfs.Directory) walk {
 	w.root, w.remarked = root, false
 	end, err := w.directory(ctx, root)
@@ -179,15 +153,10 @@ func (w *sweep) branch(ctx context.Context, root blobfs.Directory) walk {
 	return end
 }
 
-// refuse records err against the branch being walked.
 func (w *sweep) refuse(err error) {
 	w.errs = append(w.errs, fmt.Errorf("branch %s: %w", w.root.ID, err))
 }
 
-// directory empties and removes dir, files first, then child directories.
-// A straggler has the branch marked again, once a pass, and dir walked
-// again, once more after that; a straggler left then stops the branch
-// with More set.
 func (w *sweep) directory(ctx context.Context, dir blobfs.Directory) (walk, error) {
 	for again := false; ; again = true {
 		end, err := w.contents(ctx, dir)
@@ -213,9 +182,6 @@ func (w *sweep) directory(ctx context.Context, dir blobfs.Directory) (walk, erro
 	}
 }
 
-// contents empties dir: each file finished, then each child directory
-// walked, both read a page at a time in name order past the last row
-// read. It stops at the budget with More set, and at an active row.
 func (w *sweep) contents(ctx context.Context, dir blobfs.Directory) (walk, error) {
 	if w.budget == 0 {
 		w.result.More = true
@@ -228,7 +194,7 @@ func (w *sweep) contents(ctx context.Context, dir blobfs.Directory) (walk, error
 		}
 		for _, f := range page.Items {
 			switch {
-			case w.refused[f.ID]:
+			case w.refusedFiles[f.ID]:
 				end = kept
 			case f.Status.Mutable():
 				return straggler, nil
@@ -283,21 +249,14 @@ func (w *sweep) contents(ctx context.Context, dir blobfs.Directory) (walk, error
 	return end, nil
 }
 
-// files reads the page of dir's files, deleting ones included, past
-// after, or the first page when after is empty, as many as the budget.
 func (w *sweep) files(ctx context.Context, dir string, after query.Cursor) (query.Collection[blobfs.File], error) {
 	return walkPage(ctx, w.store.Files.list, w.db, dir, after, w.budget)
 }
 
-// children reads the page of dir's child directories, deleting ones
-// included, past after, or the first page when after is empty, as many as
-// the budget.
 func (w *sweep) children(ctx context.Context, dir string, after query.Cursor) (query.Collection[blobfs.Directory], error) {
 	return walkPage(ctx, w.store.Directories.list, w.db, dir, after, w.budget)
 }
 
-// walkPage reads size rows of l anchored on id, every status, in name
-// order past after, or the first page when after is empty.
 func walkPage[T any](ctx context.Context, l listing[T], sess sqlate.Session, id string, after query.Cursor, size int) (query.Collection[T], error) {
 	req := query.Directives{Total: query.TotalNone}
 	include := ListOptions{IncludeDeleting: true}
@@ -307,9 +266,6 @@ func walkPage[T any](ctx context.Context, l listing[T], sess sqlate.Session, id 
 	return l.cont(ctx, sess, id, req, CursorPage{After: after, Size: size}, include)
 }
 
-// remark marks the branch again after a straggler, in a transaction of its
-// own, and reports whether the branch is gone, removed by a concurrent
-// pass since the walk began.
 func (w *sweep) remark(ctx context.Context) (bool, error) {
 	w.remarked = true
 	_, err := w.db.Transact(ctx, func(tx *sqlate.Tx) (Marked, error) {
@@ -324,9 +280,6 @@ func (w *sweep) remark(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-// remove removes the emptied dir after the hook, in one transaction, at
-// the version the pass read it at. A directory a straggler landed in is
-// reported as one; a refused removal keeps the directory.
 func (w *sweep) remove(ctx context.Context, dir blobfs.Directory) (walk, error) {
 	var hookErr error
 	_, err := w.db.Transact(ctx, func(tx *sqlate.Tx) (struct{}, error) {
@@ -354,28 +307,23 @@ func (w *sweep) remove(ctx context.Context, dir blobfs.Directory) (walk, error) 
 	return removed, nil
 }
 
-// finish deletes the deleting file f's object, purges its row, and spends
-// one record of the budget; a refused file is recorded.
 func (w *sweep) finish(ctx context.Context, f blobfs.File) error {
 	if err := w.objects.DeleteObject(ctx, f.Key); err != nil {
-		w.refused[f.ID] = true
+		w.refusedFiles[f.ID] = true
 		return fmt.Errorf("delete the object of file %s: %w", f.ID, err)
 	}
 	if err := w.store.Files.purgeFile(ctx, w.db, f.ID); err != nil {
-		w.refused[f.ID] = true
+		w.refusedFiles[f.ID] = true
 		return fmt.Errorf("purge file %s: %w", f.ID, err)
 	}
 	w.budget--
 	return nil
 }
 
-// stale reclaims the oldest stale rows, as many as the budget allows,
-// reading them a page at a time past the rows it left, until the budget is
-// spent or a short page shows none remain.
 func (w *sweep) stale(ctx context.Context) error {
 	for w.budget > 0 {
 		fetch := w.budget
-		rows, err := w.store.Files.stale.All(ctx, w.db, query.Args{"before": w.before, "offset": w.leftStale, "fetch": fetch})
+		rows, err := w.store.Files.stale.All(ctx, w.db, query.Args{"before": w.staleBefore, "offset": w.leftStale, "fetch": fetch})
 		if err != nil {
 			return fmt.Errorf("read the stale files: %w", err)
 		}
@@ -391,12 +339,8 @@ func (w *sweep) stale(ctx context.Context) error {
 	return nil
 }
 
-// reclaim finishes the stale row f and reports whether it left the stale
-// rows: a pending row is moved to deleting at the version read, and
-// skipped if it is gone or moved on; then the row is finished. A row this
-// pass was refused, here or in a branch's walk, is left.
 func (w *sweep) reclaim(ctx context.Context, f blobfs.File) bool {
-	if w.refused[f.ID] {
+	if w.refusedFiles[f.ID] {
 		return false
 	}
 	file := f
@@ -422,21 +366,18 @@ func (w *sweep) reclaim(ctx context.Context, f blobfs.File) bool {
 	return true
 }
 
-// remains reports whether a branch or, with StaleOlderThan, a stale row
-// is left for another pass past those this pass left.
 func (w *sweep) remains(ctx context.Context) (bool, error) {
 	roots, err := w.roots(ctx, w.leftRoots, 1)
 	if err != nil || len(roots) > 0 || !w.opts.stale() {
 		return len(roots) > 0, err
 	}
-	rows, err := w.store.Files.stale.All(ctx, w.db, query.Args{"before": w.before, "offset": w.leftStale, "fetch": 1})
+	rows, err := w.store.Files.stale.All(ctx, w.db, query.Args{"before": w.staleBefore, "offset": w.leftStale, "fetch": 1})
 	if err != nil {
 		return false, fmt.Errorf("read the stale files: %w", err)
 	}
 	return len(rows) > 0, nil
 }
 
-// roots reads at most limit branch roots past offset.
 func (w *sweep) roots(ctx context.Context, offset, limit int) ([]blobfs.Directory, error) {
 	roots, err := w.store.Directories.deleting.All(ctx, w.db, query.Args{"offset": offset, "fetch": limit})
 	if err != nil {

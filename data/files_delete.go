@@ -27,7 +27,6 @@ func (f *Files) Hold(ctx context.Context, tx *sqlate.Tx, id string, opts Version
 	case held:
 		return nil
 	}
-	// No row was held: the row is gone, deleting, or at another version.
 	file, err := f.byID.One(ctx, tx, query.Args{"id": id})
 	switch {
 	case err != nil:
@@ -52,17 +51,12 @@ func (f *Files) Delete(ctx context.Context, tx *sqlate.Tx, id string, opts Versi
 	return file, err
 }
 
-// deleteFile is Delete's body, at version when it is not nil, with its
-// errors bare for the sweep. marked reports that this call moved the row
-// to deleting, as the statement's changed-row flag tells it; a row
-// returned unmarked was already deleting, the step's retry.
 func (f *Files) deleteFile(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (_ blobfs.File, marked bool, _ error) {
 	file, changed, err := f.remove.One(ctx, tx, withVersion(query.Args{"id": id}, version))
 	switch {
 	case err != nil:
 		return blobfs.File{}, false, notFound(err)
 	case version != nil && file.Status.Mutable():
-		// The update matched nothing and the row is not deleting.
 		return blobfs.File{}, false, versionMismatch(*version, file.Version)
 	}
 	return file, changed, nil
@@ -80,7 +74,6 @@ func (f *Files) Purge(ctx context.Context, sess sqlate.Session, id string) (err 
 	return f.purgeFile(ctx, sess, id)
 }
 
-// purgeFile is Purge's body, with its errors bare for the sweep.
 func (f *Files) purgeFile(ctx context.Context, sess sqlate.Session, id string) error {
 	args := query.Args{"id": id}
 	n, err := f.purge.Exec(ctx, sess, args)
@@ -90,8 +83,6 @@ func (f *Files) purgeFile(ctx context.Context, sess sqlate.Session, id string) e
 	case n > 0:
 		return nil
 	}
-	// No row was removed: the row is gone, which is success, or it exists
-	// in a status the removal refuses.
 	file, err := f.byID.One(ctx, sess, args)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -99,8 +90,6 @@ func (f *Files) purgeFile(ctx context.Context, sess sqlate.Session, id string) e
 	case err != nil:
 		return err
 	case !file.Status.Mutable():
-		// A concurrent Delete moved the row to deleting since the removal;
-		// once deleting it stays so, so one more removal settles it.
 		if _, err := f.purge.Exec(ctx, sess, args); err != nil {
 			return classifyDelete(err)
 		}

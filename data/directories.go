@@ -30,14 +30,12 @@ type Directories struct {
 	deleting  query.Rows[blobfs.Directory]
 }
 
-// ancestor is one row of directory_ancestors.
 type ancestor struct {
 	ID       string  `json:"id"`
 	ParentID *string `json:"parent_id"`
 	Name     string  `json:"name"`
 }
 
-// newDirectories binds the directory statements of a compiled set.
 func newDirectories(stmts *query.Statements, dirs directoryReads, variant Variant) *Directories {
 	directory := query.Scanner[blobfs.Directory]()
 	return &Directories{
@@ -86,8 +84,6 @@ func (d *Directories) FindByName(ctx context.Context, sess sqlate.Session, paren
 	return dir, nil
 }
 
-// findByName reads the child of parentID named name, already normalized;
-// sql.ErrNoRows is returned unmapped.
 func (d *Directories) findByName(ctx context.Context, sess sqlate.Session, parentID, name string) (blobfs.Directory, error) {
 	return d.dirs.byName.One(ctx, sess, query.Args{"parent_id": parentID, "name": name})
 }
@@ -139,8 +135,6 @@ func (d *Directories) Ensure(ctx context.Context, sess sqlate.Session, parentID,
 	return dir, created, nil
 }
 
-// insert runs create_directory and classifies its refusal bare, rerunning
-// an unexplained one once.
 func (d *Directories) insert(ctx context.Context, sess sqlate.Session, id, parentID, name string) (blobfs.Directory, error) {
 	args := query.Args{"id": id, "parent_id": parentID, "name": name}
 	return rerunOnce(func() (blobfs.Directory, bool, error) {
@@ -158,9 +152,6 @@ func (d *Directories) insert(ctx context.Context, sess sqlate.Session, id, paren
 	})
 }
 
-// refusedName reads the directory that holds name under parentID after a
-// create or a move selected no row: a deleting holder is refused, in a
-// holderError; nil means none explains the refusal.
 func (d *Directories) refusedName(ctx context.Context, sess sqlate.Session, parentID, name string) error {
 	holder, err := d.findByName(ctx, sess, parentID, name)
 	switch {
@@ -184,8 +175,6 @@ func (d *Directories) Delete(ctx context.Context, sess sqlate.Session, id string
 	return d.deleteDirectory(ctx, sess, id, opts.at())
 }
 
-// deleteDirectory is Delete's body, at version when it is not nil, with
-// its errors bare for the sweep.
 func (d *Directories) deleteDirectory(ctx context.Context, sess sqlate.Session, id string, version *int64) error {
 	if isRoot(id) {
 		return blobfs.ErrRootDirectory
@@ -206,11 +195,6 @@ func (d *Directories) deleteDirectory(ctx context.Context, sess sqlate.Session, 
 	return versionMismatch(*version, dir.Version)
 }
 
-// isRoot reports whether id is the nil UUID once braces and hyphens are
-// removed. That covers every spelling of blobfs.RootID PostgreSQL accepts,
-// braced or hyphenated after any group of four digits, and some it
-// refuses; the guards refuse each as the root before any SQL. Anything
-// else, a prefix or a space included, reaches the statement.
 func isRoot(id string) bool {
 	id = strings.TrimSuffix(strings.TrimPrefix(id, "{"), "}")
 	u, err := uuid.Parse(strings.ReplaceAll(id, "-", ""))
@@ -235,8 +219,6 @@ func (d *Directories) MarkDeleting(ctx context.Context, tx *sqlate.Tx, id string
 	return d.markDeleting(ctx, tx, id, opts.at())
 }
 
-// markDeleting is MarkDeleting's body, at version when it is not nil, with
-// its errors bare for the sweep.
 func (d *Directories) markDeleting(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (Marked, error) {
 	if isRoot(id) {
 		return Marked{}, blobfs.ErrRootDirectory
@@ -250,9 +232,6 @@ func (d *Directories) markDeleting(ctx context.Context, tx *sqlate.Tx, id string
 		return Marked{}, err
 	}
 	if dirs == 0 {
-		// Nothing was marked: the directory is missing, active at another
-		// version, or deleting already, the mark's retry, which the read
-		// tells apart.
 		dir, err := d.dirs.byID.One(ctx, tx, args)
 		switch {
 		case err != nil:
