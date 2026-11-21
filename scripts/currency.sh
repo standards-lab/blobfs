@@ -42,7 +42,7 @@ matches() {
 
 tool_modules() {
 	local out err
-	err=$(mktemp)
+	err=$(mktemp) || return
 	if ! out=$(go list -f '{{.Module.Path}}' tool 2>"$err"); then
 		cat "$err" >&2
 		rm -f "$err"
@@ -60,11 +60,13 @@ report_outdated_direct_requirements() {
 }
 
 report_outdated_indirect_tool_modules() {
-	local mod=$1 tools updates
-	tools=$(cd "$mod" && tool_modules)
-	[ -n "$tools" ] || return 0
+	local mod=$1 list updates
+	local tools=()
+	list=$(cd "$mod" && tool_modules)
+	[ -n "$list" ] || return 0
+	mapfile -t tools <<<"$list"
 	updates=$(cd "$mod" && go list -m -u -f \
-		'{{if and (not .Main) .Indirect .Update}}{{.Path}} {{.Version}} -> {{.Update.Version}}{{end}}' $tools)
+		'{{if and (not .Main) .Indirect .Update}}{{.Path}} {{.Version}} -> {{.Update.Version}}{{end}}' "${tools[@]}")
 	report_each_line "$mod/go.mod: " "$updates"
 }
 
