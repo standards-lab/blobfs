@@ -17,8 +17,6 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// TestCreateOptionsMints checks an empty CreateOptions.ID mints a fresh
-// canonical id for each insert, for directories and files alike.
 func TestCreateOptionsMints(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, childResponse("A", "a"), childResponse("B", "b"))
@@ -49,8 +47,6 @@ func TestCreateOptionsMints(t *testing.T) {
 	}
 }
 
-// TestCreateOptionsEnsureFoundKeepsItsID checks a row an Ensure finds is
-// returned under its own id, not the one CreateOptions supplied.
 func TestCreateOptionsEnsureFoundKeepsItsID(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, childResponse("D", "docs"))
@@ -72,8 +68,6 @@ func TestCreateOptionsEnsureFoundKeepsItsID(t *testing.T) {
 	}
 }
 
-// TestVersionOptions checks each guarded call binds no version for the
-// zero VersionOptions, which guards nothing, and binds a set Version.
 func TestVersionOptions(t *testing.T) {
 	ctx := context.Background()
 	objects := newObjectStore()
@@ -121,60 +115,46 @@ func TestVersionOptions(t *testing.T) {
 	}
 }
 
-// listingCase is one of the two listings, reached through the store's
-// exported handle as a data.Listing, with the scripted page of its rows
-// and the scripted page of the other listing's rows.
 type listingCase[T any] struct {
-	name  string
-	of    func(*data.Store) data.Listing[T]
-	rows  func(parent string, names ...string) sqltest.Response
-	other func(parent string, names ...string) sqltest.Response
-	// foreign is the other listing's List, whose cursor this one refuses.
-	foreign func(ctx context.Context, s *data.Store, sess sqlate.Session) (query.Cursor, error)
+	name              string
+	of                func(*data.Store) data.Listing[T]
+	rows              func(parent string, names ...string) sqltest.Response
+	other             func(parent string, names ...string) sqltest.Response
+	otherListingsList func(ctx context.Context, s *data.Store, sess sqlate.Session) (query.Cursor, error)
 }
 
-// directoriesCase is the directory listing; files lists the cursors it
-// refuses.
 var directoriesCase = listingCase[blobfs.Directory]{
 	name: "directories",
 	of:   func(s *data.Store) data.Listing[blobfs.Directory] { return s.Directories },
 	rows: children, other: filesIn,
-	foreign: func(ctx context.Context, s *data.Store, sess sqlate.Session) (query.Cursor, error) {
+	otherListingsList: func(ctx context.Context, s *data.Store, sess sqlate.Session) (query.Cursor, error) {
 		c, err := s.Files.List(ctx, sess, parentID, query.Directives{Total: query.TotalNone}, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 		return c.Next, err
 	},
 }
 
-// filesCase is the file listing; directories lists the cursors it
-// refuses.
 var filesCase = listingCase[blobfs.File]{
 	name: "files",
 	of:   func(s *data.Store) data.Listing[blobfs.File] { return s.Files },
 	rows: filesIn, other: children,
-	foreign: func(ctx context.Context, s *data.Store, sess sqlate.Session) (query.Cursor, error) {
+	otherListingsList: func(ctx context.Context, s *data.Store, sess sqlate.Session) (query.Cursor, error) {
 		c, err := s.Directories.List(ctx, sess, parentID, query.Directives{Total: query.TotalNone}, query.Page{Number: 1, Size: 2}, data.ListOptions{})
 		return c.Next, err
 	},
 }
 
-// TestListOptions checks the zero ListOptions hides deleting rows and
-// reads the listed directory on List and Continue of both listings, and
-// IncludeDeleting set does neither.
 func TestListOptions(t *testing.T) {
 	checkListOptions(t, directoriesCase)
 	checkListOptions(t, filesCase)
 }
 
-// checkListOptions runs TestListOptions over one listing.
 func checkListOptions[T any](t *testing.T, c listingCase[T]) {
 	ctx := context.Background()
 	none := query.Directives{Total: query.TotalNone}
 	for _, mode := range []struct {
-		name string
-		opts data.ListOptions
-		// hides is whether each page hides the deleting status and is
-		// followed by the listed directory's read.
-		hides bool
+		name                           string
+		opts                           data.ListOptions
+		hidesDeletingAndReadsTheListed bool
 	}{
 		{"zero", data.ListOptions{}, true},
 		{"IncludeDeleting", data.ListOptions{IncludeDeleting: true}, false},
@@ -182,7 +162,7 @@ func checkListOptions[T any](t *testing.T, c listingCase[T]) {
 		t.Run(c.name+"/"+mode.name, func(t *testing.T) {
 			script := []sqltest.Response{c.rows(parentID, "a", "b", "c"), c.rows(parentID, "c")}
 			var bound []any
-			if mode.hides {
+			if mode.hidesDeletingAndReadsTheListed {
 				script = []sqltest.Response{c.rows(parentID, "a", "b", "c"), listed(), c.rows(parentID, "c"), listed()}
 				bound = []any{"deleting"}
 			}
@@ -195,7 +175,7 @@ func checkListOptions[T any](t *testing.T, c listingCase[T]) {
 				t.Fatalf("Continue: %v", err)
 			}
 			calls := queries(rec)
-			if mode.hides {
+			if mode.hidesDeletingAndReadsTheListed {
 				calls = pages(t, rec)
 			}
 			if len(calls) != 2 {
@@ -205,23 +185,19 @@ func checkListOptions[T any](t *testing.T, c listingCase[T]) {
 				slices.Concat([]any{parentID}, bound, []any{0, 3}),
 				slices.Concat([]any{parentID}, bound, []any{"b", 0, 3}),
 			} {
-				if hides := strings.Contains(calls[i].SQL, "q.status <>"); hides != mode.hides || !slices.Equal(calls[i].Args, want) {
-					t.Errorf("page %d = %q %v, want the status hidden %v and %v bound", i+1, calls[i].SQL, calls[i].Args, mode.hides, want)
+				if hides := strings.Contains(calls[i].SQL, "q.status <>"); hides != mode.hidesDeletingAndReadsTheListed || !slices.Equal(calls[i].Args, want) {
+					t.Errorf("page %d = %q %v, want the status hidden %v and %v bound", i+1, calls[i].SQL, calls[i].Args, mode.hidesDeletingAndReadsTheListed, want)
 				}
 			}
 		})
 	}
 }
 
-// TestCursorPage checks Continue of both listings binds CursorPage.After
-// and Size, and refuses an empty After, a Size below 1, and the other
-// listing's cursor before any SQL, with sqlate's errors.
 func TestCursorPage(t *testing.T) {
 	checkCursorPage(t, directoriesCase)
 	checkCursorPage(t, filesCase)
 }
 
-// checkCursorPage runs TestCursorPage over one listing.
 func checkCursorPage[T any](t *testing.T, c listingCase[T]) {
 	t.Run(c.name, func(t *testing.T) {
 		ctx := context.Background()
@@ -235,8 +211,6 @@ func checkCursorPage[T any](t *testing.T, c listingCase[T]) {
 		if err != nil || first.Next == "" {
 			t.Fatalf("List = %+v, %v, want a cursor", first, err)
 		}
-		// A Size other than the issuing page's, so the bound limit is
-		// the CursorPage's: one row past Size.
 		next, err := c.of(s).Continue(ctx, db, parentID, none, data.CursorPage{After: first.Next, Size: 1}, data.ListOptions{})
 		if err != nil || len(next.Items) != 1 || !next.More {
 			t.Fatalf("Continue = %+v, %v, want one row and more", next, err)
@@ -244,7 +218,7 @@ func checkCursorPage[T any](t *testing.T, c listingCase[T]) {
 		if got, want := pages(t, rec)[1].Args, []any{parentID, "deleting", "b", 0, 2}; !slices.Equal(got, want) {
 			t.Errorf("Continue bound %v, want the page past b of one row, %v", got, want)
 		}
-		foreign, err := c.foreign(ctx, s, db)
+		foreign, err := c.otherListingsList(ctx, s, db)
 		if err != nil || foreign == "" {
 			t.Fatalf("the other listing's List = %q, %v, want a cursor", foreign, err)
 		}
@@ -275,9 +249,6 @@ func checkCursorPage[T any](t *testing.T, c listingCase[T]) {
 	})
 }
 
-// TestSweepOptionsBatch checks a zero SweepOptions.Batch bounds a pass at
-// 100 records and a set Batch at its value, each bound into the roots'
-// read.
 func TestSweepOptionsBatch(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
@@ -293,9 +264,6 @@ func TestSweepOptionsBatch(t *testing.T) {
 	}
 }
 
-// TestSweepOptionsStaleOlderThan checks a zero
-// SweepOptions.StaleOlderThan reads no stale rows and a set one reads them
-// after the roots.
 func TestSweepOptionsStaleOlderThan(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, noDirectory())
@@ -318,10 +286,6 @@ func TestSweepOptionsStaleOlderThan(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestSweepOptionsOnRemoveDirectory checks a nil
-// SweepOptions.OnRemoveDirectory removes a branch with no hook, and a set
-// one is called once a directory, inside the removal's transaction, the
-// statements the same.
 func TestSweepOptionsOnRemoveDirectory(t *testing.T) {
 	ctx := context.Background()
 	var hooked []string
@@ -353,9 +317,6 @@ func TestSweepOptionsOnRemoveDirectory(t *testing.T) {
 	}
 }
 
-// TestFileSpec checks Files.Create and Files.Ensure bind FileSpec's
-// DirectoryID, normalized Name, and ContentType into the insert, and
-// Ensure's lookup the directory and the normalized name.
 func TestFileSpec(t *testing.T) {
 	ctx := context.Background()
 	id := blobfs.NewID()
@@ -381,9 +342,6 @@ func TestFileSpec(t *testing.T) {
 	}
 }
 
-// TestFileMove checks Files.Move binds FileMove's DirectoryID, normalized
-// Name, and Version into the update, and a zero Version, which no row
-// has, is query.ErrVersionMismatch rather than unguarded.
 func TestFileMove(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, fileIn("F", "P", nfcName, blobfs.StatusAvailable, 8))
@@ -406,10 +364,6 @@ func TestFileMove(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestDirectoryMove checks Directories.Move binds DirectoryMove's
-// ParentID, normalized Name, and Version into the update, and a zero
-// Version, which no row has, is query.ErrVersionMismatch rather than
-// unguarded.
 func TestDirectoryMove(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, within(0), directoryResponse("D", "P", nfcName, 8))

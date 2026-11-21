@@ -40,6 +40,14 @@ PostgreSQL's, the only engine's; each migration holds a single statement.
 
 ## The tests
 
+- **The unit tier's scripts.** The `data` package's unit tests run the store over a
+  `sqltest` pool that answers each statement from a script, in order. A statement the script
+  holds no response for fails the call, and `wantDone` fails a test that leaves a response
+  unconsumed or rows open, so a script with no response for a hook's exec proves the hook never
+  ran. The protocols' cleanup tests hang the caller up once the script is spent, so whatever
+  runs after the last statement runs with the caller's context done.
+- **The name fixtures.** The two spellings of one name, composed and decomposed, are built from
+  code points so that no editor can normalize the fixtures.
 - **The zone.** The `postgres` package's `TestMain` sets `time.Local` to Europe/London, with
   `time/tzdata` imported so the zone loads on a host without a zone database, so a `File` or
   `Directory` the store returned in `time.Local`, not `time.UTC`, fails the conformance suite's

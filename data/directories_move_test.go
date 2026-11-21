@@ -17,13 +17,10 @@ import (
 	"github.com/standards-lab/blobfs/data/datatest"
 )
 
-// within scripts the cycle check's count.
 func within(n int64) sqltest.Response {
 	return sqltest.Response{Columns: []string{"matches"}, Rows: [][]driver.Value{{n}}}
 }
 
-// TestMoveRefusesBeforeSQL checks the root and an invalid name are refused
-// before any statement.
 func TestMoveRefusesBeforeSQL(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
@@ -41,8 +38,6 @@ func TestMoveRefusesBeforeSQL(t *testing.T) {
 	}
 }
 
-// TestMoveIsThreeStepsUnderOneLock checks the move's order in both forms:
-// the lock, the cycle check, then the guarded update; a cycle stops it.
 func TestMoveIsThreeStepsUnderOneLock(t *testing.T) {
 	ctx := context.Background()
 	for _, f := range forms {
@@ -92,15 +87,11 @@ func TestMoveIsThreeStepsUnderOneLock(t *testing.T) {
 	}
 }
 
-// TestMoveClassifies checks each refusal of the guarded update in both
-// forms, from the row its read returns and the reads of the two parents.
 func TestMoveClassifies(t *testing.T) {
 	ctx := context.Background()
 	for _, f := range forms {
 		t.Run(f.name, func(t *testing.T) {
-			// unchanged scripts the update that changed no row, in the
-			// form's own shape, and then the read of the row as it is.
-			unchanged := func(read sqltest.Response) []sqltest.Response {
+			unchangedThenRead := func(read sqltest.Response) []sqltest.Response {
 				if f.single {
 					return []sqltest.Response{noDirectory(), read}
 				}
@@ -112,63 +103,52 @@ func TestMoveClassifies(t *testing.T) {
 				return err
 			}
 
-			if err := move(unchanged(noDirectory())...); !errors.Is(err, blobfs.ErrNotFound) {
+			if err := move(unchangedThenRead(noDirectory())...); !errors.Is(err, blobfs.ErrNotFound) {
 				t.Errorf("Move of a missing directory = %v, want ErrNotFound", err)
 			}
-			// parents scripts the reads of the current and the new parent.
-			parents := func(from, to sqltest.Response) []sqltest.Response { return []sqltest.Response{from, to} }
-			active := parents(directoryResponse(blobfs.RootID, "", "/", 1), directoryResponse("P", blobfs.RootID, "p", 1))
-			err := move(append(unchanged(directoryResponse("D", blobfs.RootID, "d", 3)), active...)...)
+			fromAndToParents := func(from, to sqltest.Response) []sqltest.Response { return []sqltest.Response{from, to} }
+			active := fromAndToParents(directoryResponse(blobfs.RootID, "", "/", 1), directoryResponse("P", blobfs.RootID, "p", 1))
+			err := move(append(unchangedThenRead(directoryResponse("D", blobfs.RootID, "d", 3)), active...)...)
 			if !errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "expected 1, current 3") {
 				t.Errorf("Move at a stale version = %v, want ErrVersionMismatch naming both versions", err)
 			}
-			if err := move(unchanged(directoryResponse("D", "", "/", 1))...); !errors.Is(err, blobfs.ErrRootDirectory) {
+			if err := move(unchangedThenRead(directoryResponse("D", "", "/", 1))...); !errors.Is(err, blobfs.ErrRootDirectory) {
 				t.Errorf("Move refused by the update's own predicate = %v, want ErrRootDirectory", err)
 			}
 			for _, version := range []int64{1, 3} {
-				// Deleting outranks the stale version.
-				err := move(unchanged(directoryIn("D", "S", "d", blobfs.DirectoryStatusDeleting, version))...)
+				err := move(unchangedThenRead(directoryIn("D", "S", "d", blobfs.DirectoryStatusDeleting, version))...)
 				if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) {
 					t.Errorf("Move of a deleting directory at version %d = %v, want ErrDeleting", version, err)
 				}
 				wantDeleting(t, "Move of a deleting directory", err, true, "D")
-				err = move(append(unchanged(directoryResponse("D", "S", "d", version)), directoryIn("S", blobfs.RootID, "s", blobfs.DirectoryStatusDeleting, 2))...)
+				err = move(append(unchangedThenRead(directoryResponse("D", "S", "d", version)), directoryIn("S", blobfs.RootID, "s", blobfs.DirectoryStatusDeleting, 2))...)
 				if !errors.Is(err, blobfs.ErrDeleting) || !strings.Contains(err.Error(), "the directory S is deleting") {
 					t.Errorf("Move out of a deleting parent at version %d = %v, want ErrDeleting", version, err)
 				}
 				wantDeleting(t, "Move out of a deleting parent", err, true, "S")
-				err = move(append(unchanged(directoryResponse("D", "S", "d", version)),
-					parents(directoryResponse("S", blobfs.RootID, "s", 1), directoryIn("P", blobfs.RootID, "p", blobfs.DirectoryStatusDeleting, 2))...)...)
+				err = move(append(unchangedThenRead(directoryResponse("D", "S", "d", version)),
+					fromAndToParents(directoryResponse("S", blobfs.RootID, "s", 1), directoryIn("P", blobfs.RootID, "p", blobfs.DirectoryStatusDeleting, 2))...)...)
 				if !errors.Is(err, blobfs.ErrDeleting) || !strings.Contains(err.Error(), "the directory P is deleting") {
 					t.Errorf("Move under a deleting parent at version %d = %v, want ErrDeleting", version, err)
 				}
 			}
-			missing := parents(directoryResponse(blobfs.RootID, "", "/", 1), noDirectory())
-			err = move(append(unchanged(directoryResponse("D", blobfs.RootID, "d", 1)), missing...)...)
+			missing := fromAndToParents(directoryResponse(blobfs.RootID, "", "/", 1), noDirectory())
+			err = move(append(unchangedThenRead(directoryResponse("D", blobfs.RootID, "d", 1)), missing...)...)
 			var ve *blobfs.ViolationError
 			if !errors.Is(err, blobfs.ErrNotFound) || errors.As(err, &ve) {
 				t.Errorf("Move under a missing parent = %v, want ErrNotFound", err)
 			}
-			// unexplained scripts an update the reads of the row, the
-			// parents, and the name's holder do not explain.
-			unexplained := append(append(unchanged(directoryResponse("D", blobfs.RootID, "d", 1)), active...), noDirectory())
+			unexplained := append(append(unchangedThenRead(directoryResponse("D", blobfs.RootID, "d", 1)), active...), noDirectory())
 			err = move(append(slices.Clone(unexplained), unexplained...)...)
 			if err == nil || errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || !strings.Contains(err.Error(), "active at version 1") {
 				t.Errorf("Move refused with every row active, twice = %v, want an error naming the row's state", err)
 			}
-			// A deleting directory that holds the name under the new parent
-			// refuses the move by its own delete, not as the taken name, and
-			// is marked as the name's holder, apart from the moved row's own.
-			holder := append(append(unchanged(directoryResponse("D", blobfs.RootID, "e", 1)), active...), directoryIn("H", "P", "d", blobfs.DirectoryStatusDeleting, 2))
+			holder := append(append(unchangedThenRead(directoryResponse("D", blobfs.RootID, "e", 1)), active...), directoryIn("H", "P", "d", blobfs.DirectoryStatusDeleting, 2))
 			err = move(holder...)
 			if errors.Is(err, blobfs.ErrNameTaken) || !strings.Contains(err.Error(), "the directory H holds the name: ") {
 				t.Errorf("Move onto a deleting holder's name = %v, want the holder marked and no ErrNameTaken", err)
 			}
 			wantDeleting(t, "Move onto a deleting holder's name", err, true, "H")
-			// An update the reads do not explain, its holder purged or its
-			// name taken by a live row since the update's snapshot, runs once
-			// more: the rerun moves the row, meets the constraint, or selects
-			// nothing again with a holder the read finds.
 			changed := []sqltest.Response{directoryResponse("D", "P", "d", 2)}
 			if !f.single {
 				changed = []sqltest.Response{{Affected: 1}, directoryResponse("D", "P", "d", 2)}
@@ -205,7 +185,6 @@ func TestMoveClassifies(t *testing.T) {
 	}
 }
 
-// TestIsWithin checks the count's reading and the walk's bindings.
 func TestIsWithin(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, within(0), within(2))
@@ -218,14 +197,11 @@ func TestIsWithin(t *testing.T) {
 	if args := rec.Calls()[0].Args; !slices.Equal(args, []any{"P", "D"}) {
 		t.Errorf("IsWithin bound %v, want the start of the walk and the directory looked for", args)
 	}
-	// The walk discards a row it has produced, so it terminates on a cycle.
 	if text := rec.Calls()[0].SQL; !strings.Contains(text, "UNION\n") || strings.Contains(text, "UNION ALL") {
-		t.Errorf("the walk does not combine its steps with UNION:\n%s", text)
+		t.Errorf("the walk does not combine its steps with UNION, which discards a row already produced so the walk ends on a cycle:\n%s", text)
 	}
 }
 
-// TestMarkDeleting checks the mark's statements, their bindings and
-// counts, and its refusals.
 func TestMarkDeleting(t *testing.T) {
 	ctx := context.Background()
 	for _, root := range rootSpellings {
@@ -267,9 +243,6 @@ func TestMarkDeleting(t *testing.T) {
 		t.Errorf("MarkDeleting of a marked branch = %+v, %v, want no directory and the one straggling file", marked, err)
 	}
 
-	// The version guards the directories' update in its anchor; a
-	// directory at another version is told apart by the read, and the
-	// files' update does not run.
 	s, db, rec = openStore(t, fallback, sqltest.Response{Affected: 0}, directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusActive, 3))
 	if _, err := s.Directories.MarkDeleting(ctx, begin(t, db), "D", data.VersionOptions{Version: 2}); !errors.Is(err, query.ErrVersionMismatch) {
 		t.Errorf("MarkDeleting at a stale version = %v, want ErrVersionMismatch", err)
@@ -281,14 +254,12 @@ func TestMarkDeleting(t *testing.T) {
 		t.Errorf("the guarded mark bound %v, want the id and the version", c.Args)
 	}
 
-	// A branch deleting already is the mark's retry, whatever the version.
 	s, db, _ = openStore(t, fallback, sqltest.Response{Affected: 0}, directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusDeleting, 3), sqltest.Response{Affected: 0})
 	if marked, err := s.Directories.MarkDeleting(ctx, begin(t, db), "D", data.VersionOptions{Version: 1}); err != nil || marked != (data.Marked{}) {
 		t.Errorf("MarkDeleting's retry at an old version = %+v, %v, want nothing marked", marked, err)
 	}
 }
 
-// TestDeleting checks the read of the branch roots and its limit.
 func TestDeleting(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,

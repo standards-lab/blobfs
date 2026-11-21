@@ -18,20 +18,12 @@ import (
 	"github.com/standards-lab/blobfs/data/datatest"
 )
 
-// The file the protocol tests write and delete: a fixed id, as a seed's,
-// in a directory under the root.
 const (
 	protocolFile = "00000000-0000-7000-8000-00000000000f"
 	protocolDir  = "00000000-0000-7000-8000-00000000000d"
 	protocolKey  = protocolFile + "/report.txt"
 )
 
-// objectStore is an ObjectStore over a map. It accepts every key, records
-// its puts, its deletes, and the error of the context each delete ran
-// under, and fails a put with putErr and a delete with deleteErr when they
-// are set. With
-// cancel set, a put cancels the caller's context and fails with its error,
-// as a caller that hangs up mid-body.
 type objectStore struct {
 	accepting
 	objects    map[string]string
@@ -77,18 +69,13 @@ func (o *objectStore) DeleteObject(ctx context.Context, key string) error {
 	return nil
 }
 
-// stored reports whether the store holds the protocol file's object.
 func (o *objectStore) stored() bool {
 	_, ok := o.objects[protocolKey]
 	return ok
 }
 
-// single is the returning dialect's form, where each of the store's
-// commands is one statement, so a protocol's script is short.
 var single = forms[1]
 
-// protocolRow is the protocol file's row at a status and version; one
-// past pending carries the size and entity tag its completion recorded.
 func protocolRow(status blobfs.Status, version int64) sqltest.Response {
 	f := fileRow(protocolFile, protocolDir, "report.txt", status, version)
 	if status != blobfs.StatusPending {
@@ -98,13 +85,38 @@ func protocolRow(status blobfs.Status, version int64) sqltest.Response {
 	return datatest.FileRows(f)
 }
 
-// protocolDirectory is the read of the protocol file's directory, active.
+func created() []sqltest.Response {
+	return []sqltest.Response{noFile(), protocolRow(blobfs.StatusPending, 1)}
+}
+
+func resumed() []sqltest.Response {
+	return []sqltest.Response{protocolRow(blobfs.StatusPending, 1)}
+}
+
+func completed() []sqltest.Response {
+	return []sqltest.Response{protocolRow(blobfs.StatusAvailable, 2)}
+}
+
+func completedWithTheHooksExec() []sqltest.Response {
+	return []sqltest.Response{protocolRow(blobfs.StatusAvailable, 2), {Affected: 1}}
+}
+
+func foundCompletedByTheOtherWriter() []sqltest.Response {
+	return unchangedFile(single, protocolRow(blobfs.StatusAvailable, 2))
+}
+
+func readBack() []sqltest.Response {
+	return []sqltest.Response{protocolRow(blobfs.StatusAvailable, 2)}
+}
+
+func abandoned() []sqltest.Response {
+	return []sqltest.Response{protocolRow(blobfs.StatusDeleting, 2), {Affected: 1}}
+}
+
 func protocolDirectory() sqltest.Response {
 	return directoryResponse(protocolDir, blobfs.RootID, "d", 1)
 }
 
-// create is a write's first step as a caller's begin runs it: a check of
-// its own, then Files.Create.
 func create(ctx context.Context, s *data.Store, own func(*sqlate.Tx) error) func(*sqlate.Tx) (blobfs.File, error) {
 	return func(tx *sqlate.Tx) (blobfs.File, error) {
 		if err := own(tx); err != nil {
@@ -116,8 +128,6 @@ func create(ctx context.Context, s *data.Store, own func(*sqlate.Tx) error) func
 
 func allow(*sqlate.Tx) error { return nil }
 
-// wantDone fails the test unless every scripted response was consumed and
-// no rows were left open.
 func wantDone(t *testing.T, rec *sqltest.Recorder) {
 	t.Helper()
 	if rec.Pending() != 0 || rec.RowsLeaked() != 0 {
@@ -125,9 +135,6 @@ func wantDone(t *testing.T, rec *sqltest.Recorder) {
 	}
 }
 
-// TestWrite checks the write: begin's transaction with the pending row,
-// the put under the row's key in the type the row declares, and the
-// completion in a transaction of its own.
 func TestWrite(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2))
@@ -145,8 +152,6 @@ func TestWrite(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestWriteRefusedBegin checks a begin that fails rolls back, stores
-// nothing, and returns its error as it came.
 func TestWriteRefusedBegin(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single)
@@ -161,10 +166,6 @@ func TestWriteRefusedBegin(t *testing.T) {
 	}
 }
 
-// TestWriteUnderADeletingName checks a write under a name a deleting row
-// holds, a stopped write's or delete's, is refused in begin by that row's
-// DeletingError, not as the taken name, with nothing put and no statement
-// failed inside the transaction.
 func TestWriteUnderADeletingName(t *testing.T) {
 	ctx := context.Background()
 	const holder = "00000000-0000-7000-8000-0000000000c1"
@@ -182,10 +183,6 @@ func TestWriteUnderADeletingName(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestWriteFailedPut checks a failed put abandons the write through the
-// delete: the row's delete begun at its pending version, the object's
-// delete, and the purge. An abandon the store refuses too leaves the row
-// deleting and reports both failures.
 func TestWriteFailedPut(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1})
@@ -219,9 +216,6 @@ func TestWriteFailedPut(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestWriteRefusedCompletion checks the writer rule: a completion refused
-// because the row is deleting or gone deletes the object under the key
-// the write holds and leaves the row to the sweep.
 func TestWriteRefusedCompletion(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -250,8 +244,6 @@ func TestWriteRefusedCompletion(t *testing.T) {
 	}
 }
 
-// TestWriteFailedCompletion checks a completion that fails any other way
-// abandons the write, its object deleted with the row.
 func TestWriteFailedCompletion(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single,
@@ -272,14 +264,8 @@ func TestWriteFailedCompletion(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// callerKey marks the context a protocol's caller passes, so a hook can
-// tell it received the call's own.
 type callerKey struct{}
 
-// TestWriteOnComplete checks the completion hook runs inside the
-// completion's transaction, after Files.Complete and before the commit,
-// with the call's context and the completed File, and that what it writes
-// there commits with the row.
 func TestWriteOnComplete(t *testing.T) {
 	ctx := context.WithValue(context.Background(), callerKey{}, "caller")
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2), sqltest.Response{Affected: 1})
@@ -300,25 +286,15 @@ func TestWriteOnComplete(t *testing.T) {
 	if hooked.ID != protocolFile || hooked.Status != blobfs.StatusAvailable || hooked.Version != 2 {
 		t.Errorf("the hook received %+v, want the completed row", hooked)
 	}
-	// The hook's exec sits between the completion and its commit: a hook
-	// run on the pool, or after the commit, puts it past the commit.
 	if want := "begin query commit begin query exec commit"; ops(rec) != want {
-		t.Errorf("ops = %q, want %q", ops(rec), want)
+		t.Errorf("ops = %q, want %q: the hook's exec between the completion and its commit", ops(rec), want)
 	}
 	wantDone(t, rec)
 }
 
-// TestWriteOnCompleteRefuses checks a hook that fails rolls the
-// completion back with what it wrote, and abandons the write as a failed
-// completion does: the row's delete at its pending version, the object's
-// delete, and the purge, the hook's error returned, named.
 func TestWriteOnCompleteRefuses(t *testing.T) {
 	ctx := context.Background()
-	s, db, rec := openStore(t, single,
-		protocolRow(blobfs.StatusPending, 1),
-		protocolRow(blobfs.StatusAvailable, 2), sqltest.Response{Affected: 1}, // completed, and the hook's exec
-		protocolRow(blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1}, // abandoned
-	)
+	s, db, rec := openStore(t, single, slices.Concat([]sqltest.Response{protocolRow(blobfs.StatusPending, 1)}, completedWithTheHooksExec(), abandoned())...)
 	objects := newObjectStore()
 	refused := errors.New("the consumer refuses")
 	hook := func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
@@ -343,8 +319,6 @@ func TestWriteOnCompleteRefuses(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// found is a write's first step whose begin runs Files.Ensure, which
-// may find a row that is no longer pending.
 func found(ctx context.Context, s *data.Store) func(*sqlate.Tx) (blobfs.File, error) {
 	return func(tx *sqlate.Tx) (blobfs.File, error) {
 		f, _, err := s.Files.Ensure(ctx, tx, accepting{}, data.FileSpec{DirectoryID: protocolDir, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{})
@@ -352,10 +326,6 @@ func found(ctx context.Context, s *data.Store) func(*sqlate.Tx) (blobfs.File, er
 	}
 }
 
-// TestWriteRefusesARowNotPending checks Write writes only a pending row:
-// an available row begin found is refused with its TransitionError, and a
-// deleting one with its DeletingError wrapping it, each before any put,
-// nothing removed.
 func TestWriteRefusesARowNotPending(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusAvailable, 2))
@@ -383,10 +353,6 @@ func TestWriteRefusesARowNotPending(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// hangUp is a context the caller abandons once the database has answered
-// every scripted statement: from then on it is done and reports
-// context.Canceled, so whatever runs after the last statement runs with
-// the caller gone.
 type hangUp struct {
 	context.Context
 	rec *sqltest.Recorder
@@ -408,12 +374,6 @@ func (h hangUp) Err() error {
 	return nil
 }
 
-// TestWriteCleansUpAfterCancellation checks the cleanup outlives the
-// caller's context: a put that fails because the caller hung up is still
-// abandoned, the row's delete, the object's, and the purge all run; and a
-// completion refused as deleting still deletes the object put when the
-// caller hangs up before the delete, each delete under a context that is
-// not cancelled.
 func TestWriteCleansUpAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -434,11 +394,8 @@ func TestWriteCleansUpAfterCancellation(t *testing.T) {
 	s, db, rec = openStore(t, single, protocolRow(blobfs.StatusPending, 1), noFile(), protocolRow(blobfs.StatusDeleting, 2), protocolDirectory())
 	objects = newObjectStore()
 	caller := hangUp{context.Background(), rec}
-	// The directory's read is the last statement, so the caller has hung
-	// up by the time the refusal is classified; a read the hang-up cuts
-	// short leaves the refusal untyped, still ErrDeleting.
 	if _, err := s.WriteFile(caller, data.WriteFileRequest{DB: db, Objects: objects, Body: strings.NewReader("report"), Size: 6, Begin: create(caller, s, allow)}); !errors.Is(err, blobfs.ErrDeleting) {
-		t.Fatalf("Write = %v, want ErrDeleting", err)
+		t.Fatalf("Write = %v, want ErrDeleting, typed or not by the directory's read the hang-up may cut short", err)
 	}
 	if caller.Err() == nil || !slices.Equal(objects.deletes, []string{protocolKey}) || !slices.Equal(objects.deleteCtxs, []error{nil}) || objects.stored() {
 		t.Errorf("caller %v, deletes = %v under %v, want the put object deleted under a live context after the hang-up", caller.Err(), objects.deletes, objects.deleteCtxs)
@@ -446,17 +403,12 @@ func TestWriteCleansUpAfterCancellation(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// ensure is a seed's first step as its begin runs it: Files.Ensure of the
-// file under the fixed id.
 func ensure(ctx context.Context, s *data.Store) func(*sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
 	return func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
 		return s.Files.Ensure(ctx, tx, accepting{}, data.FileSpec{DirectoryID: protocolDir, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{ID: protocolFile})
 	}
 }
 
-// TestEnsureWrite checks the retry-safe write: a name no row holds is
-// created under the fixed id and written over whatever a reset left at
-// the key, and a pending row an earlier write left is resumed.
 func TestEnsureWrite(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, noFile(), protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2))
@@ -488,9 +440,6 @@ func TestEnsureWrite(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestEnsureWritePresent checks an available row under the id is left as
-// it stands, nothing put; a deleting one is refused as its own delete's,
-// told by a read of its directory.
 func TestEnsureWritePresent(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusAvailable, 2))
@@ -509,12 +458,6 @@ func TestEnsureWritePresent(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestEnsureWriteUnderAnotherID checks a row found by the name under
-// another id, an upload of the same name, is left as it stands, nothing
-// put over its object and nothing removed, and reported as the taken
-// name, or as its DeletingError when it is deleting; a row a begin
-// without CreateOptions{ID: id} created under another id is abandoned at
-// its version, nothing put, and reported naming both ids.
 func TestEnsureWriteUnderAnotherID(t *testing.T) {
 	const other = "00000000-0000-7000-8000-0000000000c1"
 	for _, status := range []blobfs.Status{blobfs.StatusPending, blobfs.StatusAvailable} {
@@ -532,8 +475,6 @@ func TestEnsureWriteUnderAnotherID(t *testing.T) {
 		})
 	}
 
-	// A deleting row under another id is refused by its delete, not as the
-	// taken name, and is not run again as a concurrent writer's.
 	t.Run(string(blobfs.StatusDeleting), func(t *testing.T) {
 		ctx := context.Background()
 		s, db, rec := openStore(t, single, fileIn(other, protocolDir, "report.txt", blobfs.StatusDeleting, 2), protocolDirectory())
@@ -544,17 +485,16 @@ func TestEnsureWriteUnderAnotherID(t *testing.T) {
 		}
 		wantDeleting(t, "Ensure over a deleting row under another id", err, false, other)
 		if objects.puts != 0 || len(objects.deletes) != 0 || ops(rec) != "begin query commit query" {
-			t.Errorf("puts = %d, deletes = %v, ops = %q, want the first transaction and the directory's read", objects.puts, objects.deletes, ops(rec))
+			t.Errorf("puts = %d, deletes = %v, ops = %q, want the first transaction and the directory's read, not run again as a concurrent writer's", objects.puts, objects.deletes, ops(rec))
 		}
 		wantDone(t, rec)
 	})
 
 	t.Run("Created", func(t *testing.T) {
 		ctx := context.Background()
-		s, db, rec := openStore(t, single,
-			noFile(), fileIn(other, protocolDir, "report.txt", blobfs.StatusPending, 1), // created under a minted id
-			fileIn(other, protocolDir, "report.txt", blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1}, // abandoned
-		)
+		createdUnderAMintedID := fileIn(other, protocolDir, "report.txt", blobfs.StatusPending, 1)
+		abandonedAtItsVersion := fileIn(other, protocolDir, "report.txt", blobfs.StatusDeleting, 2)
+		s, db, rec := openStore(t, single, noFile(), createdUnderAMintedID, abandonedAtItsVersion, sqltest.Response{Affected: 1})
 		objects := newObjectStore()
 		minted := func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
 			return s.Files.Ensure(ctx, tx, accepting{}, data.FileSpec{DirectoryID: protocolDir, Name: "report.txt", ContentType: "text/plain"}, data.CreateOptions{})
@@ -574,17 +514,9 @@ func TestEnsureWriteUnderAnotherID(t *testing.T) {
 	})
 }
 
-// TestEnsureWriteRaces checks two writers sharing a row: a completion the
-// other writer won is no failure, abandons nothing, and returns the row
-// as found; a lost insert runs begin again in a fresh transaction, which
-// resumes the other's pending row.
 func TestEnsureWriteRaces(t *testing.T) {
 	ctx := context.Background()
-	s, db, rec := openStore(t, single,
-		noFile(), protocolRow(blobfs.StatusPending, 1), // created
-		noFile(), protocolRow(blobfs.StatusAvailable, 2), // the completion matches no pending row at 1
-		protocolRow(blobfs.StatusAvailable, 2), // the row read back
-	)
+	s, db, rec := openStore(t, single, slices.Concat(created(), foundCompletedByTheOtherWriter(), readBack())...)
 	objects := newObjectStore()
 	got, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s)})
 	if err != nil || stored || got.Status != blobfs.StatusAvailable || got.Version != 2 {
@@ -595,11 +527,8 @@ func TestEnsureWriteRaces(t *testing.T) {
 	}
 	wantDone(t, rec)
 
-	s, db, rec = openStore(t, single,
-		noFile(), violation(blobfs.ConstraintPrimaryKeyFile, sqlate.ErrUniqueViolation), // the lookup finds nothing, the insert loses
-		protocolRow(blobfs.StatusPending, 1),   // the retry finds the other's pending row
-		protocolRow(blobfs.StatusAvailable, 2), // and completes it
-	)
+	insertLost := []sqltest.Response{noFile(), violation(blobfs.ConstraintPrimaryKeyFile, sqlate.ErrUniqueViolation)}
+	s, db, rec = openStore(t, single, slices.Concat(insertLost, resumed(), completed())...)
 	if _, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: newObjectStore(), ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s)}); err != nil || !stored {
 		t.Fatalf("Ensure = %v, %v, want the resumed row stored", stored, err)
 	}
@@ -609,8 +538,6 @@ func TestEnsureWriteRaces(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestEnsureWriteFailedPut checks a failed put abandons the created row
-// as Write abandons it, but only at the pending version it holds.
 func TestEnsureWriteFailedPut(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single,
@@ -631,16 +558,9 @@ func TestEnsureWriteFailedPut(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestEnsureWriteAbandonAfterTheOtherWriter checks a failed put whose
-// abandon, at the pending version, finds the row the other writer
-// completed: nothing removed, and the row read back and returned as found.
 func TestEnsureWriteAbandonAfterTheOtherWriter(t *testing.T) {
 	ctx := context.Background()
-	s, db, rec := openStore(t, single, slices.Concat(
-		[]sqltest.Response{protocolRow(blobfs.StatusPending, 1)},      // resumed
-		unchangedFile(single, protocolRow(blobfs.StatusAvailable, 2)), // the abandon at 1 finds it completed
-		[]sqltest.Response{protocolRow(blobfs.StatusAvailable, 2)},    // the row read back
-	)...)
+	s, db, rec := openStore(t, single, slices.Concat(resumed(), foundCompletedByTheOtherWriter(), readBack())...)
 	objects := newObjectStore()
 	objects.putErr = errors.New("put failed")
 	got, stored, err := s.EnsureFile(ctx, data.EnsureFileRequest{DB: db, Objects: objects, ID: protocolFile, Body: strings.NewReader("report"), Size: 6, Begin: ensure(ctx, s)})
@@ -653,9 +573,6 @@ func TestEnsureWriteAbandonAfterTheOtherWriter(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestEnsureWriteRefusedCompletion checks a completion refused as
-// deleting or not found is returned as it came, the object put deleted
-// again, with no read back as if another writer had won.
 func TestEnsureWriteRefusedCompletion(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -688,10 +605,6 @@ func TestEnsureWriteRefusedCompletion(t *testing.T) {
 	}
 }
 
-// TestEnsureWriteOnComplete checks the completion hook runs inside the
-// completion's transaction when this call completes the file, after
-// Files.Complete and before the commit, with the call's context and the
-// completed File.
 func TestEnsureWriteOnComplete(t *testing.T) {
 	ctx := context.WithValue(context.Background(), callerKey{}, "caller")
 	s, db, rec := openStore(t, single, noFile(), protocolRow(blobfs.StatusPending, 1), protocolRow(blobfs.StatusAvailable, 2), sqltest.Response{Affected: 1})
@@ -712,18 +625,12 @@ func TestEnsureWriteOnComplete(t *testing.T) {
 	if hooked.ID != protocolFile || hooked.Status != blobfs.StatusAvailable || hooked.Version != 2 {
 		t.Errorf("the hook received %+v, want the completed row", hooked)
 	}
-	// The hook's exec sits between the completion and its commit.
 	if want := "begin query query commit begin query exec commit"; ops(rec) != want {
-		t.Errorf("ops = %q, want %q", ops(rec), want)
+		t.Errorf("ops = %q, want %q: the hook's exec between the completion and its commit", ops(rec), want)
 	}
 	wantDone(t, rec)
 }
 
-// TestEnsureWriteOnCompleteNotThisCall checks the hook never runs for a
-// completion this call does not make: a row found available, returned as
-// it stands, and a row another writer completed first, read back. Each
-// script holds no response for the hook's exec, so a hook run there fails
-// the call as well as the test.
 func TestEnsureWriteOnCompleteNotThisCall(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -731,11 +638,7 @@ func TestEnsureWriteOnCompleteNotThisCall(t *testing.T) {
 		ops    string
 	}{
 		{"Present", []sqltest.Response{protocolRow(blobfs.StatusAvailable, 2)}, "begin query commit"},
-		{"Lost", []sqltest.Response{
-			noFile(), protocolRow(blobfs.StatusPending, 1), // created
-			noFile(), protocolRow(blobfs.StatusAvailable, 2), // the completion matches no pending row at 1
-			protocolRow(blobfs.StatusAvailable, 2), // the row read back
-		}, "begin query query commit begin query query rollback query"},
+		{"Lost", slices.Concat(created(), foundCompletedByTheOtherWriter(), readBack()), "begin query query commit begin query query rollback query"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -758,11 +661,6 @@ func TestEnsureWriteOnCompleteNotThisCall(t *testing.T) {
 	}
 }
 
-// TestEnsureWriteOnCompleteRefuses checks a hook that fails rolls the
-// completion back and abandons the write as WriteFile does, its error
-// returned, named. A hook error wrapping the sentinels of a lost race is
-// still the hook's: the write abandoned and no row read back as another
-// writer's.
 func TestEnsureWriteOnCompleteRefuses(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -774,11 +672,7 @@ func TestEnsureWriteOnCompleteRefuses(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ctx := context.Background()
-			s, db, rec := openStore(t, single,
-				protocolRow(blobfs.StatusPending, 1),                                  // resumed
-				protocolRow(blobfs.StatusAvailable, 2), sqltest.Response{Affected: 1}, // completed, and the hook's exec
-				protocolRow(blobfs.StatusDeleting, 2), sqltest.Response{Affected: 1}, // abandoned
-			)
+			s, db, rec := openStore(t, single, slices.Concat(resumed(), completedWithTheHooksExec(), abandoned())...)
 			objects := newObjectStore()
 			hook := func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
 				if _, err := tx.ExecContext(ctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID); err != nil {
@@ -793,10 +687,8 @@ func TestEnsureWriteOnCompleteRefuses(t *testing.T) {
 			if errors.Is(err, blobfs.ErrNotFound) {
 				t.Errorf("Ensure = %v, want no read back's refusal beside the hook's", err)
 			}
-			// A read back after the abandon's exec would mark the hook's
-			// error taken for a lost race.
 			if want := "begin query commit begin query exec rollback begin query commit exec"; ops(rec) != want {
-				t.Errorf("ops = %q, want %q: the completion rolled back, then the abandon", ops(rec), want)
+				t.Errorf("ops = %q, want %q: the completion rolled back, then the abandon, with no read back to take the hook's error for a lost race", ops(rec), want)
 			}
 			if del := rec.Calls()[8]; !strings.HasPrefix(del.SQL, "UPDATE blobfs_file") || !slices.Equal(del.Args, []any{protocolFile, int64(1)}) {
 				t.Errorf("the delete is %q %v, want the pending row's, at its version", del.SQL, del.Args)
@@ -809,17 +701,9 @@ func TestEnsureWriteOnCompleteRefuses(t *testing.T) {
 	}
 }
 
-// TestEnsureWriteOnCompleteRefusesAMovedRow checks a hook that fails, whose
-// abandon then finds the row another writer completed, is still the hook's
-// failure: its error and the abandon's returned, and no row read back as
-// another writer's win, as a failed put's abandon would read it.
 func TestEnsureWriteOnCompleteRefusesAMovedRow(t *testing.T) {
 	ctx := context.Background()
-	s, db, rec := openStore(t, single, slices.Concat(
-		[]sqltest.Response{protocolRow(blobfs.StatusPending, 1)},                  // resumed
-		[]sqltest.Response{protocolRow(blobfs.StatusAvailable, 2), {Affected: 1}}, // completed, and the hook's exec
-		unchangedFile(single, protocolRow(blobfs.StatusAvailable, 2)),             // the abandon at 1 finds it completed
-	)...)
+	s, db, rec := openStore(t, single, slices.Concat(resumed(), completedWithTheHooksExec(), foundCompletedByTheOtherWriter())...)
 	refused := errors.New("the consumer refuses")
 	hook := func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO owner (file_id) VALUES ($1)", f.ID); err != nil {
@@ -831,16 +715,12 @@ func TestEnsureWriteOnCompleteRefusesAMovedRow(t *testing.T) {
 	if !errors.Is(err, refused) || !errors.Is(err, query.ErrVersionMismatch) || stored || got.ID != "" {
 		t.Fatalf("Ensure = %+v, %v, %v, want the hook's error and the abandon's", got, stored, err)
 	}
-	// A read back after the abandon's rollback would take the hook's
-	// failure for a lost race.
 	if want := "begin query commit begin query exec rollback begin query query rollback"; ops(rec) != want {
-		t.Errorf("ops = %q, want %q: no read back after the abandon", ops(rec), want)
+		t.Errorf("ops = %q, want %q: no read back after the abandon to take the hook's failure for a lost race", ops(rec), want)
 	}
 	wantDone(t, rec)
 }
 
-// TestEnsureWriteRefusesAnID checks an id blobfs.ParseID refuses, the
-// empty id among them, is the call's returned error before any SQL.
 func TestEnsureWriteRefusesAnID(t *testing.T) {
 	for _, id := range []string{"seed", ""} {
 		t.Run(fmt.Sprintf("%q", id), func(t *testing.T) {
@@ -856,9 +736,6 @@ func TestEnsureWriteRefusesAnID(t *testing.T) {
 	}
 }
 
-// TestWriteRequestsPanic checks WriteFile and EnsureFile panic, naming the
-// field, when a required field of their request is nil, before any I/O: no
-// statement, no begin, and no put or delete.
 func TestWriteRequestsPanic(t *testing.T) {
 	ctx := context.Background()
 	type call struct {
@@ -937,15 +814,10 @@ func TestWriteRequestsPanic(t *testing.T) {
 	}
 }
 
-// absentBody is a test-only reader whose nil pointer a request's Body
-// holds in TestWriteRequestsTypedNil; nothing reads it.
 type absentBody struct{}
 
 func (*absentBody) Read([]byte) (int, error) { return 0, io.EOF }
 
-// TestWriteRequestsTypedNil checks an interface field that holds a nil
-// pointer counts as set: the call does not panic and runs its begin, whose
-// refusal it returns before the put would reach the fields.
 func TestWriteRequestsTypedNil(t *testing.T) {
 	ctx := context.Background()
 	errBegin := errors.New("the caller's scope refuses")
@@ -967,9 +839,6 @@ func TestWriteRequestsTypedNil(t *testing.T) {
 	}
 }
 
-// TestRemove checks the delete: pick in the transaction that begins the
-// delete, under the version guard, then the object, then the purge on the
-// pool; a pick that fails rolls back and deletes nothing.
 func TestRemove(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, sqltest.Response{Affected: 1}, protocolRow(blobfs.StatusDeleting, 3), sqltest.Response{Affected: 1})
@@ -1009,10 +878,6 @@ func TestRemove(t *testing.T) {
 	}
 }
 
-// TestRemoveOnDelete checks the delete hook runs in the delete's first
-// transaction, after the row is marked deleting under the version guard
-// and before the commit, with the call's context and the marked File; the
-// object and the purge follow.
 func TestRemoveOnDelete(t *testing.T) {
 	ctx := context.WithValue(context.Background(), callerKey{}, "caller")
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusDeleting, 3), sqltest.Response{Affected: 1}, sqltest.Response{Affected: 1})
@@ -1034,10 +899,8 @@ func TestRemoveOnDelete(t *testing.T) {
 	if hooked.ID != protocolFile || hooked.Status != blobfs.StatusDeleting || hooked.Version != 3 {
 		t.Errorf("the hook received %+v, want the row marked deleting", hooked)
 	}
-	// The hook's exec sits between the delete and its commit: a hook run
-	// on the pool, or after the commit, puts it past the commit.
 	if want := "begin query exec commit exec"; ops(rec) != want {
-		t.Errorf("ops = %q, want %q", ops(rec), want)
+		t.Errorf("ops = %q, want %q: the hook's exec between the delete and its commit", ops(rec), want)
 	}
 	if del := rec.Calls()[1]; !slices.Equal(del.Args, []any{protocolFile, int64(2)}) {
 		t.Errorf("the delete bound %v, want the file at the guarded version", del.Args)
@@ -1048,9 +911,6 @@ func TestRemoveOnDelete(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestRemoveOnDeleteRetried checks a retry, whose delete changes no row
-// because the file is already deleting, runs no hook and still deletes the
-// object and purges the row.
 func TestRemoveOnDeleteRetried(t *testing.T) {
 	ctx := context.Background()
 	responses := append(unchangedFile(single, protocolRow(blobfs.StatusDeleting, 3)), sqltest.Response{Affected: 1})
@@ -1077,9 +937,6 @@ func TestRemoveOnDeleteRetried(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestRemoveOnDeleteRefuses checks a hook that fails rolls the delete's
-// transaction back with what it wrote, so the row is never marked, and
-// nothing is deleted or purged; the hook's error is returned, named.
 func TestRemoveOnDeleteRefuses(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusDeleting, 3), sqltest.Response{Affected: 1})
@@ -1105,9 +962,6 @@ func TestRemoveOnDeleteRefuses(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestRemoveFileID checks the delete of a file by id: the delete under the
-// version guard in a transaction of its own, then the object, then the
-// purge; a retry after it finished finds no row, ErrNotFound.
 func TestRemoveFileID(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, single, protocolRow(blobfs.StatusDeleting, 3), sqltest.Response{Affected: 1}, noFile(), noFile())
@@ -1132,8 +986,6 @@ func TestRemoveFileID(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestPurge checks the delete's tail: the object, then the row; an object
-// delete that fails leaves the row.
 func TestPurge(t *testing.T) {
 	ctx := context.Background()
 	file := fileRow(protocolFile, protocolDir, "report.txt", blobfs.StatusDeleting, 2)

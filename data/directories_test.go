@@ -15,7 +15,6 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// TestFind checks Find is one read by id, and no row is ErrNotFound.
 func TestFind(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, directoryResponse(blobfs.RootID, "", "/", 1), noDirectory())
@@ -32,7 +31,6 @@ func TestFind(t *testing.T) {
 	}
 }
 
-// TestFindByName checks the normalized lookup and its refusals.
 func TestFindByName(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, childResponse("D", nfcName), noDirectory())
@@ -54,8 +52,6 @@ func TestFindByName(t *testing.T) {
 	}
 }
 
-// TestCreateForms checks Create's statements in the fallback, on the pool
-// and in a transaction, and in the single-statement form.
 func TestCreateForms(t *testing.T) {
 	ctx := context.Background()
 	id := blobfs.NewID()
@@ -101,8 +97,6 @@ func TestCreateForms(t *testing.T) {
 	}
 }
 
-// TestCreateRefusals checks the refusals before any SQL and the
-// classification of blobfs's constraints in both forms.
 func TestCreateRefusals(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
@@ -150,8 +144,6 @@ func TestCreateRefusals(t *testing.T) {
 	}
 }
 
-// TestCreateUnderAClosedParent checks an insert that selected no row reads
-// the parent to classify the refusal, in both forms.
 func TestCreateUnderAClosedParent(t *testing.T) {
 	ctx := context.Background()
 	for _, f := range forms {
@@ -178,13 +170,6 @@ func TestCreateUnderAClosedParent(t *testing.T) {
 			}
 		}
 	}
-	// Under an active parent, the read of the directory that holds the name
-	// tells a deleting holder, refused by its own delete, marked as the
-	// name's holder, and never as the taken name. A read that explains
-	// nothing, the holder purged or replaced by a live row since the
-	// insert's snapshot, runs the insert once more: it succeeds, meets the
-	// constraint, or selects nothing again with a holder the read finds,
-	// and only a rerun as unexplained leaves the refusal untyped.
 	for _, f := range forms {
 		unchanged := []sqltest.Response{noDirectory(), noDirectory()}
 		changed := []sqltest.Response{directoryResponse("N", "P", "docs", 1)}
@@ -200,7 +185,7 @@ func TestCreateUnderAClosedParent(t *testing.T) {
 		for _, c := range []struct {
 			name    string
 			reads   []sqltest.Response
-			want    error // nil for success
+			want    error
 			inserts int
 		}{
 			{"a deleting holder", []sqltest.Response{deleting}, blobfs.ErrDeleting, 1},
@@ -249,8 +234,6 @@ func TestCreateUnderAClosedParent(t *testing.T) {
 	}
 }
 
-// TestCreateOptionsID proves the supplied id reaches the insert in
-// canonical form, whatever form the caller wrote.
 func TestCreateOptionsID(t *testing.T) {
 	ctx := context.Background()
 	id := blobfs.NewID()
@@ -263,16 +246,13 @@ func TestCreateOptionsID(t *testing.T) {
 	}
 }
 
-// TestEnsure checks the insert-or-find in both forms: found, created, the
-// race recovered on the pool, and returned inside a transaction.
 func TestEnsure(t *testing.T) {
 	ctx := context.Background()
 	for _, f := range forms {
 		t.Run(f.name, func(t *testing.T) {
-			// insertOps is what the insert runs on the pool in this form.
-			insertOps, refusedOps := "query", "query"
+			poolInsertOps, refusedOps := "query", "query"
 			if !f.single {
-				insertOps, refusedOps = "begin exec query commit", "begin exec rollback"
+				poolInsertOps, refusedOps = "begin exec query commit", "begin exec rollback"
 			}
 
 			s, db, rec := openStore(t, f, childResponse("D", "docs"))
@@ -293,7 +273,7 @@ func TestEnsure(t *testing.T) {
 			if err != nil || !created || d.ID != "N" {
 				t.Fatalf("Ensure of a free name = %+v, %v, %v; want the row created", d, created, err)
 			}
-			if got, want := ops(rec), "query "+insertOps; got != want {
+			if got, want := ops(rec), "query "+poolInsertOps; got != want {
 				t.Errorf("ops = %q, want %q", got, want)
 			}
 
@@ -322,9 +302,6 @@ func TestEnsure(t *testing.T) {
 				t.Errorf("ops = %q, want %q: no lookup after the refused insert inside the transaction", got, want)
 			}
 
-			// A concurrent creator under the same id fails the primary key
-			// first: on the pool the name is looked up again, and the row is
-			// found when it carries the id; otherwise the id stays taken.
 			id := blobfs.NewID()
 			s, db, rec = openStore(t, f, noDirectory(), violation(blobfs.ConstraintPrimaryKeyDirectory, sqlate.ErrUniqueViolation), childResponse(id, "docs"))
 			d, created, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.CreateOptions{ID: strings.ToUpper(id)})
@@ -344,8 +321,6 @@ func TestEnsure(t *testing.T) {
 					t.Errorf("ops = %q, want %q", got, want)
 				}
 			}
-			// A second lookup that fails leaves the ErrIDTaken, its failure
-			// joined.
 			errLookup := errors.New("the lookup failed")
 			s, db, _ = openStore(t, f, noDirectory(), violation(blobfs.ConstraintPrimaryKeyDirectory, sqlate.ErrUniqueViolation), sqltest.Response{Err: errLookup})
 			_, _, err = s.Directories.Ensure(ctx, db, blobfs.RootID, "docs", data.CreateOptions{ID: id})
@@ -367,8 +342,6 @@ func TestEnsure(t *testing.T) {
 	}
 }
 
-// TestEnsureFindsADeletingDirectory checks a found deleting directory is
-// ErrDeleting, with no insert.
 func TestEnsureFindsADeletingDirectory(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, directoryIn("D", blobfs.RootID, "docs", blobfs.DirectoryStatusDeleting, 2))
@@ -378,9 +351,6 @@ func TestEnsureFindsADeletingDirectory(t *testing.T) {
 	if got := ops(rec); got != "query" {
 		t.Errorf("ops = %q, want the one lookup", got)
 	}
-	// One a creator committed between the lookup and the insert is found
-	// again inside a transaction too, since the insert failed no statement,
-	// and refused as the lookup would have refused it.
 	deleting := directoryIn("D", blobfs.RootID, "docs", blobfs.DirectoryStatusDeleting, 2)
 	s, db, rec = openStore(t, single, noDirectory(), noDirectory(), noDirectory(), directoryResponse(blobfs.RootID, "", "/", 1), deleting, deleting)
 	_, err := db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {
@@ -397,8 +367,6 @@ func TestEnsureFindsADeletingDirectory(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestEnsureRefusals proves the checks that run before any SQL: an invalid
-// name, and a supplied id that is the nil UUID or no UUID.
 func TestEnsureRefusals(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
@@ -415,7 +383,6 @@ func TestEnsureRefusals(t *testing.T) {
 	}
 }
 
-// TestDelete checks the directory removal and its refusals.
 func TestDelete(t *testing.T) {
 	ctx := context.Background()
 	for _, root := range rootSpellings {
@@ -472,8 +439,6 @@ func TestDelete(t *testing.T) {
 	}
 }
 
-// rootSpellings are spellings of blobfs.RootID PostgreSQL reads as the
-// nil UUID, each of which the root's guards refuse before any SQL.
 var rootSpellings = []string{
 	blobfs.RootID,
 	"{00000000-0000-0000-0000-000000000000}",
@@ -482,9 +447,6 @@ var rootSpellings = []string{
 	"0000-0000-0000-0000-0000-0000-0000-0000",
 }
 
-// notRootSpellings are strings near blobfs.RootID that are not the nil
-// UUID once braces and hyphens are removed; the root's guards leave each
-// to the statement.
 var notRootSpellings = []string{
 	"00000000-0000-0000-0000-000000000001",
 	"urn:uuid:00000000-0000-0000-0000-000000000000",
@@ -492,8 +454,6 @@ var notRootSpellings = []string{
 	" 00000000-0000-0000-0000-000000000000",
 }
 
-// TestCreateOnASessionThatCannotBegin checks the fallback needs a session
-// that can begin a transaction, where the single-statement form does not.
 func TestCreateOnASessionThatCannotBegin(t *testing.T) {
 	ctx := context.Background()
 	for _, f := range forms {
@@ -514,6 +474,4 @@ func TestCreateOnASessionThatCannotBegin(t *testing.T) {
 	}
 }
 
-// plainSession is a session that hides the pool's Begin, as a consumer's
-// own wrapper might.
 type plainSession struct{ sqlate.Session }

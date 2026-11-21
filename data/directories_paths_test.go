@@ -13,8 +13,6 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// TestFindByPathChecks checks each malformed path is ErrInvalidPath before
-// any SQL, a refused segment matching ErrInvalidName too.
 func TestFindByPathChecks(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
@@ -34,25 +32,13 @@ func TestFindByPathChecks(t *testing.T) {
 	}
 }
 
-// TestFindByPathWalks checks the baseline's reads, one per segment, and
-// its ErrNotFound for a missing start or segment.
 func TestFindByPathWalks(t *testing.T) {
 	ctx := context.Background()
-	s, db, rec := openStore(t, fallback,
-		// b/c/café from A: the start, then three children.
-		childResponse("A", "a"),
-		directoryResponse("B", "A", "b", 1),
-		directoryResponse("C", "B", "c", 1),
-		directoryResponse("D", "C", nfcName, 1),
-		// The empty path from A: the start alone.
-		childResponse("A", "a"),
-		// A start no directory holds.
-		noDirectory(),
-		// b/missing/deeper from A: the start, b, then no row.
-		childResponse("A", "a"),
-		directoryResponse("B", "A", "b", 1),
-		noDirectory(),
-	)
+	threeSegments := []sqltest.Response{childResponse("A", "a"), directoryResponse("B", "A", "b", 1), directoryResponse("C", "B", "c", 1), directoryResponse("D", "C", nfcName, 1)}
+	theStartAlone := []sqltest.Response{childResponse("A", "a")}
+	noStart := []sqltest.Response{noDirectory()}
+	aMissingSecondSegment := []sqltest.Response{childResponse("A", "a"), directoryResponse("B", "A", "b", 1), noDirectory()}
+	s, db, rec := openStore(t, fallback, slices.Concat(threeSegments, theStartAlone, noStart, aMissingSecondSegment)...)
 	d, err := s.Directories.FindByPath(ctx, db, "A", "b/c/"+nfdName)
 	if err != nil || d.ID != "D" || d.Name != nfcName {
 		t.Fatalf("FindByPath(A, b/c/café) = %+v, %v, want D", d, err)
@@ -86,8 +72,6 @@ func TestFindByPathWalks(t *testing.T) {
 	}
 }
 
-// TestPathComposes checks the path is composed from the ancestor rows in
-// any order, and the refusals of a missing, broken, or looping chain.
 func TestPathComposes(t *testing.T) {
 	ctx := context.Background()
 	cols := []string{"id", "parent_id", "name"}
