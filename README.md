@@ -25,7 +25,7 @@ model.
 
 1. [Concepts](docs/concepts.md): the tree over opaque keys, the write and delete protocols,
    moves, listings, the delete of a branch and its sweep, and how engines and ownership fit
-   around the library.
+   around the library, and the assumptions the design rests on.
 2. [Quick start](docs/quick-start.md): a working program from `go get` to a composition against
    PostgreSQL and an object store, tested without a database and against one.
 3. [Features](docs/features.md): every operation, refusal, and schema object, package by

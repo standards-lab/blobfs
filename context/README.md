@@ -14,12 +14,16 @@ express.
 
 ## Capability map
 
-The code, which `docs/` describes, comprises the root package, the persistence package `data`
-with its conformance suite `data/datatest`, the `postgres` engine sub-module (its variant, native
-statements, migration set, and integration tier), and the `example` module, which composes the
-library with `go-storage`.
+- **The root package** (built): the entities, ids, statuses, keys, names, and errors the tree is
+  made of ([doc.go](../doc.go)).
+- **The persistence package** (built): `data`, the store, the write and delete protocols,
+  listings, the sweep, and the standard-tier variant ([doc.go](../data/doc.go)), with its
+  conformance suite `data/datatest` ([doc.go](../data/datatest/doc.go)).
+- **The PostgreSQL engine** (built): the `postgres` sub-module, its variant, native statements,
+  migration set, and integration tier ([doc.go](../postgres/doc.go)).
+- **The example** (built): the `example` module, which composes the library with `go-storage`
+  ([main.go](../example/main.go)).
 
 ## Notes
 
-- `deferred.md`: what the library leaves out on purpose, each with its trigger, and the
-  assumptions its design rests on.
+- `deferred.md`: what the library leaves out on purpose, each with its trigger.
