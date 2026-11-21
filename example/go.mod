@@ -9,7 +9,7 @@ require (
 	github.com/standards-lab/go-storage v0.8.0
 	github.com/standards-lab/go-storage/azureblob v0.7.0
 	github.com/standards-lab/sqlate v0.7.0
-	github.com/standards-lab/sqlate/postgres v0.7.0
+	github.com/standards-lab/sqlate/postgres v0.8.0
 )
 
 require (

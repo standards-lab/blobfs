@@ -1,6 +1,6 @@
 # The development stack's Azurite: the blob service the example stores its
 # bytes in, on 10000. This FROM line is Azurite's one pin.
-FROM mcr.microsoft.com/azure-storage/azurite:3.37.0
+FROM mcr.microsoft.com/azure-storage/azurite:3.38.0
 
 # The image defines no health check. Its busybox nc shows the blob listener
 # accepts connections; the image has no curl.

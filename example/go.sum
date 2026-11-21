@@ -58,8 +58,8 @@ github.com/standards-lab/go-storage/azureblob v0.7.0 h1:CGdxocRCii1RnrxKFOw1aEds
 github.com/standards-lab/go-storage/azureblob v0.7.0/go.mod h1:moETCRvF9cxvEtFYnRulShGUFtjSRAfuclmbEy05HDY=
 github.com/standards-lab/sqlate v0.7.0 h1:GVb3OCDXwSS9RCxQ2BRIfV73zwBeJBhkvDLBJnTYd/U=
 github.com/standards-lab/sqlate v0.7.0/go.mod h1:pikNmGf/z3x46SBWFXgt/xKIDZuquSgCoXy5OWBFFR4=
-github.com/standards-lab/sqlate/postgres v0.7.0 h1:77rpSHzi3wWVwLhHOZd/ggJ7L6SWdzH5UuKQfO8YT3c=
-github.com/standards-lab/sqlate/postgres v0.7.0/go.mod h1:TZpwd2e0SuFVh8k1os061dG5G4dBzsEKkB+7vypYbD8=
+github.com/standards-lab/sqlate/postgres v0.8.0 h1:gHV4w7RCO8hj3JOGFHCug84mCdnwubIOO0wlfEoX+TA=
+github.com/standards-lab/sqlate/postgres v0.8.0/go.mod h1:TZpwd2e0SuFVh8k1os061dG5G4dBzsEKkB+7vypYbD8=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
 github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
