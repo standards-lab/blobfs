@@ -12,17 +12,11 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// blocked is how long a check waits to conclude that a call blocks, and
-// unblocked how long it waits for a blocked call to return once the
-// transaction it waits on ends.
 const (
 	blocked   = 500 * time.Millisecond
 	unblocked = 5 * time.Second
 )
 
-// holds checks Hold against its contract and against Delete: the two must
-// take the same row lock, whatever statement form the dialect runs
-// Delete's update in.
 func (s *suite) holds(t *testing.T) {
 	dir := s.mkdir(t, "hold-"+t.Name())
 	t.Run("HeldRowIsUnchanged", func(t *testing.T) { s.heldRowUnchanged(t, dir.ID) })
@@ -31,9 +25,6 @@ func (s *suite) holds(t *testing.T) {
 	t.Run("DeleteMakesTheHoldWait", func(t *testing.T) { s.deleteThenHold(t, dir.ID) })
 }
 
-// heldRowUnchanged checks a hold of a pending and of an available row,
-// plain and at the row's version: each succeeds and changes nothing, the
-// version included.
 func (s *suite) heldRowUnchanged(t *testing.T, dir string) {
 	for _, status := range []blobfs.Status{blobfs.StatusAvailable, blobfs.StatusPending} {
 		id := s.insertFile(t, dir, "held-"+status.String()+".txt", status)
@@ -49,8 +40,6 @@ func (s *suite) heldRowUnchanged(t *testing.T, dir string) {
 	}
 }
 
-// holdRefusals checks the hold's refusals against the baseline, none of
-// which changes the row; a deleting row is the file's own DeletingError.
 func (s *suite) holdRefusals(t *testing.T, dir string) {
 	stale := s.insertFile(t, dir, "stale.txt", blobfs.StatusAvailable)
 	deletingID := s.insertFile(t, dir, "deleting.txt", blobfs.StatusAvailable)
@@ -91,8 +80,6 @@ func (s *suite) holdRefusals(t *testing.T, dir string) {
 	}
 }
 
-// holdThenDelete checks the first interleaving: a Delete that starts under
-// a hold waits for the holder's commit, then sees its reference.
 func (s *suite) holdThenDelete(t *testing.T, dir string) {
 	s.createFileReferences(t)
 	id := s.insertFile(t, dir, "held-then-deleted.txt", blobfs.StatusAvailable)
@@ -141,10 +128,6 @@ func (s *suite) holdThenDelete(t *testing.T, dir string) {
 	s.wantGone(t, id)
 }
 
-// deleteThenHold checks the second interleaving: a Delete runs first and
-// a hold that starts meanwhile waits; a commit of the Delete leaves the
-// hold refusing the deleting row, and a rollback leaves it holding the
-// row.
 func (s *suite) deleteThenHold(t *testing.T, dir string) {
 	for _, end := range []struct {
 		name string
@@ -191,14 +174,11 @@ func (s *suite) deleteThenHold(t *testing.T, dir string) {
 	}
 }
 
-// deleteResult is what a Delete on a goroutine reports.
 type deleteResult struct {
 	file blobfs.File
 	err  error
 }
 
-// holdIn runs Hold through the store under test in a transaction of its
-// own and commits it.
 func (s *suite) holdIn(id string, opts data.VersionOptions) error {
 	_, err := s.db.Transact(s.ctx, func(tx *sqlate.Tx) (struct{}, error) {
 		return struct{}{}, s.store.Files.Hold(s.ctx, tx, id, opts)

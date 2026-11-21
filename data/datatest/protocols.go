@@ -15,11 +15,6 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// protocols checks the protocols end to end over the database: Store.WriteFile,
-// Store.EnsureFile, Store.RemoveFile, Store.RemoveFileID, Store.PurgeFile, and
-// SweepUntilDone over the store's passes. Each case runs over the store under
-// test and then the baseline. It runs before any group marks a branch, and it
-// sweeps every branch it marks, so SweepUntilDone drains only its own backlog.
 func (s *suite) protocols(t *testing.T) {
 	t.Run("Write", s.protocolWrite)
 	t.Run("WriteFailedPut", s.protocolWriteFailedPut)
@@ -51,11 +46,8 @@ func (s *suite) protocols(t *testing.T) {
 	t.Run("SweepUntilDoneStopped", s.protocolSweepUntilDoneStopped)
 }
 
-// errBegin is what a refusing begin or pick reports.
 var errBegin = errors.New("datatest: the caller's scope refuses")
 
-// storesUnder names the store under test and the baseline, for the cases
-// that run over each in a subtest of its own.
 func (s *suite) storesUnder() []struct {
 	name  string
 	store *data.Store
@@ -66,26 +58,18 @@ func (s *suite) storesUnder() []struct {
 	}{{"UnderTest", s.store}, {"Baseline", s.baseline}}
 }
 
-// writeFile runs Store.WriteFile through store of body as the file n in
-// dir, its begin creating the pending row with Files.Create.
 func (s *suite) writeFile(store *data.Store, objects data.ObjectStore, dir, n, body string) (blobfs.File, error) {
 	return store.WriteFile(s.ctx, data.WriteFileRequest{DB: s.db, Objects: objects, Body: strings.NewReader(body), Size: int64(len(body)), Begin: func(tx *sqlate.Tx) (blobfs.File, error) {
 		return store.Files.Create(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir, Name: n, ContentType: "text/plain"}, data.CreateOptions{})
 	}})
 }
 
-// ensureWrite runs Store.EnsureFile through store of body as the file n
-// in dir under id, its begin running Files.Ensure with
-// CreateOptions{ID: id}, with onComplete, which may be nil, as its hook.
 func (s *suite) ensureWrite(store *data.Store, objects data.ObjectStore, dir, n, id, body string, onComplete func(context.Context, *sqlate.Tx, blobfs.File) error) (blobfs.File, bool, error) {
 	return store.EnsureFile(s.ctx, data.EnsureFileRequest{DB: s.db, Objects: objects, ID: id, Body: strings.NewReader(body), Size: int64(len(body)), Begin: func(tx *sqlate.Tx) (blobfs.File, data.WriteOutcome, error) {
 		return store.Files.Ensure(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir, Name: n, ContentType: "text/plain"}, data.CreateOptions{ID: id})
 	}, OnComplete: onComplete})
 }
 
-// referencing is a completion hook that inserts a reference to the
-// completed file in the completion's transaction and counts its runs in
-// ran.
 func (s *suite) referencing(t *testing.T, ran *int) func(context.Context, *sqlate.Tx, blobfs.File) error {
 	return func(_ context.Context, tx *sqlate.Tx, f blobfs.File) error {
 		*ran++
@@ -94,15 +78,10 @@ func (s *suite) referencing(t *testing.T, ran *int) func(context.Context, *sqlat
 	}
 }
 
-// removeFile runs Store.RemoveFile through store of the file with id, its
-// pick naming the file.
 func (s *suite) removeFile(store *data.Store, objects data.ObjectDeleter, id string) error {
 	return store.RemoveFile(s.ctx, s.db, objects, func(*sqlate.Tx) (string, error) { return id, nil }, data.RemoveOptions{})
 }
 
-// unreferencing is a delete hook that removes the references to the file
-// in the delete's transaction, counts its runs in ran, and records the
-// file it received in hooked and the row it read there in read.
 func (s *suite) unreferencing(store *data.Store, ran *int, hooked, read *blobfs.File) func(context.Context, *sqlate.Tx, blobfs.File) error {
 	return func(ctx context.Context, tx *sqlate.Tx, f blobfs.File) error {
 		*ran++
@@ -116,9 +95,6 @@ func (s *suite) unreferencing(store *data.Store, ran *int, hooked, read *blobfs.
 	}
 }
 
-// wantWritten checks that got is the available row the database holds,
-// with the put's size and entity tag, and body stored under its key in the
-// row's content type.
 func (s *suite) wantWritten(t *testing.T, objects *objectStore, got blobfs.File, body string) {
 	t.Helper()
 	if got.Status != blobfs.StatusAvailable || got.Size == nil || *got.Size != int64(len(body)) || got.ETag == nil ||
@@ -133,9 +109,6 @@ func (s *suite) wantWritten(t *testing.T, objects *objectStore, got blobfs.File,
 	}
 }
 
-// protocolWrite checks a write that succeeds: the row available at the
-// version past the pending one, with the put's size and entity tag, and
-// the body stored under the row's key, the one put.
 func (s *suite) protocolWrite(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -156,9 +129,6 @@ func (s *suite) protocolWrite(t *testing.T) {
 	}
 }
 
-// protocolWriteFailedPut checks that a put that fails abandons the write:
-// the store's error returned, the object's delete run under the row's key,
-// no row left, and the name free for a second write that succeeds.
 func (s *suite) protocolWriteFailedPut(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -186,10 +156,6 @@ func (s *suite) protocolWriteFailedPut(t *testing.T) {
 	}
 }
 
-// protocolWriteRefusedCompletion checks a completion refused because the
-// file's branch was marked between the write's first transaction and its
-// completion: the directory's DeletingError, the object the write put
-// deleted again, and the row left deleting, which a sweep then finishes.
 func (s *suite) protocolWriteRefusedCompletion(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -227,9 +193,6 @@ func (s *suite) protocolWriteRefusedCompletion(t *testing.T) {
 	}
 }
 
-// protocolWriteOnComplete checks the completion hook runs in the
-// completion's transaction: the row it reads there is the completed one,
-// and the reference it inserts there commits with the row.
 func (s *suite) protocolWriteOnComplete(t *testing.T) {
 	s.createFileReferences(t)
 	for _, tier := range s.storesUnder() {
@@ -263,10 +226,6 @@ func (s *suite) protocolWriteOnComplete(t *testing.T) {
 	}
 }
 
-// protocolWriteOnCompleteRefuses checks a hook that fails rolls the
-// completion back with the reference it inserted, and abandons the write:
-// the hook's error returned, the object deleted, and no row left, so the
-// file is never complete.
 func (s *suite) protocolWriteOnCompleteRefuses(t *testing.T) {
 	s.createFileReferences(t)
 	refused := errors.New("datatest: the hook refuses")
@@ -301,8 +260,6 @@ func (s *suite) protocolWriteOnCompleteRefuses(t *testing.T) {
 	}
 }
 
-// protocolWriteRefusedBegin checks a begin that fails after its create:
-// its error returned as it came, nothing put, and no row committed.
 func (s *suite) protocolWriteRefusedBegin(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -327,9 +284,6 @@ func (s *suite) protocolWriteRefusedBegin(t *testing.T) {
 	}
 }
 
-// protocolWriteRefusesAvailable checks Write over an available row its
-// begin found with Files.Ensure: the TransitionError to available, nothing
-// put or deleted, and the row and its object as they were.
 func (s *suite) protocolWriteRefusesAvailable(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -357,11 +311,6 @@ func (s *suite) protocolWriteRefusesAvailable(t *testing.T) {
 	}
 }
 
-// protocolWriteUnderADeletingName checks Write under a name a deleting row
-// holds, as a write whose put and abandon both failed leaves it: the
-// holder's DeletingError, not ErrNameTaken, nothing put or deleted, and the
-// row untouched. The refusal fails no statement, so begin's transaction
-// still runs a read after it.
 func (s *suite) protocolWriteUnderADeletingName(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -394,9 +343,6 @@ func (s *suite) protocolWriteUnderADeletingName(t *testing.T) {
 	}
 }
 
-// protocolEnsureCreates checks Ensure under a fixed id: the first call
-// creates, stores, and reports stored; a second finds the row available
-// and returns it as it stands, nothing put and stored false.
 func (s *suite) protocolEnsureCreates(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -416,9 +362,6 @@ func (s *suite) protocolEnsureCreates(t *testing.T) {
 	}
 }
 
-// protocolEnsureResumes checks Ensure over the pending row an earlier
-// write under the id left when it stopped before its put: the row resumed
-// at its version and completed, stored true, and one row under the id.
 func (s *suite) protocolEnsureResumes(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -441,9 +384,6 @@ func (s *suite) protocolEnsureResumes(t *testing.T) {
 	}
 }
 
-// protocolEnsureNameTaken checks Ensure where a row under another id holds
-// the name, pending or available: ErrNameTaken, the row untouched, and
-// nothing put or deleted.
 func (s *suite) protocolEnsureNameTaken(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -467,9 +407,6 @@ func (s *suite) protocolEnsureNameTaken(t *testing.T) {
 	}
 }
 
-// protocolEnsureNameHeldByADeletingRow checks Ensure where a deleting row
-// under another id holds the name: that row's DeletingError, not
-// ErrNameTaken, the row untouched, and nothing put or deleted.
 func (s *suite) protocolEnsureNameHeldByADeletingRow(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -491,9 +428,6 @@ func (s *suite) protocolEnsureNameHeldByADeletingRow(t *testing.T) {
 	}
 }
 
-// protocolEnsureDeleting checks Ensure over a row under the id whose own
-// delete began: the file's DeletingError, the row untouched, and nothing
-// put. The row is purged after.
 func (s *suite) protocolEnsureDeleting(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -520,11 +454,6 @@ func (s *suite) protocolEnsureDeleting(t *testing.T) {
 	}
 }
 
-// protocolEnsureShares checks two Ensures sharing one row: a second
-// Ensure run inside the first one's put resumes the pending row and
-// completes it, stored true; the first's completion then finds it
-// completed and returns the row as found, stored false, nothing
-// abandoned, and one row under the id.
 func (s *suite) protocolEnsureShares(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -554,10 +483,6 @@ func (s *suite) protocolEnsureShares(t *testing.T) {
 	}
 }
 
-// protocolEnsureLostInsert checks the lost insert's retry: a begin whose
-// insert loses to a row a competing writer committed under the id has its
-// transaction aborted, and Ensure runs begin once more in a fresh one,
-// which resumes the competing row and completes it, stored true.
 func (s *suite) protocolEnsureLostInsert(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -570,11 +495,9 @@ func (s *suite) protocolEnsureLostInsert(t *testing.T) {
 				if begun++; begun > 1 {
 					return tier.store.Files.Ensure(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "seed.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id})
 				}
-				// The competing writer commits between this writer's lookup,
-				// which found nothing, and its insert.
 				var err error
 				if competing, err = tier.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "seed.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id}); err != nil {
-					t.Errorf("the competing Create: %v", err)
+					t.Errorf("the competing Create, committed between this writer's lookup and its insert: %v", err)
 				}
 				f, err := tier.store.Files.Create(s.ctx, tx, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "seed.txt", ContentType: "text/plain"}, data.CreateOptions{ID: id})
 				return f, data.WriteCreated, err
@@ -588,10 +511,6 @@ func (s *suite) protocolEnsureLostInsert(t *testing.T) {
 	}
 }
 
-// protocolEnsureOnComplete checks the completion hook of an Ensure that
-// completes the file runs once, in the completion's transaction: the row it
-// reads there is the completed one, and the reference it inserts there
-// commits with the row.
 func (s *suite) protocolEnsureOnComplete(t *testing.T) {
 	s.createFileReferences(t)
 	for _, tier := range s.storesUnder() {
@@ -626,9 +545,6 @@ func (s *suite) protocolEnsureOnComplete(t *testing.T) {
 	}
 }
 
-// protocolEnsureOnCompletePresent checks an Ensure that finds the file
-// available, completed by an earlier write, runs no hook: nothing put,
-// stored false, and no reference inserted.
 func (s *suite) protocolEnsureOnCompletePresent(t *testing.T) {
 	s.createFileReferences(t)
 	for _, tier := range s.storesUnder() {
@@ -652,10 +568,6 @@ func (s *suite) protocolEnsureOnCompletePresent(t *testing.T) {
 	}
 }
 
-// protocolEnsureOnCompleteShared checks two hooked Ensures sharing one row
-// run the hook once, the completing writer's: a second Ensure inside the
-// first one's put completes the row and runs its hook, and the first, its
-// completion lost, returns the row as found and runs none.
 func (s *suite) protocolEnsureOnCompleteShared(t *testing.T) {
 	s.createFileReferences(t)
 	for _, tier := range s.storesUnder() {
@@ -681,11 +593,6 @@ func (s *suite) protocolEnsureOnCompleteShared(t *testing.T) {
 	}
 }
 
-// protocolEnsureOnCompleteRefuses checks a hook that fails rolls the
-// completion back with the reference it inserted and abandons the write:
-// the hook's error returned, the object deleted, and no row left under the
-// id. A hook error wrapping query.ErrVersionMismatch, a lost race's
-// sentinel, is still the hook's, not another writer's win.
 func (s *suite) protocolEnsureOnCompleteRefuses(t *testing.T) {
 	s.createFileReferences(t)
 	for _, c := range []struct {
@@ -730,9 +637,6 @@ func (s *suite) protocolEnsureOnCompleteRefuses(t *testing.T) {
 	}
 }
 
-// protocolRemove checks RemoveFile of an available file: the object
-// deleted under the row's key, then the row purged; a retry after it
-// finished is ErrNotFound.
 func (s *suite) protocolRemove(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -756,9 +660,6 @@ func (s *suite) protocolRemove(t *testing.T) {
 	}
 }
 
-// protocolRemoveFailedDelete checks RemoveFileID whose object delete
-// fails: the store's error, the row left deleting, and a retry that
-// converges.
 func (s *suite) protocolRemoveFailedDelete(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -784,8 +685,6 @@ func (s *suite) protocolRemoveFailedDelete(t *testing.T) {
 	}
 }
 
-// protocolRemoveRefusedPick checks a pick that refuses: its error returned
-// as it came, nothing deleted, and the row as it was.
 func (s *suite) protocolRemoveRefusedPick(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -806,10 +705,6 @@ func (s *suite) protocolRemoveRefusedPick(t *testing.T) {
 	}
 }
 
-// protocolRemoveOnDelete checks the delete hook runs once, in the
-// transaction that marks the file deleting: the File it receives and the
-// row it reads there are the deleting row, and the reference it removes
-// there commits, so the purge, which a reference refuses, finishes.
 func (s *suite) protocolRemoveOnDelete(t *testing.T) {
 	s.createFileReferences(t)
 	for _, tier := range s.storesUnder() {
@@ -846,10 +741,6 @@ func (s *suite) protocolRemoveOnDelete(t *testing.T) {
 	}
 }
 
-// protocolRemoveOnDeleteRetried checks a RemoveFile of a file already
-// deleting, the retry of one whose object delete failed, runs no hook and
-// finishes the delete: the hook ran once, with the delete that marked the
-// file.
 func (s *suite) protocolRemoveOnDeleteRetried(t *testing.T) {
 	s.createFileReferences(t)
 	for _, tier := range s.storesUnder() {
@@ -885,9 +776,6 @@ func (s *suite) protocolRemoveOnDeleteRetried(t *testing.T) {
 	}
 }
 
-// protocolRemoveOnDeleteRefuses checks a hook that fails rolls the
-// delete's transaction back with what it wrote: the hook's error
-// returned, the row as it was, and its object neither deleted nor gone.
 func (s *suite) protocolRemoveOnDeleteRefuses(t *testing.T) {
 	s.createFileReferences(t)
 	refused := errors.New("datatest: the hook refuses")
@@ -926,9 +814,6 @@ func (s *suite) protocolRemoveOnDeleteRefuses(t *testing.T) {
 	}
 }
 
-// protocolPurge checks Purge after a Files.Delete the caller ran in its
-// own transaction: the object deleted and the row purged, and a retry of
-// the purge that converges.
 func (s *suite) protocolPurge(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -958,8 +843,6 @@ func (s *suite) protocolPurge(t *testing.T) {
 	}
 }
 
-// passes records what SweepUntilDone reported, and ran counts the passes
-// the loop ran.
 type passes struct {
 	results []data.SweepResult
 	errs    []error
@@ -971,8 +854,6 @@ func (p *passes) report(r data.SweepResult, err error) {
 	p.errs = append(p.errs, err)
 }
 
-// pass is one pass of store's sweep through objects with opts, counted in
-// ran, as a consumer hands it to SweepUntilDone.
 func (p *passes) pass(s *suite, store *data.Store, objects *objectStore, opts data.SweepOptions) func(context.Context) (data.SweepResult, error) {
 	return func(ctx context.Context) (data.SweepResult, error) {
 		p.ran++
@@ -980,10 +861,6 @@ func (p *passes) pass(s *suite, store *data.Store, objects *objectStore, opts da
 	}
 }
 
-// protocolSweepUntilDone checks that SweepUntilDone drains a backlog
-// larger than one batch: a branch of eight records at a Batch of 3 takes the
-// three passes sweepBatch counts, the loop runs each once, report sees
-// each with no error, and the branch is gone with each object deleted once.
 func (s *suite) protocolSweepUntilDone(t *testing.T) {
 	want := []data.SweepResult{{Files: 3, More: true}, {Files: 2, Directories: 1, More: true}, {Directories: 2}}
 	for _, tier := range s.storesUnder() {
@@ -1008,9 +885,6 @@ func (s *suite) protocolSweepUntilDone(t *testing.T) {
 	}
 }
 
-// protocolSweepUntilDoneStopped checks that with stop closed before the
-// loop starts, the loop runs no pass: nothing run, reported, or deleted,
-// and the branch still marked, which an unstopped loop then drains.
 func (s *suite) protocolSweepUntilDoneStopped(t *testing.T) {
 	for _, tier := range s.storesUnder() {
 		t.Run(tier.name, func(t *testing.T) {
@@ -1038,5 +912,4 @@ func (s *suite) protocolSweepUntilDoneStopped(t *testing.T) {
 	}
 }
 
-// Check the fake is the object store the protocols take.
 var _ data.ObjectStore = (*objectStore)(nil)

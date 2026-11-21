@@ -11,9 +11,6 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// listingRefusals checks a request's refusals: undeclared fields and pages
-// below 1 before any SQL, a value the engine cannot read, and every cursor
-// Continue refuses.
 func (s *suite) listingRefusals(t *testing.T) {
 	dir := s.mkdir(t, "refusals-"+t.Name())
 	for _, n := range []string{"a", "b", "c"} {
@@ -91,9 +88,6 @@ func (s *suite) listingRefusals(t *testing.T) {
 	}
 }
 
-// cursorIsAPosition checks that a cursor records a position in the order
-// and not the directory: a cursor from one directory's listing continues
-// a sibling's from the same name on, its deleting files hidden.
 func (s *suite) cursorIsAPosition(t *testing.T, f listingFixture) {
 	first, err := s.store.Files.List(s.ctx, s.db, f.dirs["d1"], listAll(), firstPage(2), data.ListOptions{})
 	if err != nil || first.Next == "" {
@@ -114,8 +108,6 @@ func (s *suite) cursorIsAPosition(t *testing.T, f listingFixture) {
 	}
 }
 
-// wantDeletingKind fails the test unless err is a blobfs.DeletingError of
-// the kind directory; a non-empty id is the row it must name.
 func wantDeletingKind(t *testing.T, err error, directory bool, id string) {
 	t.Helper()
 	var de *blobfs.DeletingError

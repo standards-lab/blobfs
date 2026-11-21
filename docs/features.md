@@ -924,12 +924,47 @@ outside the store is standard SQL with the dialect's placeholders. The groups, i
 Verify, Directories, Paths, Files, Writes, Deletes, Protocols, Holds, Moves, Listing, Keyset,
 Branches, and Sweeps.
 
-Protocols runs the protocols end to end over an in-memory object store. It checks
-`Store.WriteFile`'s success; a failed put, which frees the name; a completion refused by a mark
-made during the put, after which the write deletes the object it put and leaves the row to the
-sweep; the completion hook's writes committing with the row, and a hook's error rolling them
-back; a refusing begin; and the refusal of an available row. It checks `Store.EnsureFile`
-creating, returning an available row, resuming a pending one, and refusing a name held under
+Verify runs `Store.Verify` over the store under test and the baseline.
+
+Files checks that every read of a file returns its timestamps in `time.UTC`, whatever the session's
+zone and `time.Local`; `Find` and `FindByName`, a name found in either spelling and a directory of
+the same name not found; and the file move, its key untouched, with its refusals, each leaving the
+row unchanged.
+
+Writes checks `Create`'s pending row against the baseline, its key built from the id and the name,
+the declared content type, no size or entity tag, and the name stored composed; `Create`'s and
+`Ensure`'s refusals, by sentinel and constraint or in the same text, those before any SQL leaving
+no row; `Ensure`'s outcomes; `Complete` and its refusals, each leaving the row unchanged; the write
+inside the caller's transaction beside a row that references the pending file, which a rollback
+leaves neither of and a commit both; a retry that finds a stopped write's pending row by name and
+completes it; and a caller-supplied id through the whole protocol, whose delete frees the id for a
+write that reuses the same key.
+
+Deletes checks `Delete` from pending and available, its version advanced once, `updated_at`
+stamped, and every other column unchanged; a retry after a stop at each step converging, a `Purge`
+of an id that never existed included; a rollback; the version-guarded `Delete`; `Purge` of a row
+whose delete has not begun, `ErrNotDeleting`; and `Purge` of a row a consumer's row references,
+`ErrReferenced` over the consumer's constraint and never `ErrNotEmpty`, which a retry finishes once
+the reference goes.
+
+Holds checks that a hold, plain and at the row's version, changes nothing, the version included,
+and its refusals; and that `Hold` and `Delete` take the same row lock, whatever statement form the
+dialect runs `Delete`'s update in: a `Delete` that starts under a hold waits for the holder's
+commit and then sees its reference, and a hold that starts during a `Delete` waits, then refuses
+the deleting row once the `Delete` commits or holds the row once it rolls back.
+
+Among Listing's checks, a request's refusals are its undeclared fields and pages below 1 before any
+SQL, a value the engine cannot read, and every cursor `Continue` refuses; and a cursor records a
+position in the order, not the directory, so one from a directory's listing continues a sibling's
+from the same name on.
+
+Protocols runs the protocols end to end over an in-memory object store, each case over the
+store under test and then the baseline. It checks `Store.WriteFile`'s success; a failed put,
+which frees the name; a completion refused by a mark made during the put, after which the write
+deletes the object it put and leaves the row to the sweep; the completion hook's writes
+committing with the row, and a hook's error rolling them back; a refusing begin; and the refusal
+of an available row and of a name a deleting row holds, which reports the holder's
+`DeletingError` and leaves the begin's transaction usable. It checks `Store.EnsureFile` creating, returning an available row, resuming a pending one, and refusing a name held under
 another id or a deleting row; a second `EnsureFile` completing the shared row during the first
 one's put; an insert lost to a row a competing writer committed, which `EnsureFile` resumes;
 and the completion hook running once for the call that completes the file, not at all over an

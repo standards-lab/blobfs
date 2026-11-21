@@ -62,30 +62,17 @@ func Run(t *testing.T, db *sqlate.DB, catalog *query.Catalog, engine data.Engine
 	t.Run("Sweeps", s.sweeps)
 }
 
-// suite is one run's state.
 type suite struct {
-	ctx     context.Context
-	db      *sqlate.DB
-	catalog *query.Catalog
-	// engine is the engine under test, the baseline's when Run was given
-	// none, which the move group wraps to interleave two moves.
-	engine data.Engine
-	// store is the store under test.
-	store *data.Store
-	// baseline is a store over the standard baseline on the same database,
-	// which the groups compare against.
-	baseline *data.Store
-	// fileReferences and directoryReferences record that the suite's
-	// stand-ins for a consumer's tables exist, so the groups that need them
-	// share one of each.
-	fileReferences      bool
-	directoryReferences bool
+	ctx                            context.Context
+	db                             *sqlate.DB
+	catalog                        *query.Catalog
+	engine                         data.Engine
+	store                          *data.Store
+	baseline                       *data.Store
+	fileReferenceTableCreated      bool
+	directoryReferenceTableCreated bool
 }
 
-// verify checks the store against the migrated schema: every statement
-// and each returning command's single-statement form prepared, both
-// listings' field contracts and keyset pages probed, and the variant's
-// own statements, when it has any, in the same pass.
 func (s *suite) verify(t *testing.T) {
 	if err := s.store.Verify(s.ctx, s.db); err != nil {
 		t.Fatalf("Verify: %v", err)
@@ -95,7 +82,6 @@ func (s *suite) verify(t *testing.T) {
 	}
 }
 
-// baselineEngine is the engine of a run given none: the baseline itself.
 func baselineEngine(_ *query.Catalog, _ sqlate.Dialect, base data.Variant) (data.Variant, error) {
 	return base, nil
 }
