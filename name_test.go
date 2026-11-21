@@ -9,8 +9,8 @@ import (
 )
 
 func TestNormalizeNameNFC(t *testing.T) {
-	const eAcute, combiningAcute = '\u00E9', '\u0301'
-	composed := "caf" + string(eAcute)
+	const precomposedEAcute, combiningAcute = '\u00E9', '\u0301'
+	composed := "caf" + string(precomposedEAcute)
 	decomposed := "cafe" + string(combiningAcute)
 	if composed == decomposed {
 		t.Fatal("the fixtures are already equal; the test proves nothing")

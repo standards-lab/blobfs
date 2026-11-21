@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # currency reports every dependency, toolchain, and pin that trails its latest
 # release, one line each, and exits non-zero when it reports any. It reads the
-# network and writes nothing. Run it through `mise run currency`.
+# network and writes nothing. Run it through `mise run currency`. A tool's
+# module is an indirect requirement, so it is reported apart from the direct
+# requirements, and go list's standard error is shown only when it fails. The
+# workflows it reads for actions and images are the project root's and, when
+# the repository nests the project in a subdirectory, the git top-level's.
+#
+# Each scan captures its command's output in a variable before reading it, so
+# under set -e a scan command that fails (a go list missing a go.sum entry)
+# fails currency instead of reporting nothing.
 set -euo pipefail
 cd "$MISE_PROJECT_ROOT"
 export GOWORK=off
@@ -21,7 +29,7 @@ report_each_line() {
 	done <<<"$lines"
 }
 
-matches_in_existing_files() {
+matches() {
 	local pattern=$1 file
 	local files=()
 	shift
@@ -32,7 +40,7 @@ matches_in_existing_files() {
 	grep -ho "$pattern" "${files[@]}" || [ $? -eq 1 ]
 }
 
-tool_modules_with_stderr_only_on_failure() {
+tool_modules() {
 	local out err
 	err=$(mktemp)
 	if ! out=$(go list -f '{{.Module.Path}}' tool 2>"$err"); then
@@ -53,14 +61,14 @@ report_outdated_direct_requirements() {
 
 report_outdated_indirect_tool_modules() {
 	local mod=$1 tools updates
-	tools=$(cd "$mod" && tool_modules_with_stderr_only_on_failure)
+	tools=$(cd "$mod" && tool_modules)
 	[ -n "$tools" ] || return 0
 	updates=$(cd "$mod" && go list -m -u -f \
 		'{{if and (not .Main) .Indirect .Update}}{{.Path}} {{.Version}} -> {{.Update.Version}}{{end}}' $tools)
 	report_each_line "$mod/go.mod: " "$updates"
 }
 
-report_go_directive_behind_go_minor() {
+report_outdated_go_directive() {
 	local mod=$1 go_minor=$2 directive
 	directive=$(cd "$mod" && go mod edit -json | jq -r .Go | cut -d. -f1,2)
 	[ "$directive" = "$go_minor" ] || report "$mod/go.mod: go $directive -> go $go_minor"
@@ -72,7 +80,7 @@ report_outdated_modules() {
 	for mod in $GO_MODULES; do
 		report_outdated_direct_requirements "$mod"
 		report_outdated_indirect_tool_modules "$mod"
-		report_go_directive_behind_go_minor "$mod" "$go_minor"
+		report_outdated_go_directive "$mod" "$go_minor"
 	done
 }
 
@@ -83,17 +91,9 @@ report_outdated_mise_tools() {
 	report_each_line "mise.toml: " "$outdated"
 }
 
-collect_workflows_of_project_root_and_git_top_level() {
-	local root top
-	root=$(pwd -P)
-	top=$(git rev-parse --show-toplevel 2>/dev/null || echo "$root")
-	workflows=("$root"/.github/workflows/*.yml)
-	[ "$top" = "$root" ] || workflows+=("$top"/.github/workflows/*.yml)
-}
-
 report_outdated_actions() {
 	local actions uses action pin repo latest
-	actions=$(matches_in_existing_files 'uses: *[^ ]*@[^ ]*' "${workflows[@]}" | sed 's/uses: *//' | sort -u)
+	actions=$(matches 'uses: *[^ ]*@[^ ]*' "${workflows[@]}" | sed 's/uses: *//' | sort -u)
 	for uses in $actions; do
 		action=${uses%@*}
 		pin=${uses#*@}
@@ -103,43 +103,46 @@ report_outdated_actions() {
 	done
 }
 
-latest_dotted_release_tag_with_variant_of_pin() {
-	local image=$1 pin=$2 variant dotted_release_with_variant latest
-	variant=${pin#"${pin%%[!0-9.]*}"}
-	dotted_release_with_variant="^[0-9]+(\.[0-9]+)+${variant//./\\.}\$"
-	latest=$(crane ls "$image" | grep -E "$dotted_release_with_variant" | sed "s/${variant}\$//" | sort -V | tail -n1) || return
-	echo "$latest$variant"
+latest_dotted_release_tag() {
+	local image=$1 pin=$2 suffix dotted_release_pattern latest
+	suffix=${pin#"${pin%%[!0-9.]*}"}
+	dotted_release_pattern="^[0-9]+(\.[0-9]+)+${suffix//./\\.}\$"
+	latest=$(crane ls "$image" | grep -E "$dotted_release_pattern" | sed "s/${suffix}\$//" | sort -V | tail -n1) || return
+	echo "$latest$suffix"
 }
 
 report_outdated_image_lines() {
 	local images ref image pin latest
-	images=$(matches_in_existing_files '^ *image: *[^ ]*' compose.yml compose/*.yml "${workflows[@]}" |
+	images=$(matches '^ *image: *[^ ]*' compose.yml compose/*.yml "${workflows[@]}" |
 		sed 's/^ *image: *//' | tr -d "\"'" | sort -u)
 	for ref in $images; do
 		image=${ref%:*}
 		pin=${ref##*:}
-		latest=$(latest_dotted_release_tag_with_variant_of_pin "$image" "$pin")
+		latest=$(latest_dotted_release_tag "$image" "$pin")
 		[ "$pin" = "$latest" ] || report "images: $image $pin -> $latest"
 	done
 }
 
-report_outdated_compose_dockerfiles() {
+report_outdated_dockerfile_bases() {
 	local dockerfile ref image pin latest
 	for dockerfile in compose/*/Dockerfile; do
 		[ -e "$dockerfile" ] || continue
-		ref=$(sed -n 's/^FROM  *\([^ ]*\).*/\1/p' "$dockerfile" | head -n1)
+		ref=$(sed -n '/^FROM /{s/^FROM  *\([^ ]*\).*/\1/p;q;}' "$dockerfile")
 		image=${ref%:*}
 		pin=${ref##*:}
-		latest=$(latest_dotted_release_tag_with_variant_of_pin "$image" "$pin")
+		latest=$(latest_dotted_release_tag "$image" "$pin")
 		[ "$pin" = "$latest" ] || report "$dockerfile: $image $pin -> $latest"
 	done
 }
 
-workflows=()
-collect_workflows_of_project_root_and_git_top_level
+root=$(pwd -P)
+top=$(git rev-parse --show-toplevel 2>/dev/null || echo "$root")
+workflows=("$root"/.github/workflows/*.yml)
+[ "$top" = "$root" ] || workflows+=("$top"/.github/workflows/*.yml)
+
 report_outdated_modules
 report_outdated_mise_tools
 report_outdated_actions
 report_outdated_image_lines
-report_outdated_compose_dockerfiles
+report_outdated_dockerfile_bases
 exit "$stale"

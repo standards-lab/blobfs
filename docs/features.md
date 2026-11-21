@@ -544,12 +544,13 @@ through directories already deleting, so a repeated mark reaches a straggler: an
 create left in the branch after reading its parent before the first mark committed.
 
 The root is `ErrRootDirectory` before any SQL, and a directory that does not exist is
-`ErrNotFound`. The store refuses as the root any id that is the nil UUID once braces and hyphens
-are removed: every spelling of `blobfs.RootID` PostgreSQL accepts, braced or hyphenated after any
-group of four digits, and some it refuses. Any other id, a prefix or a space included, reaches the
-statement. With `VersionOptions.Version` set, the version guards the walk's anchor: an active
-directory at another version marks nothing and is `query.ErrVersionMismatch`, and a directory
-already deleting is the mark's retry at any version, after which the files' update runs.
+`ErrNotFound`. A delete, a move, and a mark refuse as the root any id that is the nil UUID once
+braces and hyphens are removed: every spelling of `blobfs.RootID` PostgreSQL accepts, braced or
+hyphenated after any group of four digits, and some it refuses. Any other id, a prefix or a space
+included, reaches the statement. With `VersionOptions.Version` set, the version guards the walk's
+anchor: an active directory at another version marks nothing and is `query.ErrVersionMismatch`,
+and a directory already deleting is the mark's retry at any version, after which the files' update
+runs.
 
 A consumer that runs its own work in the transaction of a branch's mark, `LockTree`, then `Find`
 of the anchor, then `MarkDeleting`, reads the anchor's status under `LockTree`, before the mark.
@@ -1030,8 +1031,9 @@ which frees the name; a completion refused by a mark made during the put, after 
 deletes the object it put and leaves the row to the sweep; the completion hook's writes
 committing with the row, and a hook's error rolling them back; a refusing begin; and the refusal
 of an available row and of a name a deleting row holds, which reports the holder's
-`DeletingError` and leaves the begin's transaction usable. It checks `Store.EnsureFile` creating, returning an available row, resuming a pending one, and refusing a name held under
-another id or a deleting row; a second `EnsureFile` completing the shared row during the first
+`DeletingError` and leaves the begin's transaction usable. It checks `Store.EnsureFile` creating,
+returning an available row, resuming a pending one, and refusing a name held under another id or
+a deleting row; a second `EnsureFile` completing the shared row during the first
 one's put; an insert lost to a row a competing writer committed, which `EnsureFile` resumes;
 and the completion hook running once for the call that completes the file, not at all over an
 available row or for the writer whose completion lost, and its error, even one wrapping a lost
