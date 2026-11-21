@@ -1,6 +1,6 @@
 # goal · harness.adoption-blobfs
 
-- **State:** building
+- **State:** brief ready
 - **Task:** adopt
 - **Branch:** adopt
 
@@ -72,14 +72,11 @@ Two-way: nothing is tagged, and the change is local to blobfs.
 
 ## Progress
 
-slices 0/9 committed · standards — · spec — · editor —
+slices 9/9 committed · standards ✓ · spec ✓ · editor ✓
 
 ## Decisions
 
-- adopt: released PostgreSQL migrations stay byte-identical, prose included; the golden sha256
-  pins don't change. New migrations follow the five kinds. (wave 1, B1)
-- adopt: SQL file headers are package documentation and stay. (wave 1, W1)
-- adopt: CHANGELOG entries record only changes to a module's `go.mod` requirements. (wave 1, W2)
+None.
 
 ## Pending edits
 

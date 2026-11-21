@@ -431,7 +431,7 @@ belongs to exactly one tree.
 The design rests on these assumptions:
 
 - The baseline runs on any engine `sqlate` has a dialect for, but only PostgreSQL is exercised.
-- The key rule of a real Azure account matches `go-storage`'s azureblob validator; the example ran
+- The key rule of a real Azure account matches `go-storage`'s azureblob validator; the example runs
   against Azurite, which accepts keys the real service refuses.
 - The consumer-side ownership composition, an owner row per top-level directory or a join row per
   file, generalizes to a second domain once one exists.

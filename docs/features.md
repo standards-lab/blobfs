@@ -930,19 +930,19 @@ Verify runs `Store.Verify` over the store under test and the baseline.
 Directories checks the seeded root as the store reads it: the row with `blobfs.RootID`, no parent,
 and the name `/`, at version 1, reached by `Find` and by `FindByPath` of the empty path, with the
 path `/`, and never in a listing. It checks `ErrNotFound` on every read of a directory that does
-not exist; `Create` against the baseline, the row with the table's defaults and the name stored
-composed, the same name allowed under another parent, and a file of the same name no conflict;
-`Create`'s and `Ensure`'s refusals, by sentinel and constraint or in the same text, those before
-any SQL leaving no row, and a name a deleting directory holds refused to both with that
-directory's `DeletingError`, not `ErrNameTaken`; `Ensure` creating the row under a supplied id,
-and later calls in either spelling, under another supplied id, and inside a transaction finding
-the same row and creating nothing; the concurrent `Ensure`, with and without one id supplied to
-both callers, where exactly one caller creates the row, both return it, and the parent holds one
-row of the name; `FindByName` finding either spelling, not finding a file of the same name, and
-refusing a name `ValidateName` refuses with a `NameError` before any SQL; `Delete` of the root, of
-a directory with a child, a file, or a deleting file, of one a consumer's row references, of a
-missing one, and of an empty one, whose name is then free; and every read of a directory, a
-listing included, returning its timestamps in `time.UTC`.
+not exist, and that every read of a directory, a listing included, returns its timestamps in
+`time.UTC`. It checks `Create` against the baseline: the row with the table's defaults and the
+name stored composed, the same name allowed under another parent, and a file of the same name no
+conflict. `Create`'s and `Ensure`'s refusals match by sentinel and constraint or in the same text,
+those before any SQL leave no row, and a name a deleting directory holds is refused to both with
+that directory's `DeletingError`, not `ErrNameTaken`. `Ensure` creates the row under a supplied
+id, and later calls in either spelling, under another supplied id, and inside a transaction find
+the same row and create nothing. In the concurrent `Ensure`, exactly one caller creates the row,
+both return it, and the parent holds one row of the name. `FindByName` finds either spelling,
+does not find a file of the same name, and refuses a name `ValidateName` refuses with a
+`NameError` before any SQL. The group also checks `Delete` of the root, of a directory with a
+child, a file, or a deleting file, of one a consumer's row references, of a missing one, and of
+an empty one, whose name is then free.
 
 Paths checks `FindByPath` through the variant under test against the baseline over a chain six
 directories deep, from the chain's top, from the root, and from midway, and a segment in either
@@ -978,6 +978,27 @@ of an id that never existed included; a rollback; the version-guarded `Delete`; 
 whose delete has not begun, `ErrNotDeleting`; and `Purge` of a row a consumer's row references,
 `ErrReferenced` over the consumer's constraint and never `ErrNotEmpty`, which a retry finishes once
 the reference goes.
+
+Protocols runs the protocols end to end over an in-memory object store, each case over the
+store under test and then the baseline. It checks `Store.WriteFile`'s success; a failed put,
+which frees the name; a completion refused by a mark made during the put, after which the write
+deletes the object it put and leaves the row to the sweep; the completion hook's writes
+committing with the row, and a hook's error rolling them back; a refusing begin; and the refusal
+of an available row and of a name a deleting row holds, which reports the holder's
+`DeletingError` and leaves the begin's transaction usable. It checks `Store.EnsureFile` creating,
+returning an available row, resuming a pending one, and refusing a name held under another id or
+a deleting row; a second `EnsureFile` completing the shared row during the first one's put; an
+insert lost to a row a competing writer committed, which `EnsureFile` resumes; and the completion
+hook running once for the call that completes the file, not at all over an available row or for
+the writer whose completion lost, and its error, even one wrapping a lost race's sentinel,
+rolling the completion back and leaving no row. It checks `Store.RemoveFile`, its retry once
+finished, and a refusing pick; the delete hook running once in the transaction that marks the
+file deleting, its writes committing, no hook for a retry over a row already deleting, and a
+hook's error rolling the delete back with the row as it was and its object in place;
+`Store.RemoveFileID`'s failed object delete and retry; `Store.PurgeFile` after the caller's own
+`Files.Delete`; and `SweepUntilDone` draining a backlog larger than one batch in counted passes,
+and running no pass once stopped. Protocols runs before any group marks a branch, and it sweeps
+the branches it marks itself.
 
 Holds checks that a hold, plain and at the row's version, changes nothing, the version included,
 and its refusals; and that `Hold` and `Delete` take the same row lock, whatever statement form the
@@ -1024,28 +1045,6 @@ consumer's migration adds. Its files' `created_at` ties in groups of three, thei
 alternates, and their name order differs from their creation order, so every sort term decides
 some pairs, and neither count is a multiple of the page size, so the last page is partial. A
 store's timestamps must round-trip exactly, or a walk over the ties skips or repeats rows.
-
-Protocols runs the protocols end to end over an in-memory object store, each case over the
-store under test and then the baseline. It checks `Store.WriteFile`'s success; a failed put,
-which frees the name; a completion refused by a mark made during the put, after which the write
-deletes the object it put and leaves the row to the sweep; the completion hook's writes
-committing with the row, and a hook's error rolling them back; a refusing begin; and the refusal
-of an available row and of a name a deleting row holds, which reports the holder's
-`DeletingError` and leaves the begin's transaction usable. It checks `Store.EnsureFile` creating,
-returning an available row, resuming a pending one, and refusing a name held under another id or
-a deleting row; a second `EnsureFile` completing the shared row during the first
-one's put; an insert lost to a row a competing writer committed, which `EnsureFile` resumes;
-and the completion hook running once for the call that completes the file, not at all over an
-available row or for the writer whose completion lost, and its error, even one wrapping a lost
-race's sentinel, rolling the completion back and leaving no row.
-It checks `Store.RemoveFile`, its retry once finished, and a refusing pick; the delete hook
-running once in the transaction that marks the file deleting, its writes committing, no hook
-for a retry over a row already deleting, and a hook's error rolling the delete back with the row
-as it was and its object in place;
-`Store.RemoveFileID`'s failed object delete and retry; `Store.PurgeFile` after the caller's own
-`Files.Delete`; and `SweepUntilDone` draining a backlog larger than one batch in counted passes,
-and running no pass once stopped. Protocols runs before any group marks a branch, and it sweeps
-the branches it marks itself.
 
 Branches checks the mark's counts, its convergence and stragglers, its version guard and its
 retry at any version, its wait on a hold, a file move out of the branch racing the mark in both

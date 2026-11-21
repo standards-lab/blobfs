@@ -1,7 +1,7 @@
 # Development
 
-The reasoning behind the repository's configuration: the module list, the check, the SQL
-conventions, the tests, and the development stack. The [README](../README.md#development) lists
+This page explains the reasoning behind the repository's configuration: the module list, the
+check, the SQL conventions, the tests, and the development stack. The [README](../README.md#development) lists
 the tasks.
 
 ## Modules

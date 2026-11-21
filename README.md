@@ -24,13 +24,15 @@ model.
 ## Documentation
 
 1. [Concepts](docs/concepts.md): the tree over opaque keys, the write and delete protocols,
-   moves, listings, the delete of a branch and its sweep, and how engines and ownership fit
-   around the library, and the assumptions the design rests on.
+   moves, listings, the delete of a branch and its sweep, how engines and ownership fit around
+   the library, and the assumptions the design rests on.
 2. [Quick start](docs/quick-start.md): a working program from `go get` to a composition against
    PostgreSQL and an object store, tested without a database and against one.
 3. [Features](docs/features.md): every operation, refusal, and schema object, package by
    package, in the detail needed to use them without reading the source.
 4. [Glossary](docs/glossary.md): the vocabulary the library introduces, by layer.
+5. [Development](docs/development.md): the reasoning behind the repository's configuration, its
+   check, its tests, and its development stack.
 
 The package documentation, `go doc github.com/standards-lab/blobfs/...`, is the reference for
 each exported name.
