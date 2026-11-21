@@ -15,16 +15,10 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// listAll is the request for a whole listing in the default order with
-// the total.
 func listAll() query.Directives { return query.Directives{} }
 
-// firstPage is page 1 at size.
 func firstPage(size int) query.Page { return query.Page{Number: 1, Size: size} }
 
-// listing checks the two listings, Directories.List and Files.List with
-// their Continue, against the rows a plain query returns, and the page,
-// total, and cursor rules the query library composes for them.
 func (s *suite) listing(t *testing.T) {
 	f := s.seedListing(t)
 	t.Run("FilesMatchAPlainQuery", func(t *testing.T) { s.filesMatchAPlainQuery(t, f) })
@@ -36,18 +30,11 @@ func (s *suite) listing(t *testing.T) {
 	t.Run("CursorIsAPosition", func(t *testing.T) { s.cursorIsAPosition(t, f) })
 }
 
-// listingFixture is the listing group's tree: directories at four depths
-// below one top directory, with file names repeated across directories so
-// a listing that leaked past its directory would show.
 type listingFixture struct {
-	top blobfs.Directory
-	// dirs is every active directory of the fixture by its path below
-	// top, the empty path for top itself.
+	top  blobfs.Directory
 	dirs map[string]string
 }
 
-// seedListing builds the listing fixture, with files of every status,
-// sizes that tie, and a directory marked deleting.
 func (s *suite) seedListing(t *testing.T) listingFixture {
 	t.Helper()
 	top := s.mkdir(t, "listing-"+t.Name())
@@ -77,9 +64,6 @@ func (s *suite) seedListing(t *testing.T) listingFixture {
 			s.insertFile(t, f.dirs[path], n, status)
 		}
 	}
-	// A marked branch in d1, which a listing hides by default and shows
-	// with IncludeDeleting. It is not in dirs: its own listing is
-	// ErrDeleting, which the Branches group checks.
 	marked := s.mkdirUnder(t, f.dirs[d1], "a-marked")
 	s.mkdirUnder(t, marked.ID, "a-child")
 	s.insertFile(t, marked.ID, "a1", blobfs.StatusAvailable)
@@ -89,18 +73,12 @@ func (s *suite) seedListing(t *testing.T) listingFixture {
 	return f
 }
 
-// listingSort is one sort the listing group checks, with the ORDER BY of
-// the plain query that must return the same rows.
 type listingSort struct {
 	label   string
 	orderBy string
 	sort    []query.Sort
 }
 
-// fileSorts are the file sorts the listing group checks, each with the
-// ORDER BY of the plain query that must return the same rows: by name in
-// both directions, by a nullable field, and by created_at, each with the
-// name appended as the tie-breaker.
 var fileSorts = []listingSort{
 	{"name", "f.name", nil},
 	{"name desc", "f.name DESC", []query.Sort{{Field: "name", Descending: true}}},
@@ -109,10 +87,6 @@ var fileSorts = []listingSort{
 	{"created_at desc then name desc", "f.created_at DESC, f.name DESC", []query.Sort{{Field: "created_at", Descending: true}}},
 }
 
-// fileFilters are the file filters the listing group checks, each with
-// the predicate of the plain query and its argument: none, a LIKE on the
-// name, a status, the status the listing hides by default, and a null
-// size.
 var fileFilters = []struct {
 	label     string
 	predicate string
@@ -126,22 +100,17 @@ var fileFilters = []struct {
 	{"size null", "f.size IS NULL", nil, []query.Filter{{Field: "size", Op: query.OpIsNull}}},
 }
 
-// listingMode is one way a listing is called: by default, which hides
-// deleting rows, or with the options that show them.
 type listingMode struct {
 	label string
 	hides bool
 	opts  data.ListOptions
 }
 
-// listingModes are the two ways a listing is called.
 var listingModes = []listingMode{
 	{"by default", true, data.ListOptions{}},
 	{"with IncludeDeleting", false, data.ListOptions{IncludeDeleting: true}},
 }
 
-// plain is the predicate the plain query over alias adds in the mode:
-// deleting rows excluded when the mode hides them, and nothing otherwise.
 func (m listingMode) plain(alias string) string {
 	if !m.hides {
 		return ""
@@ -149,9 +118,6 @@ func (m listingMode) plain(alias string) string {
 	return " AND " + alias + ".status <> 'deleting'"
 }
 
-// filesMatchAPlainQuery checks the file listing, by default and with
-// IncludeDeleting, under every sort, filter, and page size, against the
-// rows and count of a plain query, counted and not.
 func (s *suite) filesMatchAPlainQuery(t *testing.T, f listingFixture) {
 	p := s.db.Dialect().Placeholder
 	dirs := maps.Clone(f.dirs)
@@ -188,17 +154,12 @@ func (s *suite) filesMatchAPlainQuery(t *testing.T, f listingFixture) {
 	}
 }
 
-// directorySorts are the directory sorts the listing group checks: by
-// name in both directions and by created_at.
 var directorySorts = []listingSort{
 	{"name", "d.name", nil},
 	{"name desc", "d.name DESC", []query.Sort{{Field: "name", Descending: true}}},
 	{"created_at then name", "d.created_at, d.name", []query.Sort{{Field: "created_at"}}},
 }
 
-// directoriesMatchAPlainQuery checks the directory listing the same way,
-// by default and with IncludeDeleting, under every directory sort, with
-// and without a LIKE filter.
 func (s *suite) directoriesMatchAPlainQuery(t *testing.T, f listingFixture) {
 	dirs := maps.Clone(f.dirs)
 	dirs["missing"] = blobfs.NewID()
@@ -209,8 +170,6 @@ func (s *suite) directoriesMatchAPlainQuery(t *testing.T, f listingFixture) {
 	}
 }
 
-// directoriesUnder is one directory's part of directoriesMatchAPlainQuery,
-// in one listing mode.
 func (s *suite) directoriesUnder(t *testing.T, mode listingMode, path, dir string) {
 	p := s.db.Dialect().Placeholder
 	for _, like := range []string{"", "a%"} {
@@ -253,9 +212,6 @@ func (s *suite) directoriesUnder(t *testing.T, mode listingMode, path, dir strin
 	}
 }
 
-// fileOffsetWalk reads the file listing of dir page by page until no More,
-// checking each page's rows and total, and returns the ids and the total,
-// query.NoTotal when the pages carried none.
 func (s *suite) fileOffsetWalk(t *testing.T, dir string, req query.Directives, size int, opts data.ListOptions) ([]string, int) {
 	t.Helper()
 	var ids []string
@@ -291,8 +247,6 @@ func (s *suite) fileOffsetWalk(t *testing.T, dir string, req query.Directives, s
 	return nil, 0
 }
 
-// pageBoundaries checks More, the total, and the cursor at the exact page
-// boundaries, counted and not, and for a sort a cursor cannot continue.
 func (s *suite) pageBoundaries(t *testing.T) {
 	top := s.mkdir(t, "boundaries-"+t.Name())
 	three := s.mkdirUnder(t, top.ID, "three").ID
@@ -357,8 +311,6 @@ func (s *suite) pageBoundaries(t *testing.T) {
 	check("directories by parent_id at size 2", 2, 3, true, false, len(dirs.Items), dirs.Total, dirs.More, dirs.Next)
 }
 
-// emptyPages checks the counted total of an empty first page, a page past
-// the last, and an empty continued page, and a continued page's total.
 func (s *suite) emptyPages(t *testing.T) {
 	dir := s.mkdir(t, "empty-pages-"+t.Name())
 	empty, err := s.store.Files.List(s.ctx, s.db, dir.ID, listAll(), firstPage(5), data.ListOptions{})
@@ -393,9 +345,6 @@ func (s *suite) emptyPages(t *testing.T) {
 	}
 }
 
-// totalUnderConcurrentInserts checks a page's total agrees with its rows
-// while another connection inserts, on the pool and inside a read-only
-// repeatable-read transaction, whose pages keep its snapshot.
 func (s *suite) totalUnderConcurrentInserts(t *testing.T) {
 	dir := s.mkdir(t, "busy-"+t.Name()).ID
 	for _, n := range []string{"a", "b", "c"} {

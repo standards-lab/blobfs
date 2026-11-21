@@ -15,9 +15,6 @@ import (
 	"github.com/standards-lab/blobfs/data/datatest"
 )
 
-// filesIn scripts one page of available file rows in directory, one per
-// name, with ids derived from the names. A test under query.TotalExact
-// wraps it with sqltest.WithTotal; a TotalNone page scripts it unwrapped.
 func filesIn(directory string, names ...string) sqltest.Response {
 	size, etag := int64(4), "etag"
 	var rows []blobfs.File
@@ -29,7 +26,6 @@ func filesIn(directory string, names ...string) sqltest.Response {
 	return datatest.FileRows(rows...)
 }
 
-// fileNames returns the names of a page's files, in order.
 func fileNames(c query.Collection[blobfs.File]) []string {
 	var out []string
 	for _, f := range c.Items {
@@ -38,8 +34,6 @@ func fileNames(c query.Collection[blobfs.File]) []string {
 	return out
 }
 
-// TestListFiles checks List and Continue over one directory's files: the
-// filters, the count, the order, the cursor, and the directory's read.
 func TestListFiles(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,
@@ -69,8 +63,6 @@ func TestListFiles(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("ran %d pages, want one per call", len(calls))
 	}
-	// The caller's filter, then the one hiding deleting rows, under the
-	// count, ordered by the caller's sort with the name breaking ties.
 	wantClauses(t, "page", calls[0].SQL, countWindow, "q.status = CAST($2 AS text)", hideDeleting(3), "ORDER BY q.updated_at, q.name OFFSET")
 	if !slices.Equal(calls[0].Args, []any{parentID, "available", "deleting", 0, 3}) {
 		t.Errorf("page bound %v, want the directory, the filter, the hidden status, and the paging", calls[0].Args)
@@ -83,8 +75,6 @@ func TestListFiles(t *testing.T) {
 	}
 }
 
-// TestListFilesEmptyPage checks an empty first page reports 0 and an empty
-// later page reports query.NoTotal.
 func TestListFilesEmptyPage(t *testing.T) {
 	ctx := context.Background()
 	s, db, _ := openStore(t, fallback, sqltest.WithTotal(filesIn(parentID), 0), listed())
@@ -106,8 +96,6 @@ func TestListFilesEmptyPage(t *testing.T) {
 	}
 }
 
-// TestFilesNullableSort proves a sort by size or etag, null until a write
-// completes, pages by number with More but carries no cursor.
 func TestFilesNullableSort(t *testing.T) {
 	for _, field := range []string{"size", "etag"} {
 		t.Run(field, func(t *testing.T) {
@@ -124,8 +112,6 @@ func TestFilesNullableSort(t *testing.T) {
 	}
 }
 
-// TestListFilesRefusesUndeclaredFields checks the object key is refused as
-// a filter and a sort before any SQL.
 func TestListFilesRefusesUndeclaredFields(t *testing.T) {
 	s, db, rec := openStore(t, fallback)
 	for _, req := range []query.Directives{
@@ -143,8 +129,6 @@ func TestListFilesRefusesUndeclaredFields(t *testing.T) {
 	}
 }
 
-// TestListFilesDeleting checks the hiding filter, the refusal of a
-// deleting directory, and IncludeDeleting.
 func TestListFilesDeleting(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,

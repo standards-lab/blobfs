@@ -15,8 +15,6 @@ type KeyValidator interface {
 	ValidateKey(key string) error
 }
 
-// fallbackSegment stands in for a name the sanitizer emptied out, such as a
-// name made only of dots or whitespace.
 const fallbackSegment = "file"
 
 // SanitizeFilename turns a display name into the filename segment of a key.

@@ -12,7 +12,6 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// directories checks the Directories handle's reads, creates, and deletes.
 func (s *suite) directories(t *testing.T) {
 	t.Run("Root", s.root)
 	t.Run("NotFound", s.directoryNotFound)
@@ -26,10 +25,6 @@ func (s *suite) directories(t *testing.T) {
 	t.Run("ReadsInUTC", s.directoryReadsInUTC)
 }
 
-// directoryReadsInUTC checks every read of a directory returns its
-// timestamps in time.UTC, whatever the session's zone and time.Local: the
-// created row, Find, FindByName, FindByPath, Ensure of an existing row,
-// and a listing.
 func (s *suite) directoryReadsInUTC(t *testing.T) {
 	parent := s.mkdir(t, "utc-"+t.Name())
 	created := s.mkdirUnder(t, parent.ID, "child")
@@ -64,10 +59,6 @@ func (s *suite) directoryReadsInUTC(t *testing.T) {
 	wantUTC(t, "List", c.Items[0].CreatedAt, c.Items[0].UpdatedAt)
 }
 
-// root checks the seeded root as the store reads it: the row with
-// blobfs.RootID, no parent, and the name /, at version 1, reached by Find
-// and by FindByPath of the empty path, with the path /, and never in a
-// listing.
 func (s *suite) root(t *testing.T) {
 	root := s.directory(t, blobfs.RootID)
 	if root.ID != blobfs.RootID || root.ParentID != nil || root.Name != "/" || !root.IsRoot() || root.Version != 1 || root.CreatedAt.IsZero() {
@@ -92,8 +83,6 @@ func (s *suite) root(t *testing.T) {
 	}
 }
 
-// directoryNotFound checks blobfs.ErrNotFound on every read of a directory
-// that does not exist.
 func (s *suite) directoryNotFound(t *testing.T) {
 	id := blobfs.NewID()
 	if _, err := s.store.Directories.Find(s.ctx, s.db, id); !errors.Is(err, blobfs.ErrNotFound) {
@@ -113,10 +102,6 @@ func (s *suite) directoryNotFound(t *testing.T) {
 	}
 }
 
-// createDirectory checks Create against the baseline: the row as the
-// database holds it, with the table's defaults and the name stored
-// normalized, the same shape through both stores, the same name allowed
-// under another parent, and a file of the same name no conflict.
 func (s *suite) createDirectory(t *testing.T) {
 	parent := s.mkdir(t, "create-"+t.Name())
 	id := blobfs.NewID()
@@ -147,10 +132,6 @@ func (s *suite) createDirectory(t *testing.T) {
 	}
 }
 
-// createDirectoryRefusals checks Create's and Ensure's refusals against the
-// baseline, by sentinel and constraint or in the same text, and the
-// refusals before any SQL, which leave no row. A name a deleting directory
-// holds is that directory's DeletingError to both, not ErrNameTaken.
 func (s *suite) createDirectoryRefusals(t *testing.T) {
 	parent := s.mkdir(t, "refusals-"+t.Name())
 	taken := s.mkdirUnder(t, parent.ID, composed)
@@ -158,8 +139,6 @@ func (s *suite) createDirectoryRefusals(t *testing.T) {
 	if _, err := s.mark(s.store, held.ID, data.VersionOptions{}); err != nil {
 		t.Fatalf("MarkDeleting: %v", err)
 	}
-	// The marked branch is removed once the refusals ran, so no later
-	// group's sweep finds it.
 	t.Cleanup(func() {
 		if err := s.store.Directories.Delete(s.ctx, s.db, held.ID, data.VersionOptions{}); err != nil {
 			t.Errorf("remove the deleting holder: %v", err)
@@ -193,7 +172,6 @@ func (s *suite) createDirectoryRefusals(t *testing.T) {
 			found, created, err := s.store.Directories.Ensure(s.ctx, s.db, c.parent, c.dir, c.opts)
 			_, _, base = s.baseline.Directories.Ensure(s.ctx, s.db, c.parent, c.dir, c.opts)
 			if c.want == blobfs.ErrNameTaken {
-				// The lookup runs first, so the taken name is found.
 				if err != nil || base != nil || created || !equalDirectory(found, taken) {
 					t.Errorf("Ensure of a taken name = %+v, %v, %v and %v on the baseline, want the row found", found, created, err, base)
 				}
@@ -201,7 +179,6 @@ func (s *suite) createDirectoryRefusals(t *testing.T) {
 			}
 			wantRefusal(t, err, c.want, c.constraint)
 			if c.want == blobfs.ErrDeleting {
-				// The lookup finds the deleting holder and refuses it alike.
 				wantDeletingKind(t, err, true, held.ID)
 			}
 			wantSameError(t, err, base)
@@ -234,10 +211,6 @@ func (s *suite) createDirectoryRefusals(t *testing.T) {
 	})
 }
 
-// ensureDirectory checks Ensure on both stores: the first call creates
-// the row under a supplied id, and later calls in either spelling, under
-// another supplied id, and inside a transaction find the same row and
-// create nothing.
 func (s *suite) ensureDirectory(t *testing.T) {
 	parent := s.mkdir(t, "ensure-"+t.Name())
 	for _, tier := range []struct {
@@ -271,16 +244,10 @@ func (s *suite) ensureDirectory(t *testing.T) {
 	}
 }
 
-// ensureDirectoryConcurrent checks the race on the pool, forced through
-// racingPool: exactly one caller creates the row, both return it, the
-// lookup runs a third time, and the parent holds one row of the name.
 func (s *suite) ensureDirectoryConcurrent(t *testing.T) {
 	s.ensureDirectoryRace(t, data.CreateOptions{})
 }
 
-// ensureDirectoryConcurrentUnderOneID checks the race of two callers that
-// supply one id, whose loser may fail the primary key before the name's
-// constraint: both return the row under the id.
 func (s *suite) ensureDirectoryConcurrentUnderOneID(t *testing.T) {
 	id := blobfs.NewID()
 	if d := s.ensureDirectoryRace(t, data.CreateOptions{ID: id}); d.ID != id {
@@ -288,8 +255,6 @@ func (s *suite) ensureDirectoryConcurrentUnderOneID(t *testing.T) {
 	}
 }
 
-// ensureDirectoryRace forces two Ensure calls under opts to race and
-// returns the row they share.
 func (s *suite) ensureDirectoryRace(t *testing.T, opts data.CreateOptions) blobfs.Directory {
 	parent := s.mkdir(t, "ensure-concurrent-"+t.Name())
 	pool := s.racingPool(t, "directory_by_name")
@@ -332,9 +297,6 @@ func (s *suite) ensureDirectoryRace(t *testing.T, opts data.CreateOptions) blobf
 	return results[0]
 }
 
-// findDirectoryByName checks FindByName: either spelling finds the row
-// stored composed, a file of the same name is not found, and a name
-// ValidateName refuses is a NameError before any SQL.
 func (s *suite) findDirectoryByName(t *testing.T) {
 	parent := s.mkdir(t, "by-name-"+t.Name())
 	cafe := s.mkdirUnder(t, parent.ID, composed)
@@ -353,9 +315,6 @@ func (s *suite) findDirectoryByName(t *testing.T) {
 	}
 }
 
-// deleteDirectory checks Delete against the schema: the root, a directory
-// with a child, a file, or a deleting file, one a consumer's row
-// references, a missing one, and an empty one removed, its name then free.
 func (s *suite) deleteDirectory(t *testing.T) {
 	guarded := s.mkdir(t, "delete-guarded-"+t.Name())
 	if err := s.store.Directories.Delete(s.ctx, s.db, guarded.ID, data.VersionOptions{Version: guarded.Version + 1}); !errors.Is(err, query.ErrVersionMismatch) {

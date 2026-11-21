@@ -14,47 +14,37 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// The two spellings of one name, built from code points so that no editor
-// can normalize the fixtures: é as one code point, and e followed by a
-// combining acute accent.
-var (
-	composed   = "caf" + string(rune(0x00E9))
-	decomposed = "cafe" + string(rune(0x0301))
+const (
+	precomposedEAcute = '\u00E9'
+	combiningAcute    = '\u0301'
 )
 
-// acceptAll is the key validator the write groups pass: every key is
-// accepted, since no object store is involved.
+var (
+	composed   = "caf" + string(precomposedEAcute)
+	decomposed = "cafe" + string(combiningAcute)
+)
+
 type acceptAll struct{}
 
 func (acceptAll) ValidateKey(string) error { return nil }
 
-// errRefusedKey is what refuseAll reports.
 var errRefusedKey = errors.New("datatest: the store refuses every key")
 
-// refuseAll is a key validator that refuses every key, for the check that
-// a refused key stops a write before any SQL.
 type refuseAll struct{}
 
 func (refuseAll) ValidateKey(string) error { return errRefusedKey }
 
-// object is what the write groups report as the stored object.
 var object = blobfs.Object{Size: 42, ContentType: "text/plain", ETag: `"etag"`}
 
-// name makes a subtest name usable as a directory name: a slash or a
-// backslash in it would be refused or rewritten.
 func name(n string) string {
 	return strings.NewReplacer("/", "-", "\\", "-").Replace(n)
 }
 
-// mkdir creates a directory under the root through the store under test,
-// named from n.
 func (s *suite) mkdir(t *testing.T, n string) blobfs.Directory {
 	t.Helper()
 	return s.mkdirUnder(t, blobfs.RootID, n)
 }
 
-// mkdirUnder creates a directory under a parent through the store under
-// test, named from n.
 func (s *suite) mkdirUnder(t *testing.T, parentID, n string) blobfs.Directory {
 	t.Helper()
 	d, err := s.store.Directories.Create(s.ctx, s.db, parentID, name(n), data.CreateOptions{})
@@ -64,7 +54,6 @@ func (s *suite) mkdirUnder(t *testing.T, parentID, n string) blobfs.Directory {
 	return d
 }
 
-// directory reads the directory row by id through the store, on the pool.
 func (s *suite) directory(t *testing.T, id string) blobfs.Directory {
 	t.Helper()
 	d, err := s.store.Directories.Find(s.ctx, s.db, id)
@@ -74,7 +63,6 @@ func (s *suite) directory(t *testing.T, id string) blobfs.Directory {
 	return d
 }
 
-// file reads the file row by id through the store, on the pool.
 func (s *suite) file(t *testing.T, id string) blobfs.File {
 	t.Helper()
 	f, err := s.store.Files.Find(s.ctx, s.db, id)
@@ -84,10 +72,6 @@ func (s *suite) file(t *testing.T, id string) blobfs.File {
 	return f
 }
 
-// insertFile inserts a file row in status through plain SQL, with the
-// dialect's placeholders, and returns its id. An available row carries a
-// size; a pending or deleting one carries none, as the protocols leave
-// them.
 func (s *suite) insertFile(t *testing.T, dir, n string, status blobfs.Status) string {
 	t.Helper()
 	id := blobfs.NewID()
@@ -106,10 +90,6 @@ func (s *suite) insertFile(t *testing.T, dir, n string, status blobfs.Status) st
 	return id
 }
 
-// insertDirectory inserts an active directory row under parent through
-// plain SQL, with the dialect's placeholders, and returns its id: a
-// straggler, which a create that read its parent as active before a mark
-// committed leaves in a deleting branch.
 func (s *suite) insertDirectory(t *testing.T, parent, n string) string {
 	t.Helper()
 	id := blobfs.NewID()
@@ -121,9 +101,6 @@ func (s *suite) insertDirectory(t *testing.T, parent, n string) string {
 	return id
 }
 
-// insertFileAt inserts an available file row at a fixed created_at and
-// version through plain SQL and returns its id, so a sort by either has
-// ties the key must break.
 func (s *suite) insertFileAt(t *testing.T, dir, n string, at time.Time, version int64) string {
 	t.Helper()
 	id := blobfs.NewID()
@@ -137,8 +114,6 @@ func (s *suite) insertFileAt(t *testing.T, dir, n string, at time.Time, version 
 	return id
 }
 
-// exec runs a statement of the suite's own through the pool, with its
-// placeholders written as the dialect's.
 func (s *suite) exec(t *testing.T, text string, args ...any) {
 	t.Helper()
 	if _, err := s.db.ExecContext(s.ctx, text, args...); err != nil {
@@ -146,7 +121,6 @@ func (s *suite) exec(t *testing.T, text string, args ...any) {
 	}
 }
 
-// count runs a one-value count query through sess.
 func (s *suite) count(t *testing.T, sess sqlate.Session, text string, args ...any) int {
 	t.Helper()
 	rows, err := sess.QueryContext(s.ctx, text, args...)
@@ -164,8 +138,6 @@ func (s *suite) count(t *testing.T, sess sqlate.Session, text string, args ...an
 	return n
 }
 
-// column runs a one-column query and returns its values as text, in the
-// query's order.
 func (s *suite) column(t *testing.T, text string, args ...any) []string {
 	t.Helper()
 	rows, err := s.db.QueryContext(s.ctx, text, args...)
@@ -187,8 +159,6 @@ func (s *suite) column(t *testing.T, text string, args ...any) []string {
 	return out
 }
 
-// beginTx opens a transaction on the pool, failing the test when it
-// cannot.
 func (s *suite) beginTx(t *testing.T, opts *sql.TxOptions) *sqlate.Tx {
 	t.Helper()
 	tx, err := s.db.Begin(s.ctx, opts)
@@ -198,7 +168,6 @@ func (s *suite) beginTx(t *testing.T, opts *sql.TxOptions) *sqlate.Tx {
 	return tx
 }
 
-// wantPath checks Directories.Path of id through the store under test.
 func (s *suite) wantPath(t *testing.T, id, want string) {
 	t.Helper()
 	got, err := s.store.Directories.Path(s.ctx, s.db, id)
@@ -207,41 +176,30 @@ func (s *suite) wantPath(t *testing.T, id, want string) {
 	}
 }
 
-// referenceConstraint is the name of the suite's own foreign key into
-// blobfs_file, which stands in for a consumer's.
 const referenceConstraint = "datatest_fk_reference_file"
 
-// ownerConstraint is the name of the suite's own foreign key into
-// blobfs_directory, which stands in for a consumer's.
 const ownerConstraint = "datatest_fk_owner_directory"
 
-// createFileReferences creates the suite's file reference table, once per
-// run: one column of the same type as blobfs_file.id, taken from the
-// migrated table so the DDL names no engine type, under a foreign key to
-// blobfs_file.
 func (s *suite) createFileReferences(t *testing.T) {
 	t.Helper()
-	if s.fileReferences {
+	if s.fileReferenceTableCreated {
 		return
 	}
-	s.fileReferences = true
+	s.fileReferenceTableCreated = true
 	s.exec(t, "CREATE TABLE datatest_reference AS SELECT f.id AS file_id FROM blobfs_file f WHERE 1 = 0")
 	s.exec(t, "ALTER TABLE datatest_reference ADD CONSTRAINT "+referenceConstraint+" FOREIGN KEY (file_id) REFERENCES blobfs_file (id)")
 }
 
-// createDirectoryReferences creates the suite's directory reference table,
-// once per run, the same way.
 func (s *suite) createDirectoryReferences(t *testing.T) {
 	t.Helper()
-	if s.directoryReferences {
+	if s.directoryReferenceTableCreated {
 		return
 	}
-	s.directoryReferences = true
+	s.directoryReferenceTableCreated = true
 	s.exec(t, "CREATE TABLE datatest_owner AS SELECT d.id AS directory_id FROM blobfs_directory d WHERE 1 = 0")
 	s.exec(t, "ALTER TABLE datatest_owner ADD CONSTRAINT "+ownerConstraint+" FOREIGN KEY (directory_id) REFERENCES blobfs_directory (id)")
 }
 
-// reference inserts a row that references the file with id, through sess.
 func (s *suite) reference(t *testing.T, sess sqlate.Session, id string) {
 	t.Helper()
 	if _, err := sess.ExecContext(s.ctx, "INSERT INTO datatest_reference (file_id) VALUES ("+s.db.Dialect().Placeholder(1)+")", id); err != nil {
@@ -249,33 +207,27 @@ func (s *suite) reference(t *testing.T, sess sqlate.Session, id string) {
 	}
 }
 
-// unreference removes the rows that reference the file with id.
 func (s *suite) unreference(t *testing.T, id string) {
 	t.Helper()
 	s.exec(t, "DELETE FROM datatest_reference WHERE file_id = "+s.db.Dialect().Placeholder(1), id)
 }
 
-// references counts the rows that reference the file with id.
 func (s *suite) references(t *testing.T, id string) int {
 	t.Helper()
 	return s.count(t, s.db, "SELECT COUNT(*) FROM datatest_reference WHERE file_id = "+s.db.Dialect().Placeholder(1), id)
 }
 
-// equalDirectory compares two rows field by field, timestamps by instant.
 func equalDirectory(a, b blobfs.Directory) bool {
 	return a.ID == b.ID && equalString(a.ParentID, b.ParentID) && a.Name == b.Name && a.Status == b.Status &&
 		a.Version == b.Version && a.CreatedAt.Equal(b.CreatedAt) && a.UpdatedAt.Equal(b.UpdatedAt)
 }
 
-// equalFile compares two rows field by field, timestamps by instant.
 func equalFile(a, b blobfs.File) bool {
 	return a.ID == b.ID && a.DirectoryID == b.DirectoryID && a.Name == b.Name && a.Status == b.Status &&
 		a.Key == b.Key && equalInt(a.Size, b.Size) && a.ContentType == b.ContentType && equalString(a.ETag, b.ETag) &&
 		a.Version == b.Version && a.CreatedAt.Equal(b.CreatedAt) && a.UpdatedAt.Equal(b.UpdatedAt)
 }
 
-// wantUTC checks a row's timestamps are in time.UTC, as blobfs returns
-// every File and Directory whatever time.Local is; what names the read.
 func wantUTC(t *testing.T, what string, createdAt, updatedAt time.Time) {
 	t.Helper()
 	if createdAt.Location() != time.UTC || updatedAt.Location() != time.UTC {
@@ -283,8 +235,6 @@ func wantUTC(t *testing.T, what string, createdAt, updatedAt time.Time) {
 	}
 }
 
-// sameFileShape compares two file rows on every column that does not
-// identify the row or carry a clock.
 func sameFileShape(a, b blobfs.File) bool {
 	return a.DirectoryID == b.DirectoryID && a.Status == b.Status && equalInt(a.Size, b.Size) &&
 		a.ContentType == b.ContentType && equalString(a.ETag, b.ETag) && a.Version == b.Version
@@ -298,10 +248,6 @@ func equalString(a, b *string) bool {
 	return (a == nil && b == nil) || (a != nil && b != nil && *a == *b)
 }
 
-// wantViolation checks err is want as a blobfs.ViolationError over the
-// named constraint, with the sqlate.ConstraintError reachable, and that
-// its message names the sentinel and the constraint and nothing the
-// driver said.
 func wantViolation(t *testing.T, err, want error, constraint string) {
 	t.Helper()
 	var ve *blobfs.ViolationError
@@ -315,9 +261,6 @@ func wantViolation(t *testing.T, err, want error, constraint string) {
 	}
 }
 
-// wantRefusal checks err is want: over the named constraint as wantViolation
-// does, or, with no constraint, a refusal the store classified by reading a
-// row, which is no blobfs.ViolationError.
 func wantRefusal(t *testing.T, err, want error, constraint string) {
 	t.Helper()
 	if constraint != "" {
@@ -330,8 +273,6 @@ func wantRefusal(t *testing.T, err, want error, constraint string) {
 	}
 }
 
-// wantSameError checks the baseline refused the same way, in text, as the
-// store under test did.
 func wantSameError(t *testing.T, got, base error) {
 	t.Helper()
 	if got == nil || base == nil {

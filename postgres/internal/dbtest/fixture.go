@@ -30,8 +30,10 @@ type Sizes struct {
 // chain of directories l1/l2/.../ln below the root for path resolution, one
 // directory big whose files were inserted first and so sit on contiguous
 // heap pages, and Directories more directories attached at random below the
-// chain's first levels, each holding a share of OtherFiles. Every id is a
-// blobfs id, and the rows are inserted in bulk through unnest.
+// chain's first three levels or below one another, each holding a share of
+// OtherFiles, so most of them are shallow and the chain stays the deepest
+// path. Every id is a blobfs id, and the rows are inserted in bulk through
+// unnest.
 type Tree struct {
 	Sizes Sizes
 	// Chain holds the chain's directories by depth, Chain[0] at depth 1.
@@ -77,9 +79,6 @@ func SeedTree(ctx context.Context, t testing.TB, db *sqlate.DB, sizes Sizes) Tre
 		parent = d.ID
 	}
 	tr.Big = add(blobfs.RootID, "big")
-	// The other directories attach below the chain's first three levels or
-	// below one another, so most of them are shallow and the chain stays
-	// the deepest path.
 	attach := []string{blobfs.RootID, tr.Chain[0].ID, tr.Chain[1].ID, tr.Chain[2].ID}
 	for i := range sizes.Directories {
 		d := add(attach[rng.IntN(len(attach))], "d"+strconv.Itoa(i))

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // Explainer runs EXPLAIN (ANALYZE, BUFFERS) for the cost assertions. It
@@ -41,13 +41,13 @@ func NewExplainer(t testing.TB, dsn string) *Explainer {
 
 // Plan is one explained statement: the plan text as EXPLAIN printed it
 // and the top node's shared buffers, hit and read added, in 8 KB pages.
+// The top node's buffers are the plan's first Buffers line; the
+// planner's own come after the tree, under Planning, and are not counted.
 type Plan struct {
 	Text    string
 	Buffers int
 }
 
-// buffersRe matches the first Buffers line, which belongs to the top
-// node; the planner's own buffers come after the tree, under Planning.
 var buffersRe = regexp.MustCompile(`Buffers: shared( hit=(\d+))?( read=(\d+))?`)
 
 // Explain runs the statement under EXPLAIN (ANALYZE, BUFFERS) twice, each
@@ -67,8 +67,6 @@ func (e *Explainer) Explain(ctx context.Context, t testing.TB, query string, arg
 	return p
 }
 
-// once runs one explained execution in a rolled-back transaction and
-// returns the plan text.
 func (e *Explainer) once(ctx context.Context, t testing.TB, query string, args ...any) string {
 	t.Helper()
 	tx, err := e.pool.BeginTx(ctx, nil)
@@ -113,14 +111,13 @@ func (p Plan) Lines(s string) []string {
 	return out
 }
 
-// heapScanRe matches a plan node that reads a table's rows: a sequential
-// scan, an index scan in either direction, an index-only scan, or a
-// bitmap heap scan. A bitmap index scan feeds a bitmap heap scan and is
-// not a second read of the table.
 var heapScanRe = regexp.MustCompile(`(Seq Scan|Index Scan|Index Scan Backward|Index Only Scan|Index Only Scan Backward|Bitmap Heap Scan)( using \S+)? on (\S+)`)
 
 // HeapScans counts the plan nodes that read table's rows, so a test can
-// require that a statement reads a table once.
+// require that a statement reads a table once: sequential scans, index
+// scans in either direction, index-only scans, and bitmap heap scans. A
+// bitmap index scan feeds a bitmap heap scan and is not a second read of
+// the table.
 func (p Plan) HeapScans(table string) int {
 	n := 0
 	for _, m := range heapScanRe.FindAllStringSubmatch(p.Text, -1) {

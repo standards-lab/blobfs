@@ -17,11 +17,7 @@ import (
 	"github.com/standards-lab/blobfs/postgres/internal/dbtest"
 )
 
-// forms are the two forms a returning command runs in on PostgreSQL: the
-// single-statement form under sqlate's postgres dialect, which renders
-// RETURNING, and the fallback, the command followed by its read, under the
-// same dialect with its capabilities hidden.
-var forms = []struct {
+var returningForms = []struct {
 	name    string
 	dialect sqlate.Dialect
 }{
@@ -29,12 +25,8 @@ var forms = []struct {
 	{"Fallback", fallback{sqlatepg.Dialect{}}},
 }
 
-// TestConformance runs the conformance suite over both returning-command
-// forms and both variants, the baseline and Engine's, each in a database
-// of its own under the engine's pattern overlay, and once more over the
-// engine with the library's own patterns, for the standard keyset spelling.
 func TestConformance(t *testing.T) {
-	for _, form := range forms {
+	for _, form := range returningForms {
 		for _, variant := range []string{"Standard", "Postgres"} {
 			t.Run(form.name+"/"+variant, func(t *testing.T) {
 				t.Parallel()
@@ -48,9 +40,6 @@ func TestConformance(t *testing.T) {
 	})
 }
 
-// conform runs the suite in a throwaway database under dialect, with the
-// catalog built from patterns and blobfs's own, over the PostgreSQL engine
-// or the baseline.
 func conform(t *testing.T, dialect sqlate.Dialect, patterns query.Source, native bool) {
 	d := pgtest.Migrated(t, dbtest.Env, dbtest.Prefix, dbtest.Migrations(t))
 	c, err := query.NewCatalog(patterns, data.Patterns())
@@ -68,14 +57,9 @@ func conform(t *testing.T, dialect sqlate.Dialect, patterns query.Source, native
 	if store.Directories.Serializes() != native {
 		t.Fatalf("the store reports Serializes %v over the %s", store.Directories.Serializes(), map[bool]string{true: "Postgres engine", false: "baseline"}[native])
 	}
-	// The suite runs under dialect, which may be the fallback wrapper
-	// rather than postgres.Dialect, so the pool is wrapped here, not
-	// through Database.Session.
 	datatest.Run(t, sqlate.Wrap(d.Pool, dialect), c, engine)
 }
 
-// TestTreeLockIsAnAdvisoryLock checks LockTree takes a transaction-scoped
-// advisory lock under TreeLockKey, seen in pg_locks until commit.
 func TestTreeLockIsAnAdvisoryLock(t *testing.T) {
 	ctx := context.Background()
 	d := pgtest.Migrated(t, dbtest.Env, dbtest.Prefix, dbtest.Migrations(t))
@@ -88,8 +72,6 @@ func TestTreeLockIsAnAdvisoryLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("data.New: %v", err)
 	}
-	// An advisory lock on a bigint key reports its high half as classid and
-	// its low half as objid, with objsubid 1.
 	held := func() int {
 		return dbtest.Int(ctx, t, db, "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND objsubid = 1"+
 			" AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"+

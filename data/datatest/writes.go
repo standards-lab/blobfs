@@ -12,7 +12,6 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// writes checks the write protocol: Create or Ensure, then Complete.
 func (s *suite) writes(t *testing.T) {
 	t.Run("CreateInsertsThePendingRow", s.createFile)
 	t.Run("CreateRefusals", s.createFileRefusals)
@@ -26,10 +25,6 @@ func (s *suite) writes(t *testing.T) {
 	t.Run("SuppliedIDs", s.suppliedFileIDs)
 }
 
-// createFile checks Create against the baseline: the pending row with the
-// key built from the id and the name, the declared content type, no size
-// or entity tag, and the table's defaults; the row the database holds;
-// the name stored composed; and the same shape through both stores.
 func (s *suite) createFile(t *testing.T) {
 	dir := s.mkdir(t, "create-file-"+t.Name())
 	id := blobfs.NewID()
@@ -54,11 +49,6 @@ func (s *suite) createFile(t *testing.T) {
 	}
 }
 
-// createFileRefusals checks Create's and Ensure's refusals against the
-// baseline, by sentinel and constraint or in the same text, and the
-// refusals before any SQL, which leave no row. A name a deleting file
-// holds is that file's DeletingError to Create, not ErrNameTaken, and is
-// found by Ensure.
 func (s *suite) createFileRefusals(t *testing.T) {
 	dir := s.mkdir(t, "create-file-refusals-"+t.Name())
 	taken := s.insertFile(t, dir.ID, "taken.txt", blobfs.StatusAvailable)
@@ -69,8 +59,7 @@ func (s *suite) createFileRefusals(t *testing.T) {
 		opts       data.CreateOptions
 		want       error
 		constraint string
-		// held names the row that holds the name, which Ensure finds.
-		held string
+		heldBy     string
 	}{
 		{"NameTaken", dir.ID, "taken.txt", data.CreateOptions{}, blobfs.ErrNameTaken, blobfs.ConstraintUniqueFileDirectoryName, taken},
 		{"NameHeldByADeletingRow", dir.ID, "deleting.txt", data.CreateOptions{}, blobfs.ErrDeleting, "", holder},
@@ -81,7 +70,7 @@ func (s *suite) createFileRefusals(t *testing.T) {
 			_, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: c.dir, Name: c.file, ContentType: "text/plain"}, c.opts)
 			wantRefusal(t, err, c.want, c.constraint)
 			if c.want == blobfs.ErrDeleting {
-				wantDeletingKind(t, err, false, c.held)
+				wantDeletingKind(t, err, false, c.heldBy)
 				if errors.Is(err, blobfs.ErrNameTaken) {
 					t.Errorf("Create = %v, want the holder's delete and not ErrNameTaken", err)
 				}
@@ -90,10 +79,9 @@ func (s *suite) createFileRefusals(t *testing.T) {
 			wantSameError(t, err, base)
 			found, outcome, err := s.store.Files.Ensure(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: c.dir, Name: c.file, ContentType: "text/plain"}, c.opts)
 			_, _, base = s.baseline.Files.Ensure(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: c.dir, Name: c.file, ContentType: "text/plain"}, c.opts)
-			if c.held != "" {
-				// The lookup runs first, so the held name is found.
-				if err != nil || base != nil || outcome != data.WritePresent || found.ID != c.held {
-					t.Errorf("Ensure of a taken name = %+v, %s, %v and %v on the baseline, want the row present", found, outcome, err, base)
+			if c.heldBy != "" {
+				if err != nil || base != nil || outcome != data.WritePresent || found.ID != c.heldBy {
+					t.Errorf("Ensure of a taken name = %+v, %s, %v and %v on the baseline, want the holder present, found by the lookup that runs before the insert", found, outcome, err, base)
 				}
 				return
 			}
@@ -132,8 +120,6 @@ func (s *suite) createFileRefusals(t *testing.T) {
 	})
 }
 
-// ensureFile checks Ensure's outcomes on both stores: created, resumed,
-// present as available and as deleting, with one row throughout.
 func (s *suite) ensureFile(t *testing.T) {
 	dir := s.mkdir(t, "ensure-file-"+t.Name())
 	for _, tier := range []struct {
@@ -171,15 +157,10 @@ func (s *suite) ensureFile(t *testing.T) {
 	}
 }
 
-// ensureFileConcurrent checks the race on the pool, forced as the
-// directory's is: one caller creates, the other resumes the same row.
 func (s *suite) ensureFileConcurrent(t *testing.T) {
 	s.ensureFileRace(t, data.CreateOptions{})
 }
 
-// ensureFileConcurrentUnderOneID checks the race of two callers that
-// supply one id, whose loser may fail the primary key before the name's
-// constraint: one creates, the other resumes the row under the id.
 func (s *suite) ensureFileConcurrentUnderOneID(t *testing.T) {
 	id := blobfs.NewID()
 	if f := s.ensureFileRace(t, data.CreateOptions{ID: id}); f.ID != id {
@@ -187,8 +168,6 @@ func (s *suite) ensureFileConcurrentUnderOneID(t *testing.T) {
 	}
 }
 
-// ensureFileRace forces two Ensure calls under opts to race and returns
-// the row they share.
 func (s *suite) ensureFileRace(t *testing.T, opts data.CreateOptions) blobfs.File {
 	dir := s.mkdir(t, "ensure-file-concurrent-"+t.Name())
 	pool := s.racingPool(t, "file_by_name")
@@ -236,8 +215,6 @@ func (s *suite) ensureFileRace(t *testing.T, opts data.CreateOptions) blobfs.Fil
 	return results[0]
 }
 
-// completeFile checks Complete against the baseline: the row available at
-// the next version with the object's facts, and nothing else changed.
 func (s *suite) completeFile(t *testing.T) {
 	dir := s.mkdir(t, "complete-"+t.Name())
 	pending, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "complete.txt", ContentType: "application/octet-stream"}, data.CreateOptions{})
@@ -269,10 +246,6 @@ func (s *suite) completeFile(t *testing.T) {
 	}
 }
 
-// completeFileRefusals checks Complete's refusals against the baseline,
-// each leaving the row unchanged; a deleting row is ErrDeleting at its own
-// version and at the one read before a concurrent Delete, the file's own
-// DeletingError.
 func (s *suite) completeFileRefusals(t *testing.T) {
 	dir := s.mkdir(t, "complete-refusals-"+t.Name())
 	available, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "refused.txt", ContentType: "text/plain"}, data.CreateOptions{})
@@ -324,9 +297,6 @@ func (s *suite) completeFileRefusals(t *testing.T) {
 	}
 }
 
-// writeInTransaction checks the write composes into the caller's
-// transaction beside a row that references the pending file: a rollback
-// leaves neither row, a commit both.
 func (s *suite) writeInTransaction(t *testing.T) {
 	s.createFileReferences(t)
 	dir := s.mkdir(t, "in-transaction-"+t.Name())
@@ -367,27 +337,22 @@ func (s *suite) writeInTransaction(t *testing.T) {
 	s.unreference(t, id)
 }
 
-// retryWrite checks the stop between the steps: a write whose caller
-// stops before the object is stored leaves a pending row; a later caller
-// finds the row by name and completes it at the version it read, and the
-// directory then holds the one row, available, with the retry's facts.
 func (s *suite) retryWrite(t *testing.T) {
 	dir := s.mkdir(t, "retry-"+t.Name())
-	first, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "report.pdf", ContentType: "application/pdf"}, data.CreateOptions{})
+	stoppedBeforeThePut, err := s.store.Files.Create(s.ctx, s.db, acceptAll{}, data.FileSpec{DirectoryID: dir.ID, Name: "report.pdf", ContentType: "application/pdf"}, data.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	// The first caller stops here.
 	pending, err := s.store.Files.FindByName(s.ctx, s.db, dir.ID, "report.pdf")
-	if err != nil || pending.ID != first.ID || pending.Status != blobfs.StatusPending {
-		t.Fatalf("the retry found %+v, %v, want the first caller's pending row", pending, err)
+	if err != nil || pending.ID != stoppedBeforeThePut.ID || pending.Status != blobfs.StatusPending {
+		t.Fatalf("the retry found %+v, %v, want the stopped caller's pending row", pending, err)
 	}
 	obj := blobfs.Object{Size: 3, ContentType: "application/pdf", ETag: `"r"`}
 	done, err := s.store.Files.Complete(s.ctx, s.db, pending.ID, pending.Version, obj)
 	if err != nil {
 		t.Fatalf("Complete from the retry: %v", err)
 	}
-	if done.Status != blobfs.StatusAvailable || done.Version != 2 || done.ID != first.ID || *done.Size != 3 {
+	if done.Status != blobfs.StatusAvailable || done.Version != 2 || done.ID != stoppedBeforeThePut.ID || *done.Size != 3 {
 		t.Errorf("the retry completed %+v", done)
 	}
 	if n := s.count(t, s.db, "SELECT COUNT(*) FROM blobfs_file WHERE directory_id = "+s.db.Dialect().Placeholder(1), dir.ID); n != 1 {
@@ -395,9 +360,6 @@ func (s *suite) retryWrite(t *testing.T) {
 	}
 }
 
-// suppliedFileIDs checks a caller-supplied id through the whole protocol:
-// the row and its key under the id, a delete that frees the id, and a
-// write under the same id and name that reuses the same key.
 func (s *suite) suppliedFileIDs(t *testing.T) {
 	dir := s.mkdir(t, "supplied-"+t.Name())
 	id := blobfs.NewID()

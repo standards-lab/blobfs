@@ -18,8 +18,6 @@ import (
 	"github.com/standards-lab/blobfs/data/datatest"
 )
 
-// catalog builds the catalog a consumer builds: the library's patterns and
-// blobfs's, and nothing else.
 func catalog(t *testing.T) *query.Catalog {
 	t.Helper()
 	c, err := query.NewCatalog(query.Patterns(), data.Patterns())
@@ -29,26 +27,19 @@ func catalog(t *testing.T) *query.Catalog {
 	return c
 }
 
-// form is one way a returning command runs: the fallback under
-// sqltest.Dialect, the command and then its read, and the single-statement
-// form under sqltest.ReturningDialect, the command with RETURNING.
 type form struct {
 	name    string
 	dialect sqlate.Dialect
 	single  bool
 }
 
-// forms are the two forms, for a test that runs over both.
 var forms = []form{
 	{"Fallback", sqltest.Dialect{}, false},
 	{"Single", sqltest.ReturningDialect{}, true},
 }
 
-// fallback is the form most tests run under.
 var fallback = forms[0]
 
-// newStore compiles the store against the consumer's catalog under the
-// form's dialect.
 func newStore(t *testing.T, f form, opts data.Options) *data.Store {
 	t.Helper()
 	s, err := data.New(catalog(t), f.dialect, opts)
@@ -58,16 +49,12 @@ func newStore(t *testing.T, f form, opts data.Options) *data.Store {
 	return s
 }
 
-// openStore compiles the store under the form's dialect and opens a
-// scripted pool over the responses.
 func openStore(t *testing.T, f form, responses ...sqltest.Response) (*data.Store, *sqlate.DB, *sqltest.Recorder) {
 	t.Helper()
 	pool, rec := sqltest.Open(t, responses...)
 	return newStore(t, f, data.Options{}), sqlate.Wrap(pool, f.dialect), rec
 }
 
-// begin opens a transaction on db, rolled back when the test ends unless
-// the test commits it first.
 func begin(t *testing.T, db *sqlate.DB) *sqlate.Tx {
 	t.Helper()
 	tx, err := db.Begin(context.Background(), nil)
@@ -77,14 +64,10 @@ func begin(t *testing.T, db *sqlate.DB) *sqlate.Tx {
 	return tx
 }
 
-// directoryResponse scripts one active directory row; an empty parent is
-// the root's NULL.
 func directoryResponse(id, parent, name string, version int64) sqltest.Response {
 	return directoryIn(id, parent, name, blobfs.DirectoryStatusActive, version)
 }
 
-// directoryRow is a directory row in status; an empty parent is the
-// root's nil.
 func directoryRow(id, parent, name string, status blobfs.DirectoryStatus, version int64) blobfs.Directory {
 	now := time.Now()
 	d := blobfs.Directory{ID: id, Name: name, Status: status, Version: version, CreatedAt: now, UpdatedAt: now}
@@ -94,33 +77,30 @@ func directoryRow(id, parent, name string, status blobfs.DirectoryStatus, versio
 	return d
 }
 
-// directoryIn scripts one directory row in status; an empty parent is the
-// root's NULL.
 func directoryIn(id, parent, name string, status blobfs.DirectoryStatus, version int64) sqltest.Response {
 	return datatest.DirectoryRows(directoryRow(id, parent, name, status, version))
 }
 
-// childResponse scripts one directory row under the root at version 1.
 func childResponse(id, name string) sqltest.Response {
 	return directoryResponse(id, blobfs.RootID, name, 1)
 }
 
-// noDirectory scripts a directory read that finds no row.
 func noDirectory() sqltest.Response { return datatest.DirectoryRows() }
 
-// violation scripts a statement refused by constraint under class.
 func violation(constraint string, class error) sqltest.Response {
 	return sqltest.Response{Err: &sqlate.ConstraintError{Constraint: constraint, Class: class, Err: errors.New("duplicate key")}}
 }
 
-// The two spellings of one name, built from code points so that no editor
-// can normalize the fixtures.
-var (
-	nfcName = "caf" + string(rune(0x00E9))  // é as one code point
-	nfdName = "cafe" + string(rune(0x0301)) // e followed by a combining acute
+const (
+	precomposedEAcute = '\u00E9'
+	combiningAcute    = '\u0301'
 )
 
-// ops joins the recorder's calls into one line of op names.
+var (
+	nfcName = "caf" + string(precomposedEAcute)
+	nfdName = "cafe" + string(combiningAcute)
+)
+
 func ops(rec *sqltest.Recorder) string {
 	var out []string
 	for _, op := range rec.Ops() {
@@ -129,7 +109,6 @@ func ops(rec *sqltest.Recorder) string {
 	return strings.Join(out, " ")
 }
 
-// names returns the names of statements, in order.
 func names(stmts []query.Statement) []string {
 	var out []string
 	for _, st := range stmts {
@@ -138,10 +117,6 @@ func names(stmts []query.Statement) []string {
 	return out
 }
 
-// TestNew checks the compiled inventory in each dialect: listed once
-// each in name order, standard tier, and each returning command naming a
-// read in the inventory and carrying its single-statement form exactly
-// where the dialect renders RETURNING.
 func TestNew(t *testing.T) {
 	for _, f := range forms {
 		t.Run(f.name, func(t *testing.T) {
@@ -168,8 +143,6 @@ func TestNew(t *testing.T) {
 	}
 }
 
-// TestPatterns proves the published namespace and its inventory: the two
-// column lists, standard tier and parameter-free, and nothing else.
 func TestPatterns(t *testing.T) {
 	var names []string
 	for _, p := range catalog(t).Patterns() {
@@ -189,8 +162,6 @@ func TestPatterns(t *testing.T) {
 	}
 }
 
-// TestNewWithoutPatterns checks a catalog missing either namespace is
-// refused with an error naming it.
 func TestNewWithoutPatterns(t *testing.T) {
 	c, err := query.NewCatalog(query.Patterns())
 	if err != nil {
@@ -210,8 +181,6 @@ func TestNewWithoutPatterns(t *testing.T) {
 	}
 }
 
-// TestVerify checks Verify prepares every statement, each single-statement
-// form, and each listing's projection probes.
 func TestVerify(t *testing.T) {
 	for _, f := range forms {
 		t.Run(f.name, func(t *testing.T) {
@@ -232,10 +201,8 @@ func TestVerify(t *testing.T) {
 					}
 				}
 			}
-			// Each statement, each single-statement form, and the six
-			// probes, two per listing, and nothing else.
 			if want := len(stmts) + single + 6; len(prepared) != want {
-				t.Errorf("Verify prepared %d statements, want %d", len(prepared), want)
+				t.Errorf("Verify prepared %d statements, want %d: each statement, each single-statement form, and the six probes, two per listing, and nothing else", len(prepared), want)
 			}
 			returning, contracts, cursors, counted := 0, 0, 0, 0
 			for _, text := range prepared {
@@ -261,9 +228,6 @@ func TestVerify(t *testing.T) {
 	}
 }
 
-// probeVariant is an engine's variant over the baseline with one
-// statement of its own, which it lists and verifies through the inventory
-// methods it overrides.
 type probeVariant struct {
 	data.Variant
 	stmts *query.Statements
@@ -275,8 +239,6 @@ func (v *probeVariant) Verify(ctx context.Context, sess sqlate.Session) error {
 	return v.stmts.Verify(ctx, sess)
 }
 
-// probeEngine compiles the probe statement against the store's catalog
-// and dialect and embeds the baseline it is given.
 func probeEngine(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Variant, error) {
 	stmts, err := c.Compile(fstest.MapFS{
 		"engine/probe_engine.sql": {Data: []byte("--| tier: standard\n-- The engine's own statement.\nSELECT {{> blobfs.directory_columns}}\nFROM blobfs_directory d\nWHERE d.name = {{name:text}}\n")},
@@ -287,9 +249,6 @@ func probeEngine(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Va
 	return &probeVariant{Variant: base, stmts: stmts}, nil
 }
 
-// TestEngineSharesTheBaseline checks an Engine runs over the statements
-// New compiled, with nothing compiled or verified twice, and the refusals
-// of an engine's error and of no variant.
 func TestEngineSharesTheBaseline(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t, fallback, data.Options{Engine: probeEngine})
@@ -297,8 +256,6 @@ func TestEngineSharesTheBaseline(t *testing.T) {
 	if got := names(s.Statements()); !slices.Equal(got, want) {
 		t.Errorf("Statements() = %v, want the package's own and then probe_engine: %v", got, want)
 	}
-	// A consumer's wrapper that embeds the engine's variant inherits its
-	// inventory, so the engine's statement is still listed.
 	wrapped := newStore(t, fallback, data.Options{Engine: func(c *query.Catalog, d sqlate.Dialect, base data.Variant) (data.Variant, error) {
 		v, err := probeEngine(c, d, base)
 		if err != nil {
@@ -351,8 +308,6 @@ func TestEngineSharesTheBaseline(t *testing.T) {
 	}
 }
 
-// TestStandardTreeLock checks the baseline's lock runs no statement and
-// reports that it does not serialize.
 func TestStandardTreeLock(t *testing.T) {
 	s, db, rec := openStore(t, fallback)
 	ctx := context.Background()
@@ -371,8 +326,6 @@ func TestStandardTreeLock(t *testing.T) {
 	}
 }
 
-// lockOverride is a consumer's variant that embeds the baseline and
-// overrides the tree lock alone.
 type lockOverride struct {
 	data.Variant
 	locked int
@@ -385,15 +338,12 @@ func (v *lockOverride) LockTree(context.Context, *sqlate.Tx) error {
 
 func (*lockOverride) Serializes() bool { return true }
 
-// failingLock is a variant whose lock fails, to prove Move stops there.
 type failingLock struct{ data.Variant }
 
 var errLock = errors.New("lock refused")
 
 func (failingLock) LockTree(context.Context, *sqlate.Tx) error { return errLock }
 
-// TestConsumerEngineSwapsOneMethod checks a consumer's Engine overriding
-// the lock alone, with the rest of the baseline running as before.
 func TestConsumerEngineSwapsOneMethod(t *testing.T) {
 	ctx := context.Background()
 	c := catalog(t)
@@ -449,8 +399,6 @@ func TestConsumerEngineSwapsOneMethod(t *testing.T) {
 	}
 }
 
-// holdOverride is a consumer's variant that embeds the baseline and
-// overrides the file hold alone, recording what it was asked.
 type holdOverride struct {
 	data.Variant
 	held    bool
@@ -463,9 +411,6 @@ func (v *holdOverride) HoldFile(_ context.Context, _ *sqlate.Tx, id string, vers
 	return v.held, nil
 }
 
-// TestHoldIsAVariationPoint checks Files.Hold forwards to HoldFile and
-// classifies a refusal by one read, and a deleting row's by a read of its
-// directory.
 func TestHoldIsAVariationPoint(t *testing.T) {
 	ctx := context.Background()
 	v := &holdOverride{held: true}
@@ -497,8 +442,6 @@ func TestHoldIsAVariationPoint(t *testing.T) {
 	}
 }
 
-// TestErrorsNamedOnce checks a sample of refusals each carries the
-// "data: " prefix exactly once, at the start, and keeps its sentinel.
 func TestErrorsNamedOnce(t *testing.T) {
 	ctx := context.Background()
 	check := func(t *testing.T, what string, err, want error) {
@@ -552,7 +495,6 @@ func TestErrorsNamedOnce(t *testing.T) {
 	}})
 	check(t, "New with a failing engine", err, errEngine)
 
-	// A purge the consumer's key refuses, inside a branch's walk.
 	s, db, _ = openStore(t, fallback, deletingRoot(), files("D", "F"), violation("fk_bookmark_file", sqlate.ErrForeignKeyViolation), noDirectory())
 	_, err = s.Sweep(ctx, db, &objectLog{}, data.SweepOptions{})
 	check(t, "Sweep over a referenced file", err, blobfs.ErrReferenced)

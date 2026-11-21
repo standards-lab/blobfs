@@ -21,7 +21,6 @@ func (d *Directories) IsWithin(ctx context.Context, sess sqlate.Session, id, anc
 	return d.isWithinTree(ctx, sess, id, ancestorID)
 }
 
-// isWithinTree is IsWithin's body, with its error bare for Move.
 func (d *Directories) isWithinTree(ctx context.Context, sess sqlate.Session, id, ancestorID string) (bool, error) {
 	n, err := d.isWithin.One(ctx, sess, query.Args{"id": id, "ancestor_id": ancestorID})
 	if err != nil {
@@ -82,16 +81,10 @@ func (d *Directories) Move(ctx context.Context, tx *sqlate.Tx, id string, to Dir
 		case changed:
 			return dir, false, nil
 		case dir.IsRoot():
-			// The update's parent_id predicate refused the root.
 			return blobfs.Directory{}, false, blobfs.ErrRootDirectory
 		case !dir.Status.Mutable():
-			// Deleting outranks the stale version.
 			return blobfs.Directory{}, false, closed(dir)
 		}
-		// The parents tell a closed or missing parent from a stale version,
-		// and then the name's holder tells a deleting one; an update none
-		// explains runs once more, as rerunOnce says, under the lock the
-		// cycle check ran under.
 		if err := d.dirs.refusedMove(ctx, tx, dir.ParentID, parentID, version, dir.Version); err != nil {
 			return blobfs.Directory{}, false, err
 		}

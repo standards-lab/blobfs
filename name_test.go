@@ -8,13 +8,10 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// TestNormalizeNameNFC fixes the collision rule: the composed and the
-// decomposed spelling of one name normalize to the same string, so the
-// unique constraint on the normalized name treats them as one.
 func TestNormalizeNameNFC(t *testing.T) {
-	// Built from code points so that no editor can normalize the fixtures.
-	composed := "caf" + string(rune(0x00E9))    // é as one code point
-	decomposed := "cafe" + string(rune(0x0301)) // e followed by a combining acute
+	const precomposedEAcute, combiningAcute = '\u00E9', '\u0301'
+	composed := "caf" + string(precomposedEAcute)
+	decomposed := "cafe" + string(combiningAcute)
 	if composed == decomposed {
 		t.Fatal("the fixtures are already equal; the test proves nothing")
 	}

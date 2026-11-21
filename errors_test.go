@@ -9,12 +9,6 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// TestViolationError proves the wrapper's contract over a unique, a
-// foreign-key, and a check constraint: the message is the sentinel's text
-// followed by the constraint name and never the driver's text, errors.Is
-// matches the sentinel and the cause, and errors.As reaches the wrapper
-// with both fields. Without a constraint name the message is the
-// sentinel's alone, and without a cause the sentinel is still matched.
 func TestViolationError(t *testing.T) {
 	for _, tc := range []struct {
 		sentinel   error
@@ -58,9 +52,6 @@ func TestViolationError(t *testing.T) {
 	}
 }
 
-// TestDeletingError proves the typed refusal's contract: it matches
-// ErrDeleting whatever its kind, names the kind and the row in its message,
-// and reaches its cause, a TransitionError's sentinels included.
 func TestDeletingError(t *testing.T) {
 	for _, tc := range []struct {
 		err  *blobfs.DeletingError

@@ -30,9 +30,6 @@ func (s Status) Mutable() bool {
 	return s != StatusDeleting
 }
 
-// transitions is the table of allowed status changes, the one in
-// docs/features.md. Deleting to deleting is the delete's retry; the table
-// has no failed status, since the delete steps remove an abandoned write.
 var transitions = map[Status]map[Status]bool{
 	StatusPending: {
 		StatusAvailable: true,
@@ -46,8 +43,10 @@ var transitions = map[Status]map[Status]bool{
 	},
 }
 
-// Transition returns nil when the transition table allows the change from
-// one status to another and a TransitionError otherwise.
+// Transition returns nil when the transition table in docs/features.md
+// allows the change from one status to another and a TransitionError
+// otherwise. Deleting to deleting is the delete's retry; the table has no
+// failed status, since the delete steps remove an abandoned write.
 func Transition(from, to Status) error {
 	if transitions[from][to] {
 		return nil

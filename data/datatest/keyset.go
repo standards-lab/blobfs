@@ -12,24 +12,15 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// keysetFiles is the number of files the keyset group seeds, and
-// keysetDirectories the number of directories: neither a multiple of the
-// page size, so the last page is partial.
 const (
 	keysetFiles       = 23
 	keysetDirectories = 9
 )
 
-// keysetPage is the page size the keyset group walks with.
 const keysetPage = 5
 
-// sortIndex is the index a consumer's migration adds for a sort by
-// created_at, which the keyset group creates for its second pass and
-// drops again.
 const sortIndex = "datatest_ix_file_directory_created"
 
-// keysetSorts are the cursorable sorts the keyset group walks: one term,
-// two terms through the appended key, and three, in both directions.
 var keysetSorts = []struct {
 	name string
 	sort []query.Sort
@@ -43,15 +34,8 @@ var keysetSorts = []struct {
 	{"version, created_at", []query.Sort{{Field: "version"}, {Field: "created_at"}}},
 }
 
-// keyset checks every sort walked by cursor to the end returns the same
-// rows as the baseline and an offset walk, each once, without and then with
-// a sort index. The timestamps must round-trip exactly, or a walk over the
-// ties would skip or repeat rows.
 func (s *suite) keyset(t *testing.T) {
 	dir := s.mkdir(t, "keyset-"+t.Name())
-	// Files whose created_at ties in groups of three, whose version
-	// alternates, and whose name order differs from their creation order,
-	// so every sort term decides some pairs.
 	base := time.Date(2026, 1, 1, 0, 0, 0, 123456000, time.UTC)
 	for i := range keysetFiles {
 		s.insertFileAt(t, dir.ID, fmt.Sprintf("f%02d.txt", (i*7)%keysetFiles), base.Add(time.Duration(i/3)*time.Minute), int64(1+i%2))
@@ -67,7 +51,6 @@ func (s *suite) keyset(t *testing.T) {
 	})
 }
 
-// walks runs every sort over the files and the children of dir.
 func (s *suite) walks(t *testing.T, dir string) {
 	for _, c := range keysetSorts {
 		t.Run("Files/"+c.name, func(t *testing.T) {
@@ -124,16 +107,11 @@ func (s *suite) walks(t *testing.T, dir string) {
 func fileKey(f blobfs.File) string           { return f.Name + "@" + f.ID }
 func directoryKey(d blobfs.Directory) string { return d.Name + "@" + d.ID }
 
-// lister is one listing's two reads, List and Continue, bound to a store
-// and a directory.
 type lister[T any] struct {
 	list func(query.Directives, query.Page) (query.Collection[T], error)
 	cont func(query.Directives, query.Cursor, int) (query.Collection[T], error)
 }
 
-// cursorWalk reads page 1 with its total and follows the cursor to the
-// end, the second page counted and the rest not, returning every row's key
-// in order and checking More, the cursor, and the totals.
 func cursorWalk[T any](t *testing.T, l lister[T], sort []query.Sort, rows int, key func(T) string) []string {
 	t.Helper()
 	req := query.Directives{Sort: sort}
@@ -174,8 +152,6 @@ func cursorWalk[T any](t *testing.T, l lister[T], sort []query.Sort, rows int, k
 	}
 }
 
-// offsetWalk reads every page by its number without the total and
-// returns the keys of every row in order.
 func offsetWalk[T any](t *testing.T, l lister[T], sort []query.Sort, key func(T) string) []string {
 	t.Helper()
 	var out []string

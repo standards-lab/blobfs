@@ -13,15 +13,8 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// driverText is a cause with the driver's text, as PostgreSQL reports a
-// unique violation, so a test can prove the text never reaches a
-// classified message.
 const driverText = `ERROR: duplicate key value violates unique constraint "x" (SQLSTATE 23505)`
 
-// wantClassified fails the test unless got is a blobfs.ViolationError
-// carrying want over constraint, with in reachable through errors.As, and
-// unless its message ends in want's text followed by the constraint name,
-// with none of the driver's text.
 func wantClassified(t *testing.T, what string, got error, in *sqlate.ConstraintError, constraint string, want error) {
 	t.Helper()
 	var ce *sqlate.ConstraintError
@@ -49,9 +42,6 @@ func wantClassified(t *testing.T, what string, got error, in *sqlate.ConstraintE
 	}
 }
 
-// wantUnclassified fails the test unless got carries in, or the plain
-// error in stands for, unchanged: no ViolationError, the driver's text
-// kept.
 func wantUnclassified(t *testing.T, what string, got, in error) {
 	t.Helper()
 	var ve *blobfs.ViolationError
@@ -60,18 +50,13 @@ func wantUnclassified(t *testing.T, what string, got, in error) {
 	}
 }
 
-// TestWriteClassification is the truth table of a write's mapping, run
-// through a directory's create: blobfs's own unique and foreign-key
-// constraints become their sentinels, and a consumer's constraint, a
-// constraint under another class, and an error that is no constraint's
-// are returned as they came.
 func TestWriteClassification(t *testing.T) {
 	ctx := context.Background()
 	cause := errors.New(driverText)
 	for _, c := range []struct {
 		constraint string
 		class      error
-		want       error // nil for unclassified
+		classified error
 	}{
 		{blobfs.ConstraintPrimaryKeyDirectory, sqlate.ErrUniqueViolation, blobfs.ErrIDTaken},
 		{blobfs.ConstraintPrimaryKeyFile, sqlate.ErrUniqueViolation, blobfs.ErrIDTaken},
@@ -87,29 +72,24 @@ func TestWriteClassification(t *testing.T) {
 		in := &sqlate.ConstraintError{Constraint: c.constraint, Class: c.class, Err: cause}
 		s, db, _ := openStore(t, fallback, sqltest.Response{Err: in})
 		_, err := s.Directories.Create(ctx, db, blobfs.RootID, "docs", data.CreateOptions{})
-		if c.want == nil {
+		if c.classified == nil {
 			wantUnclassified(t, "Create under "+c.constraint, err, in)
 			continue
 		}
-		wantClassified(t, "Create", err, in, c.constraint, c.want)
+		wantClassified(t, "Create", err, in, c.constraint, c.classified)
 	}
 	s, db, _ := openStore(t, fallback, sqltest.Response{Err: cause})
 	_, err := s.Directories.Create(ctx, db, blobfs.RootID, "docs", data.CreateOptions{})
 	wantUnclassified(t, "Create under a plain error", err, cause)
 }
 
-// TestDeleteClassification is the truth table of a delete's mapping, run
-// through a directory's delete: blobfs's own foreign keys are the
-// children that keep a directory, any other foreign key, a nameless one
-// included, is a consumer's reference, and a violation under another
-// class or an error that is no constraint's is returned as it came.
 func TestDeleteClassification(t *testing.T) {
 	ctx := context.Background()
 	cause := errors.New(driverText)
 	for _, c := range []struct {
 		constraint string
 		class      error
-		want       error // nil for unclassified
+		classified error
 	}{
 		{blobfs.ConstraintForeignKeyDirectoryParent, sqlate.ErrForeignKeyViolation, blobfs.ErrNotEmpty},
 		{blobfs.ConstraintForeignKeyFileDirectory, sqlate.ErrForeignKeyViolation, blobfs.ErrNotEmpty},
@@ -123,12 +103,12 @@ func TestDeleteClassification(t *testing.T) {
 		in := &sqlate.ConstraintError{Constraint: c.constraint, Class: c.class, Err: cause}
 		s, db, _ := openStore(t, fallback, sqltest.Response{Err: in})
 		err := s.Directories.Delete(ctx, db, "D", data.VersionOptions{})
-		if c.want == nil {
+		if c.classified == nil {
 			wantUnclassified(t, "Delete under "+c.constraint, err, in)
 			continue
 		}
-		wantClassified(t, "Delete", err, in, c.constraint, c.want)
-		if c.want == blobfs.ErrReferenced && errors.Is(err, blobfs.ErrNotEmpty) {
+		wantClassified(t, "Delete", err, in, c.constraint, c.classified)
+		if c.classified == blobfs.ErrReferenced && errors.Is(err, blobfs.ErrNotEmpty) {
 			t.Errorf("Delete under %q: a consumer's key classified as not empty", c.constraint)
 		}
 	}

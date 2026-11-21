@@ -17,8 +17,6 @@ import (
 	"github.com/standards-lab/blobfs/data/datatest"
 )
 
-// objectLog is an ObjectDeleter that records every key it is asked to
-// delete, and fails with err when err is set.
 type objectLog struct {
 	keys []string
 	err  error
@@ -29,7 +27,6 @@ func (o *objectLog) DeleteObject(_ context.Context, key string) error {
 	return o.err
 }
 
-// files scripts a page of file rows, each deleting at version 2, in dir.
 func files(dir string, ids ...string) sqltest.Response {
 	var rows []blobfs.File
 	for _, id := range ids {
@@ -38,21 +35,14 @@ func files(dir string, ids ...string) sqltest.Response {
 	return datatest.FileRows(rows...)
 }
 
-// deletingRoot scripts the roots' read returning D, deleting at version 2
-// under the root.
 func deletingRoot() sqltest.Response {
 	return directoryIn("D", blobfs.RootID, "d", blobfs.DirectoryStatusDeleting, 2)
 }
 
-// remark scripts the mark a pass repeats on a branch marked already, after
-// a straggler: no directory changed, the read of the root, and the
-// straggling file changed.
 func remark() []sqltest.Response {
 	return []sqltest.Response{{Affected: 0}, deletingRoot(), {Affected: 1}}
 }
 
-// TestSweepRefusesBeforeSQL proves a negative Batch and a negative
-// StaleOlderThan are refused before any SQL, with their messages.
 func TestSweepRefusesBeforeSQL(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
@@ -72,8 +62,6 @@ func TestSweepRefusesBeforeSQL(t *testing.T) {
 	}
 }
 
-// TestSweepNothingToDo checks a pass with no work runs only its reads and
-// returns a zero result.
 func TestSweepNothingToDo(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, noDirectory())
@@ -106,9 +94,6 @@ func TestSweepNothingToDo(t *testing.T) {
 	}
 }
 
-// TestSweepABranch checks a pass over a branch of one directory and one
-// file, step by step: the walk marks nothing again when it meets no
-// straggler.
 func TestSweepABranch(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,
@@ -147,8 +132,6 @@ func TestSweepABranch(t *testing.T) {
 	}
 }
 
-// TestSweepBatch checks a pass stops at its bound and reports More without
-// another read, and that a page past a refused file is read past it.
 func TestSweepBatch(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, deletingRoot(), files("D", "F", "G"), sqltest.Response{Affected: 1})
@@ -164,8 +147,6 @@ func TestSweepBatch(t *testing.T) {
 		t.Errorf("ops = %q, want the roots' read, one page, and one purge", ops(rec))
 	}
 
-	// F's object delete is refused, so the budget of one is left for G,
-	// on the page read past F.
 	errStore := errors.New("the store is down")
 	s, db, rec = openStore(t, fallback, deletingRoot(), files("D", "F", "G"), files("D", "G"), sqltest.Response{Affected: 1})
 	got, err = s.Sweep(ctx, db, &failingKey{key: "F/f.txt", err: errStore}, data.SweepOptions{Batch: 1})
@@ -181,8 +162,6 @@ func TestSweepBatch(t *testing.T) {
 	}
 }
 
-// failingKey is an ObjectDeleter that refuses key with err and deletes
-// every other key.
 type failingKey struct {
 	key string
 	err error
@@ -195,10 +174,6 @@ func (f *failingKey) DeleteObject(_ context.Context, key string) error {
 	return nil
 }
 
-// TestSweepStraggler checks a straggler has the branch marked again, once,
-// and the directory walked again: the marked straggler is swept in the
-// same pass, and a straggler met after the mark stops the branch with
-// More.
 func TestSweepStraggler(t *testing.T) {
 	ctx := context.Background()
 	straggler := fileIn("S", "D", "s.txt", blobfs.StatusAvailable, 1)
@@ -231,9 +206,6 @@ func TestSweepStraggler(t *testing.T) {
 	}
 }
 
-// TestSweepRefusals checks a refusal keeps its row and the directories
-// above it, and the walk goes on: an object delete's error and a hook's
-// error.
 func TestSweepRefusals(t *testing.T) {
 	ctx := context.Background()
 	errStore := errors.New("the store is down")
@@ -257,10 +229,6 @@ func TestSweepRefusals(t *testing.T) {
 	}
 }
 
-// TestSweepRemovalOutcomes checks a directory's removal: one gone
-// already counts as removed, one refused as not empty is a straggler that
-// has the branch marked again and walked again, and one a consumer's
-// foreign key refuses is kept, the refusal returned.
 func TestSweepRemovalOutcomes(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, deletingRoot(), files("D"), noDirectory(), sqltest.Response{Affected: 0}, noDirectory())
@@ -297,9 +265,6 @@ func TestSweepRemovalOutcomes(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestSweepRemark checks the mark a straggler triggers: a branch gone by
-// then is done, a mark that fails stops the branch with its error, and an
-// active child directory is a straggler as an active file is.
 func TestSweepRemark(t *testing.T) {
 	ctx := context.Background()
 	straggler := fileIn("S", "D", "s.txt", blobfs.StatusAvailable, 1)
@@ -333,9 +298,6 @@ func TestSweepRemark(t *testing.T) {
 	wantDone(t, rec)
 }
 
-// TestSweepRemains checks the read a pass makes when its budget runs out
-// exactly as its work does: one root, or with StaleOlderThan one stale
-// row, past those the pass left, sets More.
 func TestSweepRemains(t *testing.T) {
 	ctx := context.Background()
 	other := directoryIn("E", blobfs.RootID, "e", blobfs.DirectoryStatusDeleting, 2)
@@ -363,8 +325,6 @@ func TestSweepRemains(t *testing.T) {
 	}
 }
 
-// TestSweepStale checks the reclaim of pending and deleting stale rows,
-// and the skip of rows gone or moved on.
 func TestSweepStale(t *testing.T) {
 	ctx := context.Background()
 	row := func(id string, status blobfs.Status, version int64) blobfs.File {
@@ -402,8 +362,6 @@ func TestSweepStale(t *testing.T) {
 	}
 }
 
-// TestSweepRefusedOnce checks a file refused in a branch's walk is not
-// tried again by the stale read of the same pass.
 func TestSweepRefusedOnce(t *testing.T) {
 	ctx := context.Background()
 	errStore := errors.New("the store is down")
@@ -418,33 +376,24 @@ func TestSweepRefusedOnce(t *testing.T) {
 	}
 }
 
-// The loop's scripts run passes of a Batch of 1 with the stale reclaim, so
-// a pass is a few statements over stale rows.
 var loopOpts = data.SweepOptions{Batch: 1, StaleOlderThan: time.Hour}
 
-// staleRow scripts the read of one deleting file row past the stale age.
 func staleRow(id string) sqltest.Response {
 	f := fileRow(id, "D", strings.ToLower(id)+".txt", blobfs.StatusDeleting, 3)
 	f.UpdatedAt = f.UpdatedAt.Add(-2 * time.Hour)
 	return datatest.FileRows(f)
 }
 
-// morePass scripts a pass that reclaims the stale row id, spends its
-// batch, and finds next beyond it: Stale 1, More.
 func morePass(id, next string) []sqltest.Response {
 	return []sqltest.Response{noDirectory(), staleRow(id), {Affected: 1}, noDirectory(), staleRow(next)}
 }
 
-// lastPass scripts a pass that reclaims the stale row id and finds nothing
-// beyond it: Stale 1, no More.
 func lastPass(id string) []sqltest.Response {
 	return []sqltest.Response{noDirectory(), staleRow(id), {Affected: 1}, noDirectory(), noFile()}
 }
 
-// The ops of a pass with More, as morePass and lastPass script it.
 const passOps = "query query exec query query"
 
-// passes records what a loop reported, pass by pass.
 type passes struct {
 	results []data.SweepResult
 	errs    []error
@@ -455,17 +404,12 @@ func (p *passes) report(res data.SweepResult, err error) {
 	p.errs = append(p.errs, err)
 }
 
-// sweepPass is one pass of s's sweep over db with opts, as a consumer
-// hands it to the loop.
 func sweepPass(s *data.Store, db *sqlate.DB, opts data.SweepOptions) func(context.Context) (data.SweepResult, error) {
 	return func(ctx context.Context) (data.SweepResult, error) {
 		return s.Sweep(ctx, db, &objectLog{}, opts)
 	}
 }
 
-// TestSweepUntilDone checks the loop runs passes while one reports More,
-// reports each, and returns nil at the first that does not; a pass with
-// nothing to do is one pass, and a nil report reports nothing.
 func TestSweepUntilDone(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback, slices.Concat(morePass("A", "B"), lastPass("B"))...)
@@ -490,8 +434,6 @@ func TestSweepUntilDone(t *testing.T) {
 		t.Errorf("ops = %q, want the one pass's reads", ops(rec))
 	}
 
-	// A nil report discards each pass's result; the loop still runs until
-	// a pass reports no More.
 	s, db, rec = openStore(t, fallback, slices.Concat(morePass("A", "B"), lastPass("B"))...)
 	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, loopOpts), nil); err != nil {
 		t.Fatalf("SweepUntilDone with a nil report = %v, want nil", err)
@@ -501,20 +443,12 @@ func TestSweepUntilDone(t *testing.T) {
 	}
 }
 
-// TestSweepUntilDoneRefusals checks a pass's refusals are reported and
-// never end the loop: it goes on while the pass reports More and ends with
-// nil when it does not. A pass that refuses its options reports no More,
-// so the loop reports it once and ends.
 func TestSweepUntilDoneRefusals(t *testing.T) {
 	ctx := context.Background()
 	refused := sqltest.Response{Err: errors.New("the purge was refused")}
-	s, db, rec := openStore(t, fallback,
-		// A pass with More: the first row refused, the next reclaimed, a
-		// third beyond the batch.
-		noDirectory(), staleRow("A"), refused, staleRow("B"), sqltest.Response{Affected: 1}, noDirectory(), staleRow("C"),
-		// A pass without: the third row refused, nothing beyond it.
-		noDirectory(), staleRow("C"), refused, noFile(),
-	)
+	firstRefusedNextReclaimedThirdBeyond := []sqltest.Response{noDirectory(), staleRow("A"), refused, staleRow("B"), sqltest.Response{Affected: 1}, noDirectory(), staleRow("C")}
+	thirdRefusedNothingBeyond := []sqltest.Response{noDirectory(), staleRow("C"), refused, noFile()}
+	s, db, rec := openStore(t, fallback, slices.Concat(firstRefusedNextReclaimedThirdBeyond, thirdRefusedNothingBeyond)...)
 	var got passes
 	if err := data.SweepUntilDone(ctx, nil, sweepPass(s, db, loopOpts), got.report); err != nil {
 		t.Fatalf("SweepUntilDone = %v, want nil despite the refusals", err)
@@ -533,10 +467,6 @@ func TestSweepUntilDoneRefusals(t *testing.T) {
 	}
 }
 
-// TestSweepUntilDoneStops checks the loop's ends: a context ended before a
-// pass runs no pass and returns its error, a context ended during a pass
-// is returned with the pass unreported, and a closed stop ends the loop
-// between passes, the pass in flight finished and reported.
 func TestSweepUntilDoneStops(t *testing.T) {
 	ended, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -551,16 +481,14 @@ func TestSweepUntilDoneStops(t *testing.T) {
 	s, db, rec = openStore(t, fallback, morePass("A", "B")...)
 	got = passes{}
 	calls := 0
-	// The second pass ends the context before it runs, so it reaches no
-	// statement.
 	pass := sweepPass(s, db, loopOpts)
-	cancelling := func(ctx context.Context) (data.SweepResult, error) {
+	cancelsBeforeTheSecondPass := func(ctx context.Context) (data.SweepResult, error) {
 		if calls++; calls == 2 {
 			cancel()
 		}
 		return pass(ctx)
 	}
-	if err := data.SweepUntilDone(ctx, nil, cancelling, got.report); !errors.Is(err, context.Canceled) {
+	if err := data.SweepUntilDone(ctx, nil, cancelsBeforeTheSecondPass, got.report); !errors.Is(err, context.Canceled) {
 		t.Fatalf("SweepUntilDone = %v, want the context's cancellation", err)
 	}
 	if calls != 2 || len(got.results) != 1 || ops(rec) != passOps {

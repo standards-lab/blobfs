@@ -2,15 +2,6 @@
 
 package postgres_test
 
-// This file holds the plan-shape and cost regression assertions for the
-// statements the store runs. Each test seeds a fixture in its own
-// database, explains a statement as the store composes it with EXPLAIN
-// (ANALYZE, BUFFERS) through internal/dbtest, and asserts a plan shape and
-// a buffer bound, never a time. The bounds carry a wide margin over the
-// measured value and sit well below what the guarded regression would
-// read. A plan shape is asserted only where the fixture makes the index
-// the planner's own choice, and no test disables a plan type.
-
 import (
 	"context"
 	"database/sql"
@@ -29,31 +20,17 @@ import (
 	"github.com/standards-lab/blobfs/postgres/internal/dbtest"
 )
 
-// listingSizes is the fixture of the listing assertions: the big
-// directory holds a tenth of the files, so a read of the whole directory
-// is a scan over its own pages and not a sequential scan of the table,
-// and its files were inserted first, so they sit on contiguous heap
-// pages. stepSizes is the fixture of the per-row assertions: enough rows
-// that a lookup by primary key or by a unique constraint is the planner's
-// choice over a sequential scan on both tables.
 var (
 	listingSizes = dbtest.Sizes{Depth: 8, Directories: 3000, BigFiles: 8000, OtherFiles: 72000}
 	stepSizes    = dbtest.Sizes{Depth: 8, Directories: 3000, BigFiles: 2000, OtherFiles: 8000}
 )
 
-// costPageSize is the page size of the listing assertions, and middlePage
-// the number of the offset page whose cursor continues from the middle of
-// the big directory.
 const costPageSize = 20
 
 var middlePage = listingSizes.BigFiles / costPageSize / 2
 
-// sortIndexDDL creates the index a consumer's own migration set adds for
-// a listing sorted by created_at; blobfs's set ships none.
 const sortIndexDDL = "CREATE INDEX blobfs_ix_file_directory_created ON blobfs_file (directory_id, created_at)"
 
-// costEnv is one cost test's throwaway database, seeded, and the store
-// over the PostgreSQL variant under sqlate's postgres dialect.
 type costEnv struct {
 	ctx   context.Context
 	db    *sqlate.DB
@@ -62,7 +39,6 @@ type costEnv struct {
 	ex    *dbtest.Explainer
 }
 
-// openCost builds the environment over a fixture of sizes.
 func openCost(t *testing.T, sizes dbtest.Sizes) costEnv {
 	t.Helper()
 	ctx := context.Background()
@@ -79,15 +55,11 @@ func openCost(t *testing.T, sizes dbtest.Sizes) costEnv {
 	return costEnv{ctx: ctx, db: db, store: store, tree: dbtest.SeedTree(ctx, t, db, sizes), ex: dbtest.NewExplainer(t, d.DSN)}
 }
 
-// recorder is a session over the pool that keeps every query's text and
-// arguments, so a test explains exactly what the store ran. The embedded
-// *sqlate.DB keeps MapError and Begin reachable.
 type recorder struct {
 	*sqlate.DB
 	calls []call
 }
 
-// call is one query as the engine received it.
 type call struct {
 	sql  string
 	args []any
@@ -98,7 +70,6 @@ func (r *recorder) QueryContext(ctx context.Context, q string, args ...any) (*sq
 	return r.DB.QueryContext(ctx, q, args...)
 }
 
-// one runs op through a recorder over db and returns the one query it ran.
 func one(t *testing.T, db *sqlate.DB, op func(sess sqlate.Session) error) call {
 	t.Helper()
 	rec := &recorder{DB: db}
@@ -111,9 +82,6 @@ func one(t *testing.T, db *sqlate.DB, op func(sess sqlate.Session) error) call {
 	return rec.calls[0]
 }
 
-// page runs a listing through a recorder over db and returns its page, the
-// first of its two queries; the second, the directory's read by id, is
-// covered by TestProtocolStepPlans.
 func page(t *testing.T, db *sqlate.DB, op func(sess sqlate.Session) error) call {
 	t.Helper()
 	rec := &recorder{DB: db}
@@ -126,8 +94,6 @@ func page(t *testing.T, db *sqlate.DB, op func(sess sqlate.Session) error) call 
 	return rec.calls[0]
 }
 
-// explainList captures the file listing of dir as the store composes it,
-// deleting files hidden, and explains it.
 func (e costEnv) explainList(t *testing.T, dir string, req query.Directives, pg query.Page) dbtest.Plan {
 	t.Helper()
 	c := page(t, e.db, func(sess sqlate.Session) error {
@@ -137,7 +103,6 @@ func (e costEnv) explainList(t *testing.T, dir string, req query.Directives, pg 
 	return e.ex.Explain(e.ctx, t, c.sql, c.args...)
 }
 
-// explainContinue captures the page past after and explains it.
 func (e costEnv) explainContinue(t *testing.T, dir string, req query.Directives, after query.Cursor) dbtest.Plan {
 	t.Helper()
 	c := page(t, e.db, func(sess sqlate.Session) error {
@@ -147,7 +112,6 @@ func (e costEnv) explainContinue(t *testing.T, dir string, req query.Directives,
 	return e.ex.Explain(e.ctx, t, c.sql, c.args...)
 }
 
-// cursorAt returns the cursor of offset page number under req.
 func (e costEnv) cursorAt(t *testing.T, dir string, req query.Directives, number int) query.Cursor {
 	t.Helper()
 	req.Total = query.TotalNone
@@ -158,13 +122,6 @@ func (e costEnv) cursorAt(t *testing.T, dir string, req query.Directives, number
 	return c.Next
 }
 
-// TestListingPlans checks the listing's plan on the big directory, deleting
-// files hidden: under TotalNone the first and a continued page, either
-// direction, are an index scan on blobfs_uq_file_directory_name with no
-// sort, window, or sequential scan; under TotalExact the first page reads
-// the directory once under one WindowAgg. The bounds catch a keyset
-// predicate the index cannot serve, a total over the table, and a second
-// pass.
 func TestListingPlans(t *testing.T) {
 	e := openCost(t, listingSizes)
 	big := e.tree.Big.ID
@@ -217,10 +174,6 @@ func TestListingPlans(t *testing.T) {
 	}
 }
 
-// TestRowValueCursorCost checks a cursor page by created_at over the
-// consumer's index, under the engine's keyset overlay, is an index scan
-// whose cost does not grow with the cursor's position; the regression is
-// the expanded disjunct chain applied as a filter.
 func TestRowValueCursorCost(t *testing.T) {
 	e := openCost(t, listingSizes)
 	for _, stmt := range []string{sortIndexDDL, "ANALYZE blobfs_file"} {
@@ -261,10 +214,6 @@ func TestRowValueCursorCost(t *testing.T) {
 	}
 }
 
-// TestPathPlans checks the tree walks cost the depth and not the table:
-// the baseline's step, the variant's one-statement resolution, and the
-// upward walks of Path and the cycle check, each through an index and no
-// sequential scan, within a per-level buffer bound.
 func TestPathPlans(t *testing.T) {
 	e := openCost(t, stepSizes)
 	stmts := statementsByName(e.store)
@@ -322,13 +271,6 @@ func TestPathPlans(t *testing.T) {
 	}
 }
 
-// TestProtocolStepPlans checks every protocol step, in its single-statement
-// form, finds its row through the primary key, with and without a
-// nullable version, within 32 buffers. A create finds its directory or
-// parent the same way. No step scans a table, including a create's or a
-// move's probe for a deleting row that holds the name. A tenth of the
-// fixture's files are pending, so the stale partial index is not the
-// cheapest path to a row by id.
 func TestProtocolStepPlans(t *testing.T) {
 	e := openCost(t, stepSizes)
 	stmts := statementsByName(e.store)
@@ -400,7 +342,6 @@ func TestProtocolStepPlans(t *testing.T) {
 	}
 }
 
-// statementsByName indexes a store's inventory by name.
 func statementsByName(store *data.Store) map[string]query.Statement {
 	out := map[string]query.Statement{}
 	for _, st := range store.Statements() {
@@ -409,8 +350,6 @@ func statementsByName(store *data.Store) map[string]query.Statement {
 	return out
 }
 
-// bindArgs orders args by the statement's parameters, as the query
-// library does before it runs the statement.
 func bindArgs(t *testing.T, st query.Statement, args query.Args) []any {
 	t.Helper()
 	out := make([]any, 0, len(st.Params()))
@@ -424,8 +363,6 @@ func bindArgs(t *testing.T, st query.Statement, args query.Args) []any {
 	return out
 }
 
-// indexCondHas reports whether an Index Cond line of the plan contains s,
-// so a comparison the planner applies as a filter instead does not pass.
 func indexCondHas(p dbtest.Plan, s string) bool {
 	for _, line := range p.Lines("Index Cond:") {
 		if strings.Contains(line, s) {
@@ -435,9 +372,6 @@ func indexCondHas(p dbtest.Plan, s string) bool {
 	return false
 }
 
-// TestDeletingPlan checks deleting_branches reaches its candidates through
-// blobfs_ix_directory_deleting and their parents through the primary key,
-// within a bound set by the deleting directories and not the table.
 func TestDeletingPlan(t *testing.T) {
 	e := openCost(t, stepSizes)
 	if _, err := e.db.Transact(e.ctx, func(tx *sqlate.Tx) (data.Marked, error) {
@@ -471,9 +405,6 @@ func TestDeletingPlan(t *testing.T) {
 	}
 }
 
-// TestStalePlan checks stale_files_before, as Store.Sweep binds it, reads
-// the oldest stale rows through blobfs_ix_file_stale in the index's order,
-// bounded by the age, with no sort, and stops at the page.
 func TestStalePlan(t *testing.T) {
 	e := openCost(t, stepSizes)
 	for _, seed := range []struct{ status, age string }{

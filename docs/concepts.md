@@ -425,3 +425,15 @@ fixed, and nothing in the library names a second database, schema, or container:
 volume id and no key prefix. A service that serves several isolated trees runs one configuration
 per tree, each with its own database and its own container, so an operation on a container
 belongs to exactly one tree.
+
+## Assumptions
+
+The design rests on these assumptions:
+
+- The baseline runs on any engine `sqlate` has a dialect for, but only PostgreSQL is exercised.
+- The key rule of a real Azure account matches `go-storage`'s azureblob validator; the example runs
+  against Azurite, which accepts keys the real service refuses.
+- The consumer-side ownership composition, an owner row per top-level directory or a join row per
+  file, generalizes to a second domain once one exists.
+- No concurrency beyond the suite's paired transactions and the listing stress in `sqlate` was
+  measured; plan shapes and buffer counts carry across machines, timings do not.

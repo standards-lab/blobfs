@@ -1,11 +1,12 @@
 // Command example composes blobfs with a real object store: PostgreSQL
 // through sqlate for the metadata, Azure Blob Storage through go-storage's
 // azureblob provider for the bytes. It is the proof that the two libraries
-// compose through one small adapter, with no change to either, and it is
-// never imported. It runs one file's whole life through the store's
-// protocols: a directory, Store.WriteFile, a listing, Store.RemoveFileID,
-// the provider's key rule reaching blobfs through the adapter, and a
-// branch marked for removal and drained by data.SweepUntilDone.
+// compose through one small adapter, objectStore, with no change to either,
+// and it is never imported. It runs one file's whole life through the
+// store's protocols: a directory of its own under the root, so repeated
+// runs never meet, Store.WriteFile, a listing, Store.RemoveFileID, the
+// provider's key rule reaching blobfs through the adapter, and a branch
+// marked for removal and drained by data.SweepUntilDone.
 //
 // It reads BLOBFS_DSN and the BLOBFS_STORAGE_* settings go-storage
 // documents; mise.toml sets both for the compose stack, so from the
@@ -73,8 +74,7 @@ func run(ctx context.Context) error {
 	}
 	fmt.Println("verified the store's statements against the schema")
 
-	// A directory of its own under the root, so repeated runs never meet.
-	dir, err := store.Directories.Create(ctx, db, blobfs.RootID, "example-"+time.Now().UTC().Format("20060102T150405.000"), data.CreateOptions{})
+	dir, err := store.Directories.Create(ctx, db, blobfs.RootID, uniqueRunName(), data.CreateOptions{})
 	if err != nil {
 		return err
 	}
@@ -84,8 +84,6 @@ func run(ctx context.Context) error {
 	}
 	fmt.Printf("created directory %s\n", path)
 
-	// The write, which the store runs end to end through the adapter: the
-	// pending row, then the object, then the row available.
 	body := "quarterly numbers\n"
 	file, err := store.WriteFile(ctx, data.WriteFileRequest{
 		DB: db, Objects: objs, Body: strings.NewReader(body), Size: int64(len(body)),
@@ -108,7 +106,6 @@ func run(ctx context.Context) error {
 		fmt.Printf("  %s (%s)\n", f.Name, f.Status)
 	}
 
-	// The delete: the row marked deleting, then the object, then the row.
 	if err := store.RemoveFileID(ctx, db, objs, file.ID, data.VersionOptions{}); err != nil {
 		return err
 	}
@@ -117,31 +114,10 @@ func run(ctx context.Context) error {
 	}
 	fmt.Printf("removed %s: the row is gone and the object with it\n", file.Name)
 
-	// The provider's key rule, reached through the adapter. blobfs
-	// sanitizes a filename into a key every provider it targets accepts, so
-	// a hostile name becomes a valid key, and the rule itself refuses a key
-	// blobfs would never build.
-	hostileSpec := data.FileSpec{DirectoryID: dir.ID, Name: "draft...", ContentType: "text/plain"}
-	hostile, err := store.Files.Create(ctx, db, objs, hostileSpec, data.CreateOptions{})
-	if err != nil {
-		return err
-	}
-	fmt.Printf("the name %q is stored under the key %s\n", hostile.Name, hostile.Key)
-	if err := objs.ValidateKey(hostile.ID + "/draft."); err != nil {
-		fmt.Printf("the provider refuses a raw key: %v\n", err)
-	} else {
-		return fmt.Errorf("the provider accepted a key ending in a dot")
-	}
-	// A pending row whose object was never stored is removed the same way:
-	// deleting a missing object is success.
-	if err := store.RemoveFileID(ctx, db, objs, hostile.ID, data.VersionOptions{}); err != nil {
+	if err := sanitizeHostileName(ctx, db, store, objs, dir.ID); err != nil {
 		return err
 	}
 
-	// A branch: a subdirectory holding three files, marked for removal in
-	// one step and drained by the sweep in passes of two records. Each pass
-	// is the consumer's own closure, where a consumer would hold a gate of
-	// its own.
 	if err := sweepBranch(ctx, db, store, objs, dir.ID); err != nil {
 		return err
 	}
@@ -153,8 +129,25 @@ func run(ctx context.Context) error {
 	return nil
 }
 
-// sweepBranch writes a branch of three files under parentID, marks it
-// deleting, and drains it with data.SweepUntilDone, reporting each pass.
+func uniqueRunName() string {
+	return "example-" + time.Now().UTC().Format("20060102T150405.000")
+}
+
+func sanitizeHostileName(ctx context.Context, db *sqlate.DB, store *data.Store, objs objectStore, dirID string) error {
+	hostileSpec := data.FileSpec{DirectoryID: dirID, Name: "draft...", ContentType: "text/plain"}
+	hostile, err := store.Files.Create(ctx, db, objs, hostileSpec, data.CreateOptions{})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("the name %q is stored under the key %s\n", hostile.Name, hostile.Key)
+	if err := objs.ValidateKey(hostile.ID + "/draft."); err != nil {
+		fmt.Printf("the provider refuses a raw key: %v\n", err)
+	} else {
+		return fmt.Errorf("the provider accepted a key ending in a dot")
+	}
+	return store.RemoveFileID(ctx, db, objs, hostile.ID, data.VersionOptions{})
+}
+
 func sweepBranch(ctx context.Context, db *sqlate.DB, store *data.Store, objs objectStore, parentID string) error {
 	branch, err := store.Directories.Create(ctx, db, parentID, "archive", data.CreateOptions{})
 	if err != nil {
@@ -198,9 +191,6 @@ func sweepBranch(ctx context.Context, db *sqlate.DB, store *data.Store, objs obj
 	return nil
 }
 
-// objectStore is the adapter: it implements data.ObjectStore over the
-// started store's key rule, put, and delete. It is the only place the two
-// libraries meet.
 type objectStore struct{ store *storage.Store }
 
 var _ data.ObjectStore = objectStore{}
@@ -224,9 +214,6 @@ func (o objectStore) DeleteObject(ctx context.Context, key string) error {
 	return o.store.Delete(ctx, key)
 }
 
-// openDatabase opens the pool, wraps it for sqlate, and brings blobfs's
-// migration set up to date. It returns the pool beside the wrapper, since
-// sqlate's wrapper does not own the pool: the caller closes it.
 func openDatabase(ctx context.Context) (*sqlate.DB, *sql.DB, error) {
 	dsn := os.Getenv("BLOBFS_DSN")
 	if dsn == "" {
@@ -244,7 +231,6 @@ func openDatabase(ctx context.Context) (*sqlate.DB, *sql.DB, error) {
 	return db, pool, nil
 }
 
-// migrated wraps pool for sqlate and applies blobfs's migration set.
 func migrated(ctx context.Context, pool *sql.DB) (*sqlate.DB, error) {
 	db := sqlate.Wrap(pool, sqlatepg.Dialect{})
 	set, err := blobfspg.Migrations()
@@ -261,8 +247,6 @@ func migrated(ctx context.Context, pool *sql.DB) (*sqlate.DB, error) {
 	return db, nil
 }
 
-// openStorage builds the Azure Blob store from the BLOBFS_STORAGE_*
-// settings and starts it, which ensures the container and probes it.
 func openStorage(ctx context.Context) (*storage.Store, error) {
 	var cfg storage.Config
 	if err := cfg.Finalize("blobfs"); err != nil {

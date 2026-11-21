@@ -12,8 +12,6 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// branches checks the mark of a branch for deletion and the refusals a
-// deleting directory makes.
 func (s *suite) branches(t *testing.T) {
 	t.Run("MarkCounts", s.markCounts)
 	t.Run("MarkRefusesTheRoot", s.markRoot)
@@ -30,28 +28,17 @@ func (s *suite) branches(t *testing.T) {
 	t.Run("BranchRootsFindsNone", s.branchRootsFindsNone)
 }
 
-// branch is a three-level branch the group marks: top under the root, mid
-// under top, and leaf under mid, with files at every level.
 type branch struct {
 	top, mid, leaf blobfs.Directory
-	// files are the branch's files that are not deleting yet, which a mark
-	// counts.
-	files []string
-	// deleting is a file of the branch already deleting, which a mark
-	// leaves as it is and does not count.
-	deleting string
+	files          []string
+	deleting       string
 }
 
-// newBranch creates a branch under the root through the store under test,
-// named from n: a file in top, a pending and an available file in mid, a
-// file in leaf, and a file in top already deleting.
 func (s *suite) newBranch(t *testing.T, n string) branch {
 	t.Helper()
 	return s.newBranchUnder(t, blobfs.RootID, n)
 }
 
-// newBranchUnder creates the branch newBranch creates under the directory
-// with parentID.
 func (s *suite) newBranchUnder(t *testing.T, parentID, n string) branch {
 	t.Helper()
 	var b branch
@@ -68,17 +55,12 @@ func (s *suite) newBranchUnder(t *testing.T, parentID, n string) branch {
 	return b
 }
 
-// mark runs MarkDeleting of id through store in a transaction of its own
-// and commits it.
 func (s *suite) mark(store *data.Store, id string, opts data.VersionOptions) (data.Marked, error) {
 	return s.db.Transact(s.ctx, func(tx *sqlate.Tx) (data.Marked, error) {
 		return store.Directories.MarkDeleting(s.ctx, tx, id, opts)
 	}, nil)
 }
 
-// markCounts checks a mark of a three-level branch against the baseline:
-// the counts, every row read back deleting at one version past its own,
-// the row already deleting unchanged, and a sibling and the root untouched.
 func (s *suite) markCounts(t *testing.T) {
 	b := s.newBranch(t, "mark-"+t.Name())
 	sibling := s.newBranch(t, "sibling-"+t.Name())
@@ -134,8 +116,6 @@ func (s *suite) markCounts(t *testing.T) {
 	}
 }
 
-// markRoot checks the root is refused with ErrRootDirectory on both
-// stores, in the same text, and left active.
 func (s *suite) markRoot(t *testing.T) {
 	_, err := s.mark(s.store, blobfs.RootID, data.VersionOptions{})
 	if !errors.Is(err, blobfs.ErrRootDirectory) {
@@ -148,8 +128,6 @@ func (s *suite) markRoot(t *testing.T) {
 	}
 }
 
-// markMissing checks a directory that does not exist is ErrNotFound on
-// both stores, in the same text.
 func (s *suite) markMissing(t *testing.T) {
 	id := blobfs.NewID()
 	_, err := s.mark(s.store, id, data.VersionOptions{})
@@ -160,8 +138,6 @@ func (s *suite) markMissing(t *testing.T) {
 	wantSameError(t, err, base)
 }
 
-// markAgain checks a repeated mark counts and changes nothing, and that a
-// later mark reaches stragglers, counting them alone.
 func (s *suite) markAgain(t *testing.T) {
 	b := s.newBranch(t, "again-"+t.Name())
 	if _, err := s.mark(s.store, b.top.ID, data.VersionOptions{}); err != nil {
@@ -192,9 +168,6 @@ func (s *suite) markAgain(t *testing.T) {
 	}
 }
 
-// markGuarded checks a mark under a set VersionOptions.Version against
-// the baseline: a stale version, the current one, a retry after the mark,
-// and a missing directory.
 func (s *suite) markGuarded(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("at-version-%d-%s", i, t.Name()))
@@ -235,10 +208,6 @@ func (s *suite) markGuarded(t *testing.T) {
 	}
 }
 
-// markWaitsOnHold checks, against the baseline, that a mark waits on a
-// Files.Hold another transaction took of a file in the branch, and marks
-// the file once the holder commits: the reference-then-delete rule holds
-// across a branch.
 func (s *suite) markWaitsOnHold(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("held-%d-%s", i, t.Name()))
@@ -272,13 +241,6 @@ func (s *suite) markWaitsOnHold(t *testing.T) {
 	}
 }
 
-// markRacesAFileMove checks a file moved out of a branch while the
-// branch's mark runs, in both orders, over the store under test and the
-// baseline. A move that commits first leaves the file active in its new
-// directory: the mark's file update waits on the moved row and then finds
-// it outside the branch. A mark that commits first refuses the move, which
-// waits on the marked row, with the directory's DeletingError. The file
-// never ends deleting in an active directory.
 func (s *suite) markRacesAFileMove(t *testing.T) {
 	for i, store := range []*data.Store{s.store, s.baseline} {
 		b := s.newBranch(t, fmt.Sprintf("move-then-mark-%d-%s", i, t.Name()))
@@ -332,12 +294,6 @@ func (s *suite) markRacesAFileMove(t *testing.T) {
 	}
 }
 
-// deletingRefuses checks every create, ensure, and move a deleting
-// directory refuses, and the hold and completion of a marked file, against
-// the baseline in the same text, at the marked rows' old and new versions
-// and for stragglers, each the directory's DeletingError; every refused
-// row is left as it was. An ensure that finds a deleting file reports it
-// present.
 func (s *suite) deletingRefuses(t *testing.T) {
 	b := s.newBranch(t, "refuses-"+t.Name())
 	if _, err := s.mark(s.store, b.top.ID, data.VersionOptions{}); err != nil {
@@ -424,8 +380,6 @@ func (s *suite) deletingRefuses(t *testing.T) {
 			if !errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, query.ErrVersionMismatch) || errors.Is(err, blobfs.ErrNotFound) {
 				t.Errorf("%s = %v, want ErrDeleting", c.name, err)
 			}
-			// Every refusal here is a deleting directory's, a marked
-			// file's included.
 			wantDeletingKind(t, err, true, "")
 			wantSameError(t, err, c.run(s.baseline))
 		})

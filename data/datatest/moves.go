@@ -11,7 +11,6 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// moves checks the tree lock and the directory move.
 func (s *suite) moves(t *testing.T) {
 	t.Run("LockTree", s.lockTree)
 	t.Run("RootRefused", s.moveRoot)
@@ -23,10 +22,6 @@ func (s *suite) moves(t *testing.T) {
 	t.Run("OpposingSerializableMoves", s.opposingSerializableMoves)
 }
 
-// lockTree checks the tree lock against what Serializes reports: when the
-// store serializes, a second transaction's LockTree blocks while the
-// first holds the lock and returns once the first commits or rolls back;
-// when it does not, the lock is a no-op that never blocks.
 func (s *suite) lockTree(t *testing.T) {
 	if s.baseline.Directories.Serializes() {
 		t.Error("the baseline reports it serializes; standard SQL has no lock to take")
@@ -50,8 +45,6 @@ func (s *suite) lockTree(t *testing.T) {
 	})
 }
 
-// heldUntil proves a second transaction's LockTree blocks while the first
-// holds the lock and returns once the first ends through end.
 func (s *suite) heldUntil(t *testing.T, end func(*sqlate.Tx) error) {
 	first := s.beginTx(t, nil)
 	ended := false
@@ -76,15 +69,12 @@ func (s *suite) heldUntil(t *testing.T, end func(*sqlate.Tx) error) {
 	}
 }
 
-// lockIn takes the tree lock in tx on a goroutine and reports the result
-// on the channel.
 func (s *suite) lockIn(tx *sqlate.Tx) <-chan error {
 	done := make(chan error, 1)
 	go func() { done <- s.store.Directories.LockTree(s.ctx, tx) }()
 	return done
 }
 
-// moveRoot checks the root is refused before any SQL and stays as it was.
 func (s *suite) moveRoot(t *testing.T) {
 	root := s.directory(t, blobfs.RootID)
 	dir := s.mkdir(t, "root-target-"+t.Name())
@@ -97,9 +87,6 @@ func (s *suite) moveRoot(t *testing.T) {
 	}
 }
 
-// moveIntoOwnSubtree checks the cycle check: a move of a directory under
-// itself or under any descendant is ErrCycle, the same text on both
-// stores, and nothing changes; IsWithin answers the same question.
 func (s *suite) moveIntoOwnSubtree(t *testing.T) {
 	a := s.mkdir(t, "cycle-"+t.Name())
 	b := s.mkdirUnder(t, a.ID, "b")
@@ -125,10 +112,6 @@ func (s *suite) moveIntoOwnSubtree(t *testing.T) {
 	}
 }
 
-// moveSubtree checks a move against the baseline: the moved row under its
-// new parent at the next version, the row the database holds, its
-// descendants and their files following it by id and unchanged, the paths
-// computed anew, and the old path no longer resolving.
 func (s *suite) moveSubtree(t *testing.T) {
 	src := s.mkdir(t, "src-"+t.Name())
 	dst := s.mkdir(t, "dst-"+t.Name())
@@ -170,9 +153,6 @@ func (s *suite) moveSubtree(t *testing.T) {
 	}
 }
 
-// renameDirectory checks a move under the same parent as a rename: the
-// name stored composed, the version advanced, and a child's path
-// following.
 func (s *suite) renameDirectory(t *testing.T) {
 	d := s.mkdir(t, "rename-"+t.Name())
 	child := s.mkdirUnder(t, d.ID, "child")
@@ -187,8 +167,6 @@ func (s *suite) renameDirectory(t *testing.T) {
 	s.wantPath(t, child.ID, "/"+renamed.Name+"/child")
 }
 
-// moveDirectoryRefusals checks the move's refusals against the baseline,
-// each leaving the row unchanged.
 func (s *suite) moveDirectoryRefusals(t *testing.T) {
 	p := s.mkdir(t, "taken-"+t.Name())
 	s.mkdirUnder(t, p.ID, "held")
@@ -196,8 +174,6 @@ func (s *suite) moveDirectoryRefusals(t *testing.T) {
 	if _, err := s.mark(s.store, held.ID, data.VersionOptions{}); err != nil {
 		t.Fatalf("MarkDeleting: %v", err)
 	}
-	// The marked branch is removed once the refusals ran, so no later
-	// group's sweep finds it.
 	t.Cleanup(func() {
 		if err := s.store.Directories.Delete(s.ctx, s.db, held.ID, data.VersionOptions{}); err != nil {
 			t.Errorf("remove the deleting holder: %v", err)
@@ -250,8 +226,6 @@ func (s *suite) moveDirectoryRefusals(t *testing.T) {
 	}
 }
 
-// move runs Directories.Move through the store under test in a
-// transaction of its own and commits it.
 func (s *suite) move(t *testing.T, id, parentID, n string, version int64) (blobfs.Directory, error) {
 	t.Helper()
 	return s.db.Transact(s.ctx, func(tx *sqlate.Tx) (blobfs.Directory, error) {

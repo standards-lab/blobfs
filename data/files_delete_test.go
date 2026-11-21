@@ -16,13 +16,9 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// TestHoldFile checks the hold's statement and bindings, with and without
-// a version, and each refusal classified from the read that follows.
 func TestHoldFile(t *testing.T) {
 	ctx := context.Background()
-	// hold runs one hold of F inside a transaction over the scripted
-	// responses and returns its error and the recorder.
-	hold := func(t *testing.T, responses []sqltest.Response, opts data.VersionOptions) (*sqltest.Recorder, error) {
+	holdFInATransaction := func(t *testing.T, responses []sqltest.Response, opts data.VersionOptions) (*sqltest.Recorder, error) {
 		t.Helper()
 		s, db, rec := openStore(t, fallback, responses...)
 		_, err := db.Transact(ctx, func(tx *sqlate.Tx) (struct{}, error) {
@@ -31,7 +27,7 @@ func TestHoldFile(t *testing.T) {
 		return rec, err
 	}
 
-	rec, err := hold(t, []sqltest.Response{{Affected: 1}}, data.VersionOptions{})
+	rec, err := holdFInATransaction(t, []sqltest.Response{{Affected: 1}}, data.VersionOptions{})
 	if err != nil {
 		t.Fatalf("Hold: %v", err)
 	}
@@ -46,7 +42,7 @@ func TestHoldFile(t *testing.T) {
 		t.Errorf("the hold bound %v, want the id and no version", update.Args)
 	}
 
-	rec, err = hold(t, []sqltest.Response{{Affected: 1}}, data.VersionOptions{Version: 4})
+	rec, err = holdFInATransaction(t, []sqltest.Response{{Affected: 1}}, data.VersionOptions{Version: 4})
 	if err != nil {
 		t.Fatalf("Hold at a version: %v", err)
 	}
@@ -55,7 +51,7 @@ func TestHoldFile(t *testing.T) {
 		t.Errorf("the hold at a version bound %v, want the id and the version", update.Args)
 	}
 
-	rec, err = hold(t, []sqltest.Response{{Affected: 0}, noFile()}, data.VersionOptions{})
+	rec, err = holdFInATransaction(t, []sqltest.Response{{Affected: 0}, noFile()}, data.VersionOptions{})
 	if !errors.Is(err, blobfs.ErrNotFound) {
 		t.Errorf("Hold of a missing row = %v, want ErrNotFound", err)
 	}
@@ -66,49 +62,41 @@ func TestHoldFile(t *testing.T) {
 		t.Errorf("the read is %s with %v, want file_by_id bound to the id", read.SQL, read.Args)
 	}
 
-	// A deleting row is its own delete's refusal while its directory is
-	// active, and the directory's once the directory is deleting.
 	root := directoryResponse(blobfs.RootID, "", "/", 1)
-	rec, err = hold(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusDeleting, 3), root}, data.VersionOptions{})
+	rec, err = holdFInATransaction(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusDeleting, 3), root}, data.VersionOptions{})
 	wantDeleting(t, "Hold of a deleting row", err, false, "F")
 	if got := ops(rec); got != "begin exec query query rollback" {
 		t.Errorf("ops = %q, want the exec, the row's read, its directory's, and the rollback", got)
 	}
-	_, err = hold(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusDeleting, 3), root}, data.VersionOptions{Version: 2})
+	_, err = holdFInATransaction(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusDeleting, 3), root}, data.VersionOptions{Version: 2})
 	wantDeleting(t, "Hold of a deleting row at another version", err, false, "F")
 	if errors.Is(err, query.ErrVersionMismatch) {
 		t.Errorf("Hold of a deleting row at another version = %v, want no version mismatch", err)
 	}
 	marked := directoryIn("S", blobfs.RootID, "s", blobfs.DirectoryStatusDeleting, 2)
-	_, err = hold(t, []sqltest.Response{{Affected: 0}, fileIn("F", "S", "a.txt", blobfs.StatusDeleting, 3), marked}, data.VersionOptions{})
+	_, err = holdFInATransaction(t, []sqltest.Response{{Affected: 0}, fileIn("F", "S", "a.txt", blobfs.StatusDeleting, 3), marked}, data.VersionOptions{})
 	wantDeleting(t, "Hold of a file its branch's mark reached", err, true, "S")
-	// A directory gone since the row was read, as a sweep of its branch
-	// leaves it, is the directory's refusal, with no sql.ErrNoRows.
-	_, err = hold(t, []sqltest.Response{{Affected: 0}, fileIn("F", "S", "a.txt", blobfs.StatusDeleting, 3), noDirectory()}, data.VersionOptions{})
+	_, err = holdFInATransaction(t, []sqltest.Response{{Affected: 0}, fileIn("F", "S", "a.txt", blobfs.StatusDeleting, 3), noDirectory()}, data.VersionOptions{})
 	wantDeleting(t, "Hold of a file whose directory is gone", err, true, "S")
 	if errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("Hold of a file whose directory is gone = %v, want no sql.ErrNoRows", err)
 	}
-	// A directory that cannot be read leaves the refusal untyped, the
-	// read's error beside it.
 	errRead := errors.New("the connection dropped")
-	_, err = hold(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusDeleting, 3), {Err: errRead}}, data.VersionOptions{})
+	_, err = holdFInATransaction(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusDeleting, 3), {Err: errRead}}, data.VersionOptions{})
 	var de *blobfs.DeletingError
 	if !errors.Is(err, blobfs.ErrDeleting) || !errors.Is(err, errRead) || errors.As(err, &de) {
 		t.Errorf("Hold of a deleting row whose directory is unread = %v, want ErrDeleting and the read's error, untyped", err)
 	}
-	_, err = hold(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusAvailable, 3)}, data.VersionOptions{Version: 2})
+	_, err = holdFInATransaction(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusAvailable, 3)}, data.VersionOptions{Version: 2})
 	if !errors.Is(err, query.ErrVersionMismatch) || errors.Is(err, blobfs.ErrDeleting) || !strings.Contains(err.Error(), "expected 2, current 3") {
 		t.Errorf("Hold at a stale version = %v, want ErrVersionMismatch naming both versions", err)
 	}
-	_, err = hold(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusAvailable, 2)}, data.VersionOptions{Version: 2})
+	_, err = holdFInATransaction(t, []sqltest.Response{{Affected: 0}, fileResponse("F", "a.txt", blobfs.StatusAvailable, 2)}, data.VersionOptions{Version: 2})
 	if err == nil || errors.Is(err, query.ErrVersionMismatch) || errors.Is(err, blobfs.ErrDeleting) || errors.Is(err, blobfs.ErrNotFound) || !strings.Contains(err.Error(), "available at version 2") {
 		t.Errorf("Hold that matched nothing over an available row at the version = %v, want an error naming the row's state", err)
 	}
 }
 
-// TestDeleteFile checks the delete's first step in both forms, and a
-// retry of a deleting row.
 func TestDeleteFile(t *testing.T) {
 	ctx := context.Background()
 	for _, f := range forms {
@@ -163,8 +151,6 @@ func TestDeleteFile(t *testing.T) {
 	}
 }
 
-// TestPurgeFile checks the purge, the read after a removal of nothing,
-// and each refusal.
 func TestPurgeFile(t *testing.T) {
 	ctx := context.Background()
 	t.Run("RemovesTheDeletingRow", func(t *testing.T) {

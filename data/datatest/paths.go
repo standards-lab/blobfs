@@ -10,11 +10,6 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// hostileNames are directory names that would break a path spliced into
-// SQL text or into an array literal, and that ValidateName accepts:
-// quotes, a backslash, braces, a comma, an SQL comment and statement
-// terminator, a non-ASCII name, leading and trailing spaces, and the word
-// NULL.
 var hostileNames = []string{
 	`a"b`,
 	`a\b`,
@@ -29,12 +24,8 @@ var hostileNames = []string{
 	`back\\slash\n`,
 }
 
-// paths checks path resolution through the variant under test against the
-// baseline, and Path.
 func (s *suite) paths(t *testing.T) {
 	top := s.mkdir(t, "resolve-"+t.Name())
-	// A chain of depth six below top: top/d1/d2/d3/d4/d5/d6, where chain[i]
-	// is at depth i below top and names[i] is its name.
 	chain := []blobfs.Directory{top}
 	names := []string{top.Name}
 	for i := 1; i <= 6; i++ {
@@ -42,9 +33,7 @@ func (s *suite) paths(t *testing.T) {
 		chain = append(chain, s.mkdirUnder(t, chain[i-1].ID, n))
 		names = append(names, n)
 	}
-	// rel is the path from chain[from] down to chain[to].
 	rel := func(from, to int) string { return strings.Join(names[from+1:to+1], "/") }
-	// fromRoot is the path from the root down to chain[to].
 	fromRoot := func(to int) string { return strings.Join(names[:to+1], "/") }
 
 	t.Run("Depths", func(t *testing.T) {
@@ -68,7 +57,6 @@ func (s *suite) paths(t *testing.T) {
 				}
 			}
 		}
-		// Either spelling of a segment resolves to the row stored composed.
 		cafe := s.mkdirUnder(t, chain[2].ID, composed)
 		for _, spelling := range []string{composed, decomposed} {
 			path := rel(0, 2) + "/" + spelling
@@ -80,8 +68,6 @@ func (s *suite) paths(t *testing.T) {
 	t.Run("Path", func(t *testing.T) {
 		for depth := range chain {
 			s.wantPath(t, chain[depth].ID, "/"+fromRoot(depth))
-			// The path after its leading slash resolves from the root back to
-			// the directory.
 			if got, err := s.store.Directories.FindByPath(s.ctx, s.db, blobfs.RootID, fromRoot(depth)); err != nil || got.ID != chain[depth].ID {
 				t.Errorf("FindByPath(root, %q) = %+v, %v, want %s", fromRoot(depth), got, err, chain[depth].ID)
 			}
@@ -124,8 +110,6 @@ func (s *suite) paths(t *testing.T) {
 		}
 	})
 	t.Run("Refused", func(t *testing.T) {
-		// A path is relative and every segment a valid name, so upward
-		// navigation and the absolute spelling are refused before any SQL.
 		for _, path := range []string{"/", "/" + names[1], names[1] + "/", names[1] + "//" + names[2], ".", "..", names[1] + "/..", "../a", "./" + names[1]} {
 			_, err := s.store.Directories.FindByPath(s.ctx, s.db, top.ID, path)
 			if !errors.Is(err, blobfs.ErrInvalidPath) {
@@ -141,8 +125,6 @@ func (s *suite) paths(t *testing.T) {
 	t.Run("HostileNames", func(t *testing.T) {
 		hostile := s.mkdir(t, "hostile-"+t.Name())
 		for _, n := range hostileNames {
-			// Created through the store directly: the suite's naming helper
-			// rewrites backslashes.
 			d, err := s.store.Directories.Create(s.ctx, s.db, hostile.ID, n, data.CreateOptions{})
 			if err != nil {
 				t.Fatalf("Create(%q): %v", n, err)
@@ -162,14 +144,10 @@ func (s *suite) paths(t *testing.T) {
 				}
 			}
 			s.wantPath(t, child.ID, "/"+hostile.Name+"/"+n+"/child")
-			// A name that does not exist under the hostile one is not found,
-			// so no character of it reached the engine as syntax.
 			if _, err := s.store.Directories.FindByPath(s.ctx, s.db, hostile.ID, n+"/absent"); !errors.Is(err, blobfs.ErrNotFound) {
 				t.Errorf("FindByPath below %q of an absent name = %v, want ErrNotFound", n, err)
 			}
 		}
-		// Each of a, b, and a,b is its own directory: the comma is a
-		// character of a name, not a separator.
 		a := s.mkdirUnder(t, hostile.ID, "a")
 		b := s.mkdirUnder(t, hostile.ID, "b")
 		for _, c := range []struct {

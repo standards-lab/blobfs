@@ -79,9 +79,6 @@ func (s *Store) EnsureFile(ctx context.Context, req EnsureFileRequest) (_ blobfs
 	}
 	e, err := db.Transact(ctx, first, nil)
 	if errors.Is(err, blobfs.ErrNameTaken) || errors.Is(err, blobfs.ErrIDTaken) {
-		// A concurrent writer's insert won, and the violation aborted the
-		// transaction, which Files.Ensure cannot recover inside; a fresh
-		// one finds the row. An id held under another name fails again.
 		e, err = db.Transact(ctx, first, nil)
 	}
 	if err != nil {
@@ -96,7 +93,6 @@ func (s *Store) EnsureFile(ctx context.Context, req EnsureFileRequest) (_ blobfs
 		}
 		return blobfs.File{}, false, err
 	case e.outcome == WritePresent && e.file.Status != blobfs.StatusAvailable:
-		// A deleting row, under id or another, is refused by its delete.
 		return blobfs.File{}, false, s.Files.dirs.deletingFile(ctx, db, e.file, nil)
 	case e.file.ID != canonical:
 		return blobfs.File{}, false, fmt.Errorf("the file %s holds the name: %w", e.file.ID, blobfs.ErrNameTaken)
@@ -108,12 +104,8 @@ func (s *Store) EnsureFile(ctx context.Context, req EnsureFileRequest) (_ blobfs
 	case err == nil:
 		return file, true, nil
 	case !lost:
-		// Told by store rather than by the error, which may be the hook's
-		// wrapping any sentinel.
 		return blobfs.File{}, false, err
 	}
-	// Another writer moved the row first, and completed it if the read
-	// finds it available.
 	found, ferr := s.Files.byID.One(ctx, db, query.Args{"id": e.file.ID})
 	if ferr != nil || found.Status != blobfs.StatusAvailable {
 		return blobfs.File{}, false, errors.Join(err, notFound(ferr))
@@ -121,21 +113,6 @@ func (s *Store) EnsureFile(ctx context.Context, req EnsureFileRequest) (_ blobfs
 	return found, false, nil
 }
 
-// store writes the pending file begin returned, its errors bare: the put
-// outside any transaction, then the completion in a transaction on db,
-// with onComplete, when it is not nil, in it after Files.Complete. The
-// abandon runs only at the pending version, and a completion that finds
-// the version moved on or the row available abandons nothing: another
-// writer moved or completed the row. A completion refused as deleting or
-// not found deletes the object just put; any other failure, onComplete's
-// among them, abandons the write.
-//
-// lost reports that another writer moved the row past this write: its
-// completion refused as a stale version or a row no longer pending, or,
-// after a failed put or completion that is not onComplete's, its abandon
-// refused so. It is told from the completion's and the abandon's own
-// refusals, never from the error returned, which onComplete's may wrap.
-// onComplete's failure is never lost: its error is the call's.
 func (s *Store) store(ctx context.Context, db *sqlate.DB, objects ObjectStore, body io.Reader, size int64, file blobfs.File, onComplete func(context.Context, *sqlate.Tx, blobfs.File) error) (_ blobfs.File, lost bool, _ error) {
 	if err := blobfs.Transition(file.Status, blobfs.StatusAvailable); err != nil {
 		if !file.Status.Mutable() {
@@ -143,12 +120,7 @@ func (s *Store) store(ctx context.Context, db *sqlate.DB, objects ObjectStore, b
 		}
 		return blobfs.File{}, false, err
 	}
-	// The cleanup outlives ctx's cancellation: a caller that hangs up
-	// mid-body cancels ctx, and the abandon and the delete must still run
-	// rather than leave the row to the stale reclaim.
 	cleanup := context.WithoutCancel(ctx)
-	// abandon removes the row at its pending version; tolerate reports
-	// whether an abandon refused as moved on is another writer's win.
 	abandon := func(err error, tolerate bool) (blobfs.File, bool, error) {
 		rerr := s.remove(cleanup, db, objects, file.ID, &file.Version)
 		if rerr == nil {
@@ -161,9 +133,6 @@ func (s *Store) store(ctx context.Context, db *sqlate.DB, objects ObjectStore, b
 	if err != nil {
 		return abandon(fmt.Errorf("put the object: %w", err), true)
 	}
-	// refused is the completion's own refusal, and hooked the hook's error,
-	// each told apart from the transaction's, so a hook error abandons the
-	// write whatever it wraps.
 	var refused, hooked error
 	done, err := db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 		done, err := s.Files.completeFile(ctx, tx, file.ID, file.Version, obj)
@@ -181,7 +150,6 @@ func (s *Store) store(ctx context.Context, db *sqlate.DB, objects ObjectStore, b
 	}, nil)
 	switch {
 	case errors.Is(refused, blobfs.ErrDeleting), errors.Is(refused, blobfs.ErrNotFound):
-		// Checked first, since a DeletingError wraps its TransitionError.
 		if derr := objects.DeleteObject(cleanup, file.Key); derr != nil {
 			return blobfs.File{}, false, errors.Join(err, fmt.Errorf("delete the object: %w", derr))
 		}
@@ -215,8 +183,6 @@ func (s *Store) RemoveFile(ctx context.Context, db *sqlate.DB, objects ObjectDel
 		picked = true
 		file, marked, err := s.Files.deleteFile(ctx, tx, id, versionAt(opts.Version))
 		if err != nil || !marked || opts.OnDelete == nil {
-			// A row returned unmarked was already deleting: a retry, whose
-			// hook ran with the delete that marked it.
 			return file, err
 		}
 		if err := opts.OnDelete(ctx, tx, file); err != nil {
@@ -241,8 +207,6 @@ func (s *Store) RemoveFileID(ctx context.Context, db *sqlate.DB, objects ObjectD
 	return s.remove(ctx, db, objects, id, opts.at())
 }
 
-// remove is RemoveFileID at version, or at any version when version is
-// nil, with its errors bare for the write's abandon.
 func (s *Store) remove(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, id string, version *int64) error {
 	file, err := db.Transact(ctx, func(tx *sqlate.Tx) (blobfs.File, error) {
 		file, _, err := s.Files.deleteFile(ctx, tx, id, version)
@@ -264,7 +228,6 @@ func (s *Store) PurgeFile(ctx context.Context, db *sqlate.DB, objects ObjectDele
 	return s.purge(ctx, db, objects, file)
 }
 
-// purge is PurgeFile's body, with its errors bare.
 func (s *Store) purge(ctx context.Context, db *sqlate.DB, objects ObjectDeleter, file blobfs.File) error {
 	if err := objects.DeleteObject(ctx, file.Key); err != nil {
 		return fmt.Errorf("delete the object: %w", err)

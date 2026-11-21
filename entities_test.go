@@ -33,8 +33,6 @@ func TestNewID(t *testing.T) {
 	}
 }
 
-// TestRootID fixes the root's well-known id: the nil UUID in canonical
-// form, which parses as a uuid and binds to a uuid column as text.
 func TestRootID(t *testing.T) {
 	u, err := uuid.Parse(blobfs.RootID)
 	if err != nil {
@@ -48,11 +46,6 @@ func TestRootID(t *testing.T) {
 	}
 }
 
-// TestParseID proves a caller-supplied id is returned in the canonical
-// form NewID mints, whatever accepted form it came in, so the row and its
-// key agree; and that the nil UUID, the empty string, and text that is no
-// UUID are refused as an IDError matching ErrInvalidID, with the id and
-// the reason in the message.
 func TestParseID(t *testing.T) {
 	minted := blobfs.NewID()
 	for _, form := range []string{minted, strings.ToUpper(minted), "{" + minted + "}", "urn:uuid:" + minted, strings.ReplaceAll(minted, "-", "")} {
@@ -76,8 +69,6 @@ func TestParseID(t *testing.T) {
 	}
 }
 
-// TestIsRoot fixes what makes a directory the root: a nil parent, and
-// nothing else.
 func TestIsRoot(t *testing.T) {
 	parent, name := "p", "n"
 	if !(blobfs.Directory{ID: blobfs.RootID}).IsRoot() {

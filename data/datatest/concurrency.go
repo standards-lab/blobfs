@@ -15,12 +15,6 @@ import (
 	"github.com/standards-lab/blobfs/data"
 )
 
-// opposingMoves is the tree lock's proof: transaction A moves X under Y
-// while B moves Y under X, each through Directories.Move, interleaved by a
-// gated wrapper of the variant that pauses each move after its lock. When
-// the store serializes, B blocks in the lock until A commits and is then
-// ErrCycle. When it does not, both commit and X and Y form a cycle
-// detached from the root, which the check asserts, walks, and repairs.
 func (s *suite) opposingMoves(t *testing.T) {
 	x := s.mkdir(t, "x-"+t.Name())
 	y := s.mkdir(t, "y-"+t.Name())
@@ -64,8 +58,6 @@ func (s *suite) opposingMoves(t *testing.T) {
 	if err := <-a.moved; err != nil {
 		t.Fatalf("A's move on a variant that does not serialize: %v", err)
 	}
-	// A's update is uncommitted, so B's check passes; B's update waits on
-	// A's row locks and returns only once A commits.
 	close(releaseB)
 	select {
 	case err := <-b.moved:
@@ -90,8 +82,6 @@ func (s *suite) opposingMoves(t *testing.T) {
 	if err := <-b.done; err != nil {
 		t.Fatalf("B's commit: %v", err)
 	}
-	// Both moves committed: X and Y are each other's ancestor, unreachable
-	// from the root.
 	xr, yr := s.directory(t, x.ID), s.directory(t, y.ID)
 	if xr.ParentID == nil || yr.ParentID == nil || *xr.ParentID != y.ID || *yr.ParentID != x.ID {
 		t.Fatalf("after both commits x's parent is %v and y's is %v, want each the other", xr.ParentID, yr.ParentID)
@@ -103,8 +93,6 @@ func (s *suite) opposingMoves(t *testing.T) {
 		t.Error("the two directories are not each their own ancestor; no cycle formed")
 	}
 	s.walksTerminate(t, x.ID, y.ID)
-	// Repair through the store so the database stays walkable: Y back under
-	// the root, off the loop, so the cycle check passes.
 	if _, err := s.move(t, y.ID, blobfs.RootID, y.Name, yr.Version); err != nil {
 		t.Fatalf("the repairing move of y under the root: %v", err)
 	}
@@ -115,9 +103,6 @@ func (s *suite) opposingMoves(t *testing.T) {
 	s.wantPath(t, x.ID, "/"+y.Name+"/moved")
 }
 
-// walksTerminate checks IsWithin and Path terminate on the cycle x and y
-// form, with their defined answers, on both stores, each call under a
-// deadline so a walk that never ends fails rather than hangs.
 func (s *suite) walksTerminate(t *testing.T, x, y string) {
 	t.Helper()
 	child := s.mkdirUnder(t, x, "below-the-loop")
@@ -150,9 +135,6 @@ func (s *suite) walksTerminate(t *testing.T, x, y string) {
 	}
 }
 
-// opposingSerializableMoves checks, on every variant, that two opposing
-// moves at serializable isolation, interleaved as without the lock, end
-// with one refused as sqlate.ErrSerializationFailure and no cycle.
 func (s *suite) opposingSerializableMoves(t *testing.T) {
 	x := s.mkdir(t, "sx-"+t.Name())
 	y := s.mkdir(t, "sy-"+t.Name())
@@ -179,7 +161,6 @@ func (s *suite) opposingSerializableMoves(t *testing.T) {
 	}
 	close(releaseB)
 	if !s.store.Directories.Serializes() {
-		// B's update waits on A's row locks; A commits meanwhile.
 		time.Sleep(blocked / 2)
 		a.commit <- struct{}{}
 		if err := <-a.done; err != nil {
@@ -210,10 +191,6 @@ func (s *suite) opposingSerializableMoves(t *testing.T) {
 	s.wantPath(t, x.ID, "/"+y.Name+"/moved")
 }
 
-// gatedStore builds a store over a gated wrapper of the variant the
-// engine under test builds, through an engine that wraps it, against the
-// suite's catalog and dialect, and checks that the wrapper lists and
-// verifies the variant's own statements through the embedding.
 func (s *suite) gatedStore(t *testing.T) (*gated, *data.Store) {
 	t.Helper()
 	g := &gated{arrived: make(chan chan struct{})}
@@ -229,8 +206,6 @@ func (s *suite) gatedStore(t *testing.T) (*gated, *data.Store) {
 	if err != nil {
 		t.Fatalf("data.New over the gated variant: %v", err)
 	}
-	// The wrapper embeds the variant, so it lists and verifies the
-	// engine's own statements as the store under test does.
 	if got, want := len(store.Statements()), len(s.store.Statements()); got != want {
 		t.Errorf("the gated store lists %d statements, want the %d of the store under test", got, want)
 	}
@@ -240,15 +215,11 @@ func (s *suite) gatedStore(t *testing.T) (*gated, *data.Store) {
 	return g, store
 }
 
-// gated wraps a variant so that every LockTree, once the wrapped lock has
-// returned, sends a release channel on arrived and waits on it, letting
-// the suite decide when each move proceeds past its lock.
 type gated struct {
 	data.Variant
 	arrived chan chan struct{}
 }
 
-// LockTree takes the wrapped variant's lock and then waits at the gate.
 func (g *gated) LockTree(ctx context.Context, tx *sqlate.Tx) error {
 	if err := g.Variant.LockTree(ctx, tx); err != nil {
 		return err
@@ -259,8 +230,6 @@ func (g *gated) LockTree(ctx context.Context, tx *sqlate.Tx) error {
 	return nil
 }
 
-// await returns the release channel of the next move to reach the gate,
-// failing the test when none arrives within the bound.
 func (g *gated) await(t *testing.T, who string) chan struct{} {
 	t.Helper()
 	select {
@@ -272,9 +241,6 @@ func (g *gated) await(t *testing.T, who string) chan struct{} {
 	}
 }
 
-// wantNotArrived fails the test when a move reaches the gate within the
-// blocking bound: on a serializing variant it must be waiting inside the
-// lock.
 func (g *gated) wantNotArrived(t *testing.T, who string) {
 	t.Helper()
 	select {
@@ -284,19 +250,12 @@ func (g *gated) wantNotArrived(t *testing.T, who string) {
 	}
 }
 
-// mover is one move under way on a goroutine: moved reports
-// Directories.Move's result once it returns, commit tells the goroutine
-// to commit, and done reports the commit, or the rollback that follows a
-// refused move.
 type mover struct {
 	moved  chan error
 	commit chan struct{}
 	done   chan error
 }
 
-// startMove begins a transaction under opts on a goroutine, runs
-// Directories.Move through store in it, renaming the directory to moved,
-// and waits for the suite before committing.
 func (s *suite) startMove(store *data.Store, id, parentID string, version int64, opts *sql.TxOptions) *mover {
 	m := &mover{moved: make(chan error, 1), commit: make(chan struct{}), done: make(chan error, 1)}
 	go func() {
@@ -318,8 +277,6 @@ func (s *suite) startMove(store *data.Store, id, parentID string, version int64,
 	return m
 }
 
-// reachable counts how many of the two directories a walk down from the
-// root reaches; a directory in a cycle is never reached.
 func (s *suite) reachable(t *testing.T, x, y string) int {
 	t.Helper()
 	p := s.db.Dialect().Placeholder
@@ -330,9 +287,6 @@ func (s *suite) reachable(t *testing.T, x, y string) int {
 	return s.count(t, s.db, text, x, y)
 }
 
-// ownAncestor reports whether the directory with id is met again on a
-// walk up from itself, bounded to eight steps so the walk terminates on a
-// cycle.
 func (s *suite) ownAncestor(t *testing.T, id string) bool {
 	t.Helper()
 	p := s.db.Dialect().Placeholder
@@ -343,8 +297,6 @@ func (s *suite) ownAncestor(t *testing.T, id string) bool {
 	return s.count(t, s.db, text, id, id) > 1
 }
 
-// wantBlocked fails the test when done delivers within the blocking
-// bound.
 func wantBlocked(t *testing.T, done <-chan error, msg string) {
 	t.Helper()
 	select {
@@ -354,8 +306,6 @@ func wantBlocked(t *testing.T, done <-chan error, msg string) {
 	}
 }
 
-// awaitOrFail returns what done delivers, failing the test with msg when
-// nothing arrives within the unblocking bound.
 func awaitOrFail(t *testing.T, done <-chan error, msg string) error {
 	t.Helper()
 	select {
@@ -367,11 +317,6 @@ func awaitOrFail(t *testing.T, done <-chan error, msg string) error {
 	}
 }
 
-// racingPool is the pool with the first two runs of one lookup gated, each
-// waiting after its lookup until the other's has run, so two concurrent
-// Ensure calls both find no row and both insert: the race Ensure recovers
-// from on the pool. It embeds the pool, so every other statement, and the
-// fallback's own transaction, runs on the pool itself.
 type racingPool struct {
 	*sqlate.DB
 	lookup string
@@ -381,7 +326,6 @@ type racingPool struct {
 	forced bool
 }
 
-// racingPool gates the store's statement named lookup.
 func (s *suite) racingPool(t *testing.T, lookup string) *racingPool {
 	t.Helper()
 	for _, st := range s.store.Statements() {
@@ -393,9 +337,6 @@ func (s *suite) racingPool(t *testing.T, lookup string) *racingPool {
 	return nil
 }
 
-// QueryContext runs the query on the pool and, for the first two runs of
-// the lookup, waits at the gate before it hands the rows back. The rows
-// already reflect the statement's snapshot, taken when it ran.
 func (p *racingPool) QueryContext(ctx context.Context, text string, args ...any) (*sql.Rows, error) {
 	rows, err := p.DB.QueryContext(ctx, text, args...)
 	if text != p.lookup {
@@ -420,9 +361,6 @@ func (p *racingPool) QueryContext(ctx context.Context, text string, args ...any)
 	return rows, err
 }
 
-// wantRecovered fails the test unless the race was forced and resolved
-// by the recovery: both lookups ran before either insert, and a third ran
-// after the refused insert.
 func (p *racingPool) wantRecovered(t *testing.T) {
 	t.Helper()
 	p.mu.Lock()

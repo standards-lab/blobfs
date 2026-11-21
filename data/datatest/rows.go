@@ -8,9 +8,6 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// The column lists of blobfs's rows, in the order the published patterns
-// blobfs.file_columns and blobfs.directory_columns select them and the
-// store's statements scan them.
 var (
 	fileColumns      = []string{"id", "directory_id", "name", "status", "key", "size", "content_type", "etag", "version", "created_at", "updated_at"}
 	directoryColumns = []string{"id", "parent_id", "name", "status", "version", "created_at", "updated_at"}

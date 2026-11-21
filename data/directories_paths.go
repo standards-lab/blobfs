@@ -62,10 +62,6 @@ func (d *Directories) Path(ctx context.Context, sess sqlate.Session, id string) 
 	return b.String(), nil
 }
 
-// ancestry orders the rows of directory_ancestors into the chain from the
-// start up to the root. The start is the row no other row names as its
-// parent, found by the rows alone so the id's spelling does not matter; a
-// loop is blobfs.ErrCycle.
 func ancestry(rows []ancestor) ([]ancestor, error) {
 	byID := make(map[string]ancestor, len(rows))
 	parents := make(map[string]bool, len(rows))
@@ -104,8 +100,6 @@ func ancestry(rows []ancestor) ([]ancestor, error) {
 	}
 }
 
-// splitPath returns the normalized, validated segments of a relative
-// path, or blobfs.ErrInvalidPath wrapping the refusal.
 func splitPath(path string) ([]string, error) {
 	if strings.HasPrefix(path, "/") {
 		return nil, fmt.Errorf("%w: %q starts with /; a path is relative to the directory it starts from", blobfs.ErrInvalidPath, path)

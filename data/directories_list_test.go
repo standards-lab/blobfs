@@ -18,13 +18,8 @@ import (
 	"github.com/standards-lab/blobfs/data/datatest"
 )
 
-// A parent that is not the root, for the listings under one.
 const parentID = "0199a0b0-0000-7000-8000-000000000001"
 
-// children scripts one page of directory rows under parent, one per name,
-// with ids derived from the names so a test can tell them apart. A test
-// under query.TotalExact wraps it with sqltest.WithTotal; a TotalNone page
-// scripts it unwrapped.
 func children(parent string, names ...string) sqltest.Response {
 	var dirs []blobfs.Directory
 	for _, n := range names {
@@ -33,7 +28,6 @@ func children(parent string, names ...string) sqltest.Response {
 	return datatest.DirectoryRows(dirs...)
 }
 
-// directoryNames returns the names of a page's directories, in order.
 func directoryNames(c query.Collection[blobfs.Directory]) []string {
 	var out []string
 	for _, d := range c.Items {
@@ -42,7 +36,6 @@ func directoryNames(c query.Collection[blobfs.Directory]) []string {
 	return out
 }
 
-// queries returns the recorder's query calls, in order.
 func queries(rec *sqltest.Recorder) []sqltest.Call {
 	var out []sqltest.Call
 	for _, c := range rec.Calls() {
@@ -53,15 +46,10 @@ func queries(rec *sqltest.Recorder) []sqltest.Call {
 	return out
 }
 
-// listed scripts the read of the listed directory that a listing without
-// IncludeDeleting runs after its page: parentID, active.
 func listed() sqltest.Response {
 	return directoryResponse(parentID, blobfs.RootID, "parent", 1)
 }
 
-// pages returns the recorder's query calls without the reads of the
-// listed directory, failing the test unless each page is followed by one,
-// bound to the page's own anchor.
 func pages(t *testing.T, rec *sqltest.Recorder) []sqltest.Call {
 	t.Helper()
 	calls := queries(rec)
@@ -78,18 +66,12 @@ func pages(t *testing.T, rec *sqltest.Recorder) []sqltest.Call {
 	return out
 }
 
-// hideDeleting is the predicate the listing appends after the caller's
-// filters when IncludeDeleting is not set, at placeholder n.
 func hideDeleting(n int) string {
 	return "q.status <> CAST($" + strconv.Itoa(n) + " AS text)"
 }
 
-// countWindow is the window a counted page reads its total through.
 const countWindow = "COUNT(*) OVER ()"
 
-// wantClauses fails the test unless the page's text holds each clause,
-// in order: the clauses a listing composes from its request, and not the
-// text around them.
 func wantClauses(t *testing.T, what, sql string, clauses ...string) {
 	t.Helper()
 	rest := sql
@@ -103,9 +85,6 @@ func wantClauses(t *testing.T, what, sql string, clauses ...string) {
 	}
 }
 
-// TestListDirectories checks List by page number, counted and under
-// TotalNone: the statement, its bindings, More, the cursor, and the
-// parent's read after each page.
 func TestListDirectories(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,
@@ -141,12 +120,10 @@ func TestListDirectories(t *testing.T) {
 	if len(calls) != 3 {
 		t.Fatalf("ran %d pages, want one per call", len(calls))
 	}
-	// The caller's filter, then the one hiding deleting rows, under the
-	// count, in name order, fetching one row past the page.
 	for i, offset := range []int{0, 2} {
 		wantClauses(t, "page", calls[i].SQL, countWindow, "q.version >= CAST($2 AS bigint)", hideDeleting(3), "ORDER BY q.name OFFSET")
 		if want := []any{parentID, 1, "deleting", offset, 3}; !slices.Equal(calls[i].Args, want) {
-			t.Errorf("page %d bound %v, want %v", i+1, calls[i].Args, want)
+			t.Errorf("page %d bound %v, want %v: one row past the page", i+1, calls[i].Args, want)
 		}
 	}
 	wantClauses(t, "TotalNone page", calls[2].SQL, hideDeleting(2), "ORDER BY q.name OFFSET")
@@ -155,8 +132,6 @@ func TestListDirectories(t *testing.T) {
 	}
 }
 
-// TestListDirectoriesEmptyPage checks an empty first page reports 0 and an
-// empty later page reports query.NoTotal.
 func TestListDirectoriesEmptyPage(t *testing.T) {
 	ctx := context.Background()
 	s, db, _ := openStore(t, fallback, sqltest.WithTotal(children(parentID), 0), listed())
@@ -178,7 +153,6 @@ func TestListDirectoriesEmptyPage(t *testing.T) {
 	}
 }
 
-// TestListRoot checks the listing of RootID is the depth-one directories.
 func TestListRoot(t *testing.T) {
 	s, db, rec := openStore(t, fallback, sqltest.WithTotal(children(blobfs.RootID, "docs"), 1), directoryResponse(blobfs.RootID, "", "/", 1))
 	c, err := s.Directories.List(context.Background(), db, blobfs.RootID, query.Directives{}, query.Page{Number: 1, Size: 10}, data.ListOptions{})
@@ -195,8 +169,6 @@ func TestListRoot(t *testing.T) {
 	}
 }
 
-// TestContinueDirectories checks Continue reads past the cursor by the
-// keyset predicate, ascending and descending.
 func TestContinueDirectories(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,
@@ -237,8 +209,6 @@ func TestContinueDirectories(t *testing.T) {
 	}
 }
 
-// TestListDirectoriesRefusesDirectives checks an undeclared field, a page
-// below 1, and an empty cursor are refused before any SQL.
 func TestListDirectoriesRefusesDirectives(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback)
@@ -267,8 +237,6 @@ func TestListDirectoriesRefusesDirectives(t *testing.T) {
 	}
 }
 
-// TestDirectoriesNonContinuableSort checks a mixed-direction or nullable
-// sort pages by number with no cursor, and Continue under it is refused.
 func TestDirectoriesNonContinuableSort(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
@@ -305,9 +273,6 @@ func TestDirectoriesNonContinuableSort(t *testing.T) {
 	}
 }
 
-// editCursor decodes a cursor, replaces old with new in its body, and
-// encodes it again with its check prefix unchanged, as a caller who edits
-// a cursor's position would.
 func editCursor(t *testing.T, c query.Cursor, old, new string) query.Cursor {
 	t.Helper()
 	raw, err := base64.RawURLEncoding.DecodeString(string(c))
@@ -317,8 +282,6 @@ func editCursor(t *testing.T, c query.Cursor, old, new string) query.Cursor {
 	return query.Cursor(base64.RawURLEncoding.EncodeToString(bytes.Replace(raw, []byte(old), []byte(new), 1)))
 }
 
-// TestDirectoriesCursorRefusals checks an edited, foreign, or relayed
-// cursor is refused before any SQL.
 func TestDirectoriesCursorRefusals(t *testing.T) {
 	ctx := context.Background()
 	s, db, rec := openStore(t, fallback,
@@ -360,9 +323,6 @@ func TestDirectoriesCursorRefusals(t *testing.T) {
 	}
 }
 
-// TestListDirectoriesDeleting checks the hiding filter, the refusal of a
-// deleting parent, IncludeDeleting, and the cursor's binding to it;
-// the caller's filters are never appended to in place.
 func TestListDirectoriesDeleting(t *testing.T) {
 	ctx := context.Background()
 	none := query.Directives{Total: query.TotalNone}

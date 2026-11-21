@@ -48,14 +48,6 @@ policy a consumer may not want, or waits for a second consumer to show its shape
   form both engines accept, or makes them variation points first. Their companions
   `mark_directory_files_deleting` and `move_file` are unaffected, since they update `blobfs_file`
   and read `blobfs_directory` in the subquery. Trigger: the second SQL engine
-  (`backlog.second-providers` in the workspace roadmap).
+  (backlog `second-providers` in `standards-lab/roadmap/index.toml`).
 
-## Assumptions
-
-- The baseline runs on any engine `sqlate` has a dialect for, but only PostgreSQL is exercised.
-- The key rule of a real Azure account matches `go-storage`'s azureblob validator; the example ran
-  against Azurite, which accepts keys the real service refuses.
-- The consumer-side ownership composition, an owner row per top-level directory or a join row per
-  file, generalizes to a second domain once one exists.
-- No concurrency beyond the suite's paired transactions and the listing stress in `sqlate` was
-  measured; plan shapes and buffer counts carry across machines, timings do not.
+The assumptions the design rests on are in [concepts](../docs/concepts.md#assumptions).

@@ -3,7 +3,6 @@ services:
     build:
       context: postgres
     ports:
-      # 5434 by default so the stack coexists with sqlate on 5433 and a service on 5432.
       - "127.0.0.1:${POSTGRES_PORT:-5434}:5432"
     volumes:
       - blobfs-postgres:/var/lib/postgresql

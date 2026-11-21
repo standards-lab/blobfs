@@ -544,9 +544,12 @@ through directories already deleting, so a repeated mark reaches a straggler: an
 create left in the branch after reading its parent before the first mark committed.
 
 The root is `ErrRootDirectory` before any SQL, and a directory that does not exist is
-`ErrNotFound`. With `VersionOptions.Version` set, the version guards the walk's anchor: an
-active directory at another version marks nothing and is `query.ErrVersionMismatch`, and a
-directory already deleting is the mark's retry at any version, after which the files' update
+`ErrNotFound`. A delete, a move, and a mark refuse as the root any id that is the nil UUID once
+braces and hyphens are removed: every spelling of `blobfs.RootID` PostgreSQL accepts, braced or
+hyphenated after any group of four digits, and some it refuses. Any other id, a prefix or a space
+included, reaches the statement. With `VersionOptions.Version` set, the version guards the walk's
+anchor: an active directory at another version marks nothing and is `query.ErrVersionMismatch`,
+and a directory already deleting is the mark's retry at any version, after which the files' update
 runs.
 
 A consumer that runs its own work in the transaction of a branch's mark, `LockTree`, then `Find`
@@ -922,37 +925,172 @@ outside the store is standard SQL with the dialect's placeholders. The groups, i
 Verify, Directories, Paths, Files, Writes, Deletes, Protocols, Holds, Moves, Listing, Keyset,
 Branches, and Sweeps.
 
-Protocols runs the protocols end to end over an in-memory object store. It checks
-`Store.WriteFile`'s success; a failed put, which frees the name; a completion refused by a mark
-made during the put, after which the write deletes the object it put and leaves the row to the
-sweep; the completion hook's writes committing with the row, and a hook's error rolling them
-back; a refusing begin; and the refusal of an available row. It checks `Store.EnsureFile`
-creating, returning an available row, resuming a pending one, and refusing a name held under
-another id or a deleting row; a second `EnsureFile` completing the shared row during the first
-one's put; an insert lost to a row a competing writer committed, which `EnsureFile` resumes;
-and the completion hook running once for the call that completes the file, not at all over an
-available row or for the writer whose completion lost, and its error, even one wrapping a lost
-race's sentinel, rolling the completion back and leaving no row.
-It checks `Store.RemoveFile`, its retry once finished, and a refusing pick; the delete hook
-running once in the transaction that marks the file deleting, its writes committing, no hook
-for a retry over a row already deleting, and a hook's error rolling the delete back with the row
-as it was and its object in place;
+Verify runs `Store.Verify` over the store under test and the baseline.
+
+Directories checks the seeded root as the store reads it: the row with `blobfs.RootID`, no parent,
+and the name `/`, at version 1, reached by `Find` and by `FindByPath` of the empty path, with the
+path `/`, and never in a listing. It checks `ErrNotFound` on every read of a directory that does
+not exist, and that every read of a directory, a listing included, returns its timestamps in
+`time.UTC`. It checks `Create` against the baseline: the row with the table's defaults and the
+name stored composed, the same name allowed under another parent, and a file of the same name no
+conflict. `Create`'s and `Ensure`'s refusals match by sentinel and constraint or in the same text,
+those before any SQL leave no row, and a name a deleting directory holds is refused to both with
+that directory's `DeletingError`, not `ErrNameTaken`. `Ensure` creates the row under a supplied
+id, and later calls in either spelling, under another supplied id, and inside a transaction find
+the same row and create nothing. In the concurrent `Ensure`, exactly one caller creates the row,
+both return it, and the parent holds one row of the name. `FindByName` finds either spelling,
+does not find a file of the same name, and refuses a name `ValidateName` refuses with a
+`NameError` before any SQL. The group also checks `Delete` of the root, of a directory with a
+child, a file, or a deleting file, of one a consumer's row references, of a missing one, and of
+an empty one, whose name is then free.
+
+Paths checks `FindByPath` through the variant under test against the baseline over a chain six
+directories deep, from the chain's top, from the root, and from midway, and a segment in either
+spelling resolving to the row stored composed. It checks `Path` of every directory in the chain,
+whose answer after its leading slash resolves from the root back to the directory; a missing
+segment first, in the middle, last, from the root, and deep, `ErrNotFound` naming the prefix that
+failed; a start that is no directory, `ErrNotFound` with no failing prefix; and a leading or
+trailing slash, an empty segment, and `.` and `..` refused as `ErrInvalidPath` before any SQL. It
+creates directories, verbatim through the store, under names that would break a path spliced into
+SQL text or an array literal and that `ValidateName` accepts: quotes, a backslash, braces, a
+comma, an SQL comment and statement terminator, a non-ASCII name, leading and trailing spaces,
+and the word NULL. Each resolves to its own directory, a name absent under it is not found, so no
+character of it reached the engine as syntax, and a comma is a character of a name, not a
+separator.
+
+Files checks that every read of a file returns its timestamps in `time.UTC`, whatever the session's
+zone and `time.Local`; `Find` and `FindByName`, a name found in either spelling and a directory of
+the same name not found; and the file move, its key untouched, with its refusals, each leaving the
+row unchanged.
+
+Writes checks `Create`'s pending row against the baseline, its key built from the id and the name,
+the declared content type, no size or entity tag, and the name stored composed; `Create`'s and
+`Ensure`'s refusals, by sentinel and constraint or in the same text, those before any SQL leaving
+no row; `Ensure`'s outcomes; `Complete` and its refusals, each leaving the row unchanged; the write
+inside the caller's transaction beside a row that references the pending file, which a rollback
+leaves neither of and a commit both; a retry that finds a stopped write's pending row by name and
+completes it; and a caller-supplied id through the whole protocol, whose delete frees the id for a
+write that reuses the same key.
+
+Deletes checks `Delete` from pending and available, its version advanced once, `updated_at`
+stamped, and every other column unchanged; a retry after a stop at each step converging, a `Purge`
+of an id that never existed included; a rollback; the version-guarded `Delete`; `Purge` of a row
+whose delete has not begun, `ErrNotDeleting`; and `Purge` of a row a consumer's row references,
+`ErrReferenced` over the consumer's constraint and never `ErrNotEmpty`, which a retry finishes once
+the reference goes.
+
+Protocols runs the protocols end to end over an in-memory object store, each case over the
+store under test and then the baseline. It checks `Store.WriteFile`'s success; a failed put,
+which frees the name; a completion refused by a mark made during the put, after which the write
+deletes the object it put and leaves the row to the sweep; the completion hook's writes
+committing with the row, and a hook's error rolling them back; a refusing begin; and the refusal
+of an available row and of a name a deleting row holds, which reports the holder's
+`DeletingError` and leaves the begin's transaction usable. It checks `Store.EnsureFile` creating,
+returning an available row, resuming a pending one, and refusing a name held under another id or
+a deleting row; a second `EnsureFile` completing the shared row during the first one's put; an
+insert lost to a row a competing writer committed, which `EnsureFile` resumes; and the completion
+hook running once for the call that completes the file, not at all over an available row or for
+the writer whose completion lost, and its error, even one wrapping a lost race's sentinel,
+rolling the completion back and leaving no row. It checks `Store.RemoveFile`, its retry once
+finished, and a refusing pick; the delete hook running once in the transaction that marks the
+file deleting, its writes committing, no hook for a retry over a row already deleting, and a
+hook's error rolling the delete back with the row as it was and its object in place;
 `Store.RemoveFileID`'s failed object delete and retry; `Store.PurgeFile` after the caller's own
 `Files.Delete`; and `SweepUntilDone` draining a backlog larger than one batch in counted passes,
 and running no pass once stopped. Protocols runs before any group marks a branch, and it sweeps
 the branches it marks itself.
 
+Holds checks that a hold, plain and at the row's version, changes nothing, the version included,
+and its refusals; and that `Hold` and `Delete` take the same row lock, whatever statement form the
+dialect runs `Delete`'s update in: a `Delete` that starts under a hold waits for the holder's
+commit and then sees its reference, and a hold that starts during a `Delete` waits, then refuses
+the deleting row once the `Delete` commits or holds the row once it rolls back.
+
+Moves checks the tree lock against what `Serializes` reports: when the store serializes, a second
+transaction's `LockTree` blocks while the first holds the lock and returns once the first commits
+or rolls back; when it does not, the lock is a no-op that never blocks. It checks the root's move
+refused before any SQL; a directory moved under itself or any descendant, `ErrCycle` in the same
+text on both stores with nothing changed, and `IsWithin` answering the same question; a subtree's
+move against the baseline, the moved row under its new parent at the next version, its
+descendants and their files following it by id unchanged, the paths computed anew, and the old
+path no longer resolving; a move under the same parent as a rename, the name stored composed, the
+version advanced, and a child's path following; and the move's refusals against the baseline,
+each leaving the row unchanged. Its opposing moves, A moving X under Y while B moves Y under X,
+run through a wrapper of the variant that pauses each move once its lock returns, so the suite
+decides when each proceeds; the `IsWithin` and `Path` calls on the cycle run under a deadline, so
+a walk that never ends fails rather than hangs, and the repairing move puts Y back under the root
+through the store.
+
+Listing checks `Directories.List` and `Files.List`, with their `Continue`, against the rows and
+count of a plain query, counted and not, by default and with `IncludeDeleting`, over a tree four
+directories deep whose file names repeat across directories, so a listing that leaked past its
+directory would show, with files of every status, sizes that tie, and a marked branch the default
+listing hides. The file sorts are by name in both directions, by a nullable field, by status, and
+by `created_at`, each with the name appended as the tie-breaker, under no filter, a `LIKE` on the
+name, a status, the status the listing hides by default, and a null size, at every page size; the
+directory sorts are by name in both directions and by `created_at`, with and without a `LIKE`. It
+checks `More`, the total, and the cursor at the exact page boundaries, counted and not, and for a
+sort a cursor cannot continue; the counted total of an empty first page, a page past the last,
+and an empty continued page; and a page's total agreeing with its rows while another connection
+inserts, on the pool and inside a read-only repeatable-read transaction, whose pages keep its
+snapshot. A request's refusals are its undeclared fields and pages below 1 before any SQL, a
+value the engine cannot read, and every cursor `Continue` refuses; and a cursor records a
+position in the order, not the directory, so one from a directory's listing continues a
+sibling's from the same name on.
+
+Keyset walks every cursorable sort, of one term, of two through the appended key, and of three,
+in both directions, by cursor to the end, and checks it returns the same rows as the baseline
+and an offset walk, each once, without and then with an index on `created_at` of the kind a
+consumer's migration adds. Its files' `created_at` ties in groups of three, their version
+alternates, and their name order differs from their creation order, so every sort term decides
+some pairs, and neither count is a multiple of the page size, so the last page is partial. A
+store's timestamps must round-trip exactly, or a walk over the ties skips or repeats rows.
+
 Branches checks the mark's counts, its convergence and stragglers, its version guard and its
 retry at any version, its wait on a hold, a file move out of the branch racing the mark in both
 orders, every refusal a deleting directory makes, the listings' hiding, and `BranchRoots`'s
-roots; it runs after the other groups because the branches it marks stay in the tree. Sweeps
-runs last because its first pass removes them; it then checks a full sweep with its hook, a pass
-stopped between an object's delete and its row's purge, stragglers, the batch bound, a hook that
-aborts a removal, a refused branch and a refused stale row that hold back nothing behind them,
-at the default batch and at a `Batch` of 1, the stale reclaim's age, and concurrent passes
-converging. Every check of a refusal of a deleting row also checks the `DeletingError`'s
-kind: the file's own for a file whose delete began, and the directory's for everything a mark
-refuses.
+roots; it runs after the other groups because the branches it marks stay in the tree. Its branch
+is three levels deep with files at every level, one of them already deleting. A mark, against the
+baseline, reads every row back deleting at one version past its own, leaves the row already
+deleting unchanged and uncounted, and leaves a sibling and the root untouched; the root is
+`ErrRootDirectory` and a missing directory `ErrNotFound`, each in the same text on both stores; a
+repeated mark counts and changes nothing, and a later one counts the stragglers alone. A mark
+waits on a `Files.Hold` another transaction took of a file in the branch and marks the file once
+the holder commits, so the reference-then-delete rule holds across a branch. A file move that
+commits before the mark leaves the file active in its new directory, the mark's file update
+waiting on the moved row and then finding it outside the branch; a mark that commits first
+refuses the move, which waits on the marked row, with the directory's `DeletingError`; the file
+never ends deleting in an active directory. Every create, ensure, and move a deleting directory
+refuses, and the hold and completion of a marked file, are checked at the marked rows' old and
+new versions and for stragglers, each the directory's `DeletingError`, every refused row left as
+it was, and an ensure that finds a deleting file reporting it present. A listing of a deleting
+directory, and its `Continue`, are `ErrDeleting` unless `IncludeDeleting` is set; a cursor taken
+before a mark continues without the rows marked since, and is `ErrDeleting` once its own
+directory is marked. `BranchRoots` matches the baseline and a plain query over branches marked at
+the top, the middle, and both, and stops at its limit; over a tree with no branch being deleted,
+which the check makes inside a transaction it rolls back, it returns no rows and no error.
+
+Sweeps runs last because its first pass removes the branches the earlier groups marked: it sweeps
+pass after pass while `More`, and checks that every branch being deleted is removed, the rows the
+passes report are the rows that left the tables, each object is deleted once, and no directory is
+left deleting. Every later case starts from nothing to sweep and runs over the store under test
+and then the baseline. It checks a pass with nothing to sweep, with the stale reclaim and without,
+doing nothing; a full sweep of a three-level branch a consumer owns, every row gone in one pass,
+each object deleted once, the hook called deepest first, and a sibling untouched; a pass stopped
+between an object's delete and its row's purge, which walks on past the refused file and keeps
+only the directories above it, and the next pass finishing the branch; stragglers a create that
+raced the mark left active in the branch, marked by the pass once its walk meets them and swept
+with the branch; the batch bound over a branch of eight records, three passes at a batch of three
+and two at four, the last with no `More`; a failing hook aborting its removal, a pass without the
+hook refused by the consumer's owner row, and a pass with it finishing; a refused branch and a
+refused stale row that hold back nothing behind them, at the default batch and at a `Batch` of 1,
+where every pass reads past the refused row and spends its one record and `More` stays true while
+a row remains behind it; the stale reclaim with and without `StaleOlderThan`, old pending and
+deleting rows finished and their names freed, younger rows and available rows left as they were;
+and four concurrent passes of a small batch converging on two owned branches, every pass ending
+without error and every row gone, a pass that loses a race finding the row gone and counting it
+done. Every check of a refusal of a deleting row also checks the `DeletingError`'s kind: the
+file's own for a file whose delete began, and the directory's for everything a mark refuses.
 
 Beside the suite, `FileRows(files...)` and `DirectoryRows(dirs...)` build the `sqltest.Response`
 of a read of blobfs's rows, in the columns the store's statements scan, for a consumer's unit

@@ -47,14 +47,11 @@ type Variant interface {
 //	}
 type Engine func(catalog *query.Catalog, dialect sqlate.Dialect, base Variant) (Variant, error)
 
-// standard is the baseline, the standard-tier variant New binds and hands
-// to the Engine as base.
 type standard struct {
 	dirs     directoryReads
 	holdFile query.Statement
 }
 
-// newStandard binds the baseline over a compiled set.
 func newStandard(stmts *query.Statements, dirs directoryReads) *standard {
 	return &standard{
 		dirs:     dirs,
@@ -62,18 +59,14 @@ func newStandard(stmts *query.Statements, dirs directoryReads) *standard {
 	}
 }
 
-// LockTree takes no lock: standard SQL has none held until commit.
 func (*standard) LockTree(context.Context, *sqlate.Tx) error {
 	return nil
 }
 
-// Serializes reports false: the baseline's LockTree is a no-op.
 func (*standard) Serializes() bool {
 	return false
 }
 
-// ResolvePath reads the start, then one child per segment: n+1 statements
-// for n segments.
 func (v *standard) ResolvePath(ctx context.Context, sess sqlate.Session, startID string, segments []string) (blobfs.Directory, int, error) {
 	dir, err := v.dirs.byID.One(ctx, sess, query.Args{"id": startID})
 	if err != nil {
@@ -92,8 +85,6 @@ func (v *standard) ResolvePath(ctx context.Context, sess sqlate.Session, startID
 	return dir, len(segments), nil
 }
 
-// HoldFile runs hold_file, a self-assigning update; a row affected is a
-// row held.
 func (v *standard) HoldFile(ctx context.Context, tx *sqlate.Tx, id string, version *int64) (bool, error) {
 	n, err := v.holdFile.Exec(ctx, tx, withVersion(query.Args{"id": id}, version))
 	if err != nil {
@@ -102,12 +93,10 @@ func (v *standard) HoldFile(ctx context.Context, tx *sqlate.Tx, id string, versi
 	return n > 0, nil
 }
 
-// Statements returns nil: the baseline's are the data package's own.
 func (*standard) Statements() []query.Statement {
 	return nil
 }
 
-// Verify returns nil: the Store verifies the baseline's statements.
 func (*standard) Verify(context.Context, sqlate.Session) error {
 	return nil
 }

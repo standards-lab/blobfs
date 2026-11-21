@@ -20,10 +20,6 @@ import (
 	"github.com/standards-lab/blobfs/postgres/internal/dbtest"
 )
 
-// TestOpposingRepeatableReadMoves checks two opposing moves at repeatable
-// read, over the engine's variant and the baseline: B's check passes on
-// its old snapshot, and B is refused at its update with a serialization
-// failure, leaving no cycle. See Moves in docs/concepts.md.
 func TestOpposingRepeatableReadMoves(t *testing.T) {
 	const unblocked = 5 * time.Second
 	ctx := context.Background()
@@ -70,8 +66,6 @@ func TestOpposingRepeatableReadMoves(t *testing.T) {
 				_, err := store.Directories.Move(ctx, b, y.ID, data.DirectoryMove{ParentID: x.ID, Name: y.Name, Version: y.Version})
 				moved <- err
 			}()
-			// B waits, on the tree lock over the engine and on X's row lock
-			// over the baseline, until A commits.
 			select {
 			case err := <-moved:
 				t.Fatalf("B's move returned (%v) while A was open", err)

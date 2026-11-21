@@ -15,9 +15,6 @@ var (
 	constraint   = regexp.MustCompile(`(?i)\bCONSTRAINT\s+([A-Za-z_][A-Za-z0-9_]*)`)
 )
 
-// TestMigrations checks the set's name and history table, and that its
-// migrations run in version order, each in a transaction with an up and a
-// down. TestReleasedMigrations pins which migrations the set holds.
 func TestMigrations(t *testing.T) {
 	set, err := postgres.Migrations()
 	if err != nil {
@@ -41,9 +38,6 @@ func TestMigrations(t *testing.T) {
 	}
 }
 
-// TestObjectNames scans every up text for the objects it creates (tables,
-// indexes, and named constraints) and checks that each name starts with
-// the set's name and an underscore, and that Table does too.
 func TestObjectNames(t *testing.T) {
 	prefix := postgres.Source + "_"
 	if !strings.HasPrefix(postgres.Table, prefix) {
@@ -71,8 +65,6 @@ func TestObjectNames(t *testing.T) {
 	}
 }
 
-// TestConstraintConstants checks every constraint-name constant names a
-// constraint or unique index the embedded DDL declares.
 func TestConstraintConstants(t *testing.T) {
 	set, err := postgres.Migrations()
 	if err != nil {
@@ -104,9 +96,6 @@ func TestConstraintConstants(t *testing.T) {
 	}
 }
 
-// TestRootSeed proves the directory migration seeds the root with the
-// root package's id and the name /, under the partial unique index that
-// allows no second root.
 func TestRootSeed(t *testing.T) {
 	set, err := postgres.Migrations()
 	if err != nil {

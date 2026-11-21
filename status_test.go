@@ -10,8 +10,6 @@ import (
 
 var statuses = []blobfs.Status{blobfs.StatusPending, blobfs.StatusAvailable, blobfs.StatusDeleting}
 
-// TestTransitions is the truth table: every pair of statuses, allowed or
-// refused, and the two errors a refusal matches.
 func TestTransitions(t *testing.T) {
 	allowed := map[[2]blobfs.Status]bool{
 		{blobfs.StatusPending, blobfs.StatusAvailable}:  true,
@@ -50,9 +48,6 @@ func TestStatusMutable(t *testing.T) {
 	}
 }
 
-// TestStatusBindsAsText checks that database/sql's default converter binds a
-// Status as its text without a Valuer, which is what lets the entities scan
-// and bind through sqlate's tag mapper with no sqlate import here.
 func TestStatusBindsAsText(t *testing.T) {
 	v, err := driver.DefaultParameterConverter.ConvertValue(blobfs.StatusDeleting)
 	if err != nil {
@@ -77,8 +72,6 @@ func TestDirectoryStatusMutable(t *testing.T) {
 	}
 }
 
-// TestDirectoryStatusBindsAsText checks that a DirectoryStatus binds as its
-// text without a Valuer, as a Status does.
 func TestDirectoryStatusBindsAsText(t *testing.T) {
 	v, err := driver.DefaultParameterConverter.ConvertValue(blobfs.DirectoryStatusDeleting)
 	if err != nil {

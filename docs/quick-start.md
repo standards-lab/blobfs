@@ -12,7 +12,7 @@ emulated locally by Azurite. The program:
 - tests its store without a database, and runs blobfs's conformance suite against a live one
 
 Every file is written in full at the step that needs it, and every block is taken from a program
-that compiles, runs against PostgreSQL 18 and Azurite, and passes its tests. The
+that compiles, runs against PostgreSQL 19 and Azurite, and passes its tests. The
 [concepts](concepts.md) document explains the protocols the program runs, and the
 [features](features.md) document states each rule.
 
@@ -115,7 +115,7 @@ services:
 `compose/postgres/Dockerfile`:
 
 ```dockerfile
-FROM postgres:18.7-alpine
+FROM postgres:19.0-alpine
 
 ENV POSTGRES_USER=app \
     POSTGRES_PASSWORD=app \
@@ -128,7 +128,7 @@ HEALTHCHECK --start-period=30s --start-interval=1s --interval=5s --timeout=3s --
 `compose/azurite/Dockerfile`:
 
 ```dockerfile
-FROM mcr.microsoft.com/azure-storage/azurite:3.37.0
+FROM mcr.microsoft.com/azure-storage/azurite:3.38.0
 
 # The image's busybox nc shows the blob listener accepts connections.
 HEALTHCHECK --start-period=30s --start-interval=1s --interval=5s --timeout=3s --retries=5 \
