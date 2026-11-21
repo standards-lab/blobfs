@@ -16,9 +16,6 @@ import (
 	"github.com/standards-lab/blobfs/postgres/internal/dbtest"
 )
 
-// consumerSet is a consumer's migration set declared above blobfs's: one
-// table whose foreign key references blobfs_file, under the default
-// history table.
 var consumerSet = migrate.Set{
 	Name: "consumer",
 	Migrations: []migrate.Migration{{
@@ -30,9 +27,6 @@ var consumerSet = migrate.Set{
 	}},
 }
 
-// TestMigrationsWithAConsumerSet checks blobfs's set below a consumer's:
-// the order of Up, Verify, the refused revert, each set's revert, Reset,
-// and a replay from zero.
 func TestMigrationsWithAConsumerSet(t *testing.T) {
 	ctx := context.Background()
 	db := pgtest.Create(t, dbtest.Env, dbtest.Prefix).Session()
@@ -100,16 +94,12 @@ func TestMigrationsWithAConsumerSet(t *testing.T) {
 
 func ptr(s string) *string { return &s }
 
-// insertDirectory inserts a directory row through plain SQL, binding both
-// nullable columns, so a test can build any combination the root rule
-// allows or refuses.
 func insertDirectory(ctx context.Context, db *sqlate.DB, parent, name *string) (string, error) {
 	id := blobfs.NewID()
 	_, err := db.ExecContext(ctx, "INSERT INTO blobfs_directory (id, parent_id, name) VALUES ($1, $2, $3)", id, parent, name)
 	return id, err
 }
 
-// insertFile inserts a file row through plain SQL.
 func insertFile(ctx context.Context, db *sqlate.DB, dir, name, status string) (string, error) {
 	id := blobfs.NewID()
 	_, err := db.ExecContext(ctx,
@@ -118,10 +108,6 @@ func insertFile(ctx context.Context, db *sqlate.DB, dir, name, status string) (s
 	return id, err
 }
 
-// TestConstraints checks every named constraint and index as the engine
-// reports its violation. The root's index, which no store operation can
-// reach, is proved only here; the others' mapping to sentinels is proved
-// through the store in the conformance suite.
 func TestConstraints(t *testing.T) {
 	ctx := context.Background()
 	db := pgtest.Migrated(t, dbtest.Env, dbtest.Prefix, dbtest.Migrations(t)).Session()
@@ -159,10 +145,6 @@ func TestConstraints(t *testing.T) {
 		{"DirectoryNameTaken", func() error { _, err := insertDirectory(ctx, db, &root, ptr("docs")); return err }, sqlate.ErrUniqueViolation, blobfs.ConstraintUniqueDirectoryParentName},
 		{"MissingParent", func() error { _, err := insertDirectory(ctx, db, ptr(blobfs.NewID()), ptr("orphan")); return err }, sqlate.ErrForeignKeyViolation, blobfs.ConstraintForeignKeyDirectoryParent},
 		{"FileNameTaken", func() error { _, err := insertFile(ctx, db, docs, "a.txt", "pending"); return err }, sqlate.ErrUniqueViolation, blobfs.ConstraintUniqueFileDirectoryName},
-		// A row that repeats both the id and the name fails the primary
-		// key: PostgreSQL checks a table's unique indexes in creation
-		// order, the primary key's first, which is why a caller that loses
-		// a race under one supplied id meets ErrIDTaken, not ErrNameTaken.
 		{"DirectoryIDAndNameTaken", func() error {
 			_, err := db.ExecContext(ctx, "INSERT INTO blobfs_directory (id, parent_id, name) VALUES ($1, $2, 'docs')", docs, root)
 			return err

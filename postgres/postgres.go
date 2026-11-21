@@ -26,8 +26,6 @@ const TreeLockName = "blobfs_directory.tree"
 // locks of its own avoids it.
 const TreeLockKey int64 = -8521165719926625175
 
-// variant is the PostgreSQL data.Variant Engine builds: it embeds the base
-// it is given and overrides the three variation points and the inventory.
 type variant struct {
 	data.Variant
 	stmts       *query.Statements
@@ -36,8 +34,6 @@ type variant struct {
 	lockFile    query.Rows[string]
 }
 
-// resolved is one row of resolve_path: the directory reached and its
-// depth.
 type resolved struct {
 	blobfs.Directory
 	Depth int `json:"depth"`

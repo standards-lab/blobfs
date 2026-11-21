@@ -65,7 +65,6 @@ func Int(ctx context.Context, t testing.TB, sess sqlate.Session, query string, a
 	return n
 }
 
-// scan runs a one-row, one-column query into dest.
 func scan(ctx context.Context, t testing.TB, sess sqlate.Session, dest any, query string, args ...any) {
 	t.Helper()
 	rows, err := sess.QueryContext(ctx, query, args...)

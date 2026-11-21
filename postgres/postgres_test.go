@@ -21,13 +21,8 @@ import (
 	"github.com/standards-lab/blobfs/postgres"
 )
 
-// fallback is sqlate's postgres dialect with its capabilities hidden: the
-// same placeholders and error mapping, and no query.Returner, so every
-// returning command compiles to its fallback.
 type fallback struct{ sqlate.Dialect }
 
-// catalog builds the catalog a consumer on PostgreSQL builds: the engine's
-// overlay of the library's patterns, and blobfs's.
 func catalog(t *testing.T) *query.Catalog {
 	t.Helper()
 	c, err := query.NewCatalog(sqlatepg.Patterns(), data.Patterns())
@@ -37,8 +32,6 @@ func catalog(t *testing.T) *query.Catalog {
 	return c
 }
 
-// newStore compiles the store over the engine under dialect and returns
-// it with the variant the engine built for it.
 func newStore(t *testing.T, dialect sqlate.Dialect) (*data.Store, data.Variant) {
 	t.Helper()
 	var v data.Variant
@@ -54,9 +47,6 @@ func newStore(t *testing.T, dialect sqlate.Dialect) (*data.Store, data.Variant) 
 	return s, v
 }
 
-// TestEngine checks the engine's three native statements, their port
-// notes and transaction requirements, Serializes, Verify, and the refusal
-// of a catalog without the blobfs namespace.
 func TestEngine(t *testing.T) {
 	s, v := newStore(t, sqlatepg.Dialect{})
 	var names []string
@@ -94,15 +84,11 @@ func TestEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)
 	}
-	// data.New refuses such a catalog before it reaches an engine, so the
-	// engine is called directly; it fails compiling, before it binds base.
 	if _, err := postgres.Engine(bare, sqlatepg.Dialect{}, nil); err == nil {
 		t.Error("Engine without the blobfs namespace compiled; resolve_path includes blobfs.directory_columns")
 	}
 }
 
-// TestStoreForms checks the store over the engine lists its statements
-// then the variant's, and the returning commands' forms under each dialect.
 func TestStoreForms(t *testing.T) {
 	returning := []string{"complete_file", "create_directory", "create_file", "delete_file", "move_directory", "move_file"}
 	for _, c := range []struct {
@@ -144,9 +130,6 @@ func TestStoreForms(t *testing.T) {
 	}
 }
 
-// TestTreeLockKey pins the key: the 64-bit FNV-1a hash of TreeLockName,
-// so a consumer that must avoid it, or a port that must derive the same
-// one, can recompute it.
 func TestTreeLockKey(t *testing.T) {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(postgres.TreeLockName))
@@ -155,8 +138,6 @@ func TestTreeLockKey(t *testing.T) {
 	}
 }
 
-// TestLockTreeSQL proves LockTree runs the advisory lock statement in the
-// transaction with the key bound.
 func TestLockTreeSQL(t *testing.T) {
 	_, v := newStore(t, sqltest.Dialect{})
 	pool, rec := sqltest.Open(t, sqltest.Response{Affected: 0})
@@ -181,9 +162,6 @@ func TestLockTreeSQL(t *testing.T) {
 	}
 }
 
-// TestHoldFileSQL checks Hold through the variant is the locking read, its
-// bindings with and without a guarding version, and the refusals classified from the
-// store's read as over the baseline.
 func TestHoldFileSQL(t *testing.T) {
 	ctx := context.Background()
 	fileRow := func(status blobfs.Status, version int64) sqltest.Response {
@@ -226,8 +204,6 @@ func TestHoldFileSQL(t *testing.T) {
 		t.Errorf("the hold at a version bound %v, want the id and the version", c.Args)
 	}
 
-	// A deleting file reads its directory too, to tell its own delete from
-	// its branch's.
 	for _, r := range []struct {
 		name  string
 		reads []sqltest.Response
@@ -258,18 +234,13 @@ func TestHoldFileSQL(t *testing.T) {
 	}
 }
 
-// resolvedColumns is the resolve_path row: the directory columns then the
-// depth.
 var resolvedColumns = []string{"id", "parent_id", "name", "status", "version", "created_at", "updated_at", "depth"}
 
-// resolvedResponse scripts the deepest row a walk reached, at depth.
 func resolvedResponse(id, parent, name string, depth int64) sqltest.Response {
 	now := time.Now()
 	return sqltest.Response{Columns: resolvedColumns, Rows: [][]driver.Value{{id, parent, name, "active", int64(1), now, now, depth}}}
 }
 
-// openStore compiles the store over the engine under the stub dialect
-// and opens a scripted pool over the responses.
 func openStore(t *testing.T, responses ...sqltest.Response) (*data.Store, *sqlate.DB, *sqltest.Recorder) {
 	t.Helper()
 	s, _ := newStore(t, sqltest.Dialect{})
@@ -277,9 +248,6 @@ func openStore(t *testing.T, responses ...sqltest.Response) (*data.Store, *sqlat
 	return s, sqlate.Wrap(pool, sqltest.Dialect{}), rec
 }
 
-// TestResolvePathIsOneStatement checks FindByPath through the variant is
-// one query at any depth, its bindings, the failing prefix, and a missing
-// start.
 func TestResolvePathIsOneStatement(t *testing.T) {
 	ctx := context.Background()
 	nfd := "cafe" + string(rune(0x0301))
@@ -308,8 +276,6 @@ func TestResolvePathIsOneStatement(t *testing.T) {
 		t.Errorf("the empty path bound %#v, want an empty []string", rec.Calls()[0].Args[1])
 	}
 
-	// Ten segments, the walk stopping at the second: one query, and the
-	// prefix names the segment that failed.
 	s, db, rec = openStore(t, resolvedResponse("A", blobfs.RootID, "a", 1))
 	_, err = s.Directories.FindByPath(ctx, db, blobfs.RootID, "a/missing/c/d/e/f/g/h/i/j")
 	if !errors.Is(err, blobfs.ErrNotFound) || !strings.HasSuffix(err.Error(), " at a/missing: "+blobfs.ErrNotFound.Error()) {

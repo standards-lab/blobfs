@@ -11,11 +11,6 @@ import (
 	"github.com/standards-lab/blobfs"
 )
 
-// azureRules is a KeyValidator that applies the key rules of the azureblob
-// provider as surveyed: non-empty, at most 1024 runes, at most 254 segments,
-// no control characters, no trailing ".", "/", or "\", and no segment ending
-// in ".". Invalid UTF-8 is rejected here too, which azureblob does not do
-// and blobfs's sanitizer must therefore prevent on its own.
 type azureRules struct{}
 
 func (azureRules) ValidateKey(key string) error {
@@ -43,9 +38,6 @@ func (azureRules) ValidateKey(key string) error {
 	return nil
 }
 
-// limited is a KeyValidator with a configurable rune limit and no rules of
-// its own beyond the limit, so a test can isolate the length check the
-// store applies.
 type limited int
 
 func (l limited) ValidateKey(key string) error {
@@ -55,7 +47,6 @@ func (l limited) ValidateKey(key string) error {
 	return nil
 }
 
-// refusing is a KeyValidator that refuses every key with a fixed error.
 type refusing struct{ err error }
 
 func (r refusing) ValidateKey(string) error { return r.err }
@@ -92,8 +83,6 @@ func TestSanitizeFilename(t *testing.T) {
 	}
 }
 
-// TestSanitizedKeysSatisfyAzure builds a key from every awkward name and
-// checks the azureblob rules accept it.
 func TestSanitizedKeysSatisfyAzure(t *testing.T) {
 	names := []string{
 		"", ".", "..", "...", "   ", "\t\n", "a/b/c", `a\`, "trailing.", "trailing ",
@@ -125,15 +114,10 @@ func TestNewKey(t *testing.T) {
 	}
 }
 
-// TestNewKeyCountsRunes fixes the rune-boundary rule as the store applies
-// it: a key whose rune count fits the limit is accepted even when its byte
-// count exceeds it, and one rune over is refused, through ValidateKey
-// alone, since the interface carries no length of its own.
 func TestNewKeyCountsRunes(t *testing.T) {
 	const id = "id"
 	const limit = 50
-	// "id/" is 3 runes; 47 two-byte runes fill the limit exactly (97 bytes).
-	fits := strings.Repeat("é", limit-3)
+	fits := strings.Repeat("é", limit-utf8.RuneCountInString(id+"/"))
 	key, err := blobfs.NewKey(limited(limit), id, fits)
 	if err != nil {
 		t.Fatalf("NewKey at the rune limit: %v", err)

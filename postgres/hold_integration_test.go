@@ -19,10 +19,6 @@ import (
 	"github.com/standards-lab/blobfs/postgres/internal/dbtest"
 )
 
-// TestHoldWritesNoTuple checks the variant's hold, plain and at a version,
-// leaves the row's ctid and xmin unchanged while a Delete on another
-// transaction blocks behind it; the baseline's hold, as a control, moves
-// them.
 func TestHoldWritesNoTuple(t *testing.T) {
 	const (
 		blocked   = 500 * time.Millisecond
@@ -47,8 +43,6 @@ func TestHoldWritesNoTuple(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	// version reads the row's physical location and the transaction that
-	// wrote its current version, from the pool, outside any holder.
 	version := func(id string) string {
 		t.Helper()
 		rows, err := db.QueryContext(ctx, "SELECT ctid::text || ' ' || xmin::text FROM blobfs_file WHERE id = $1", id)
@@ -154,8 +148,6 @@ func TestHoldWritesNoTuple(t *testing.T) {
 		if err := store.Files.Hold(ctx, holder, id, data.VersionOptions{}); !errors.Is(err, blobfs.ErrDeleting) {
 			t.Fatalf("Hold of a deleting row = %v, want ErrDeleting", err)
 		}
-		// The refused hold locked nothing, so a Purge on another session
-		// removes the row at once.
 		purged := make(chan error, 1)
 		go func() { purged <- store.Files.Purge(ctx, db, id) }()
 		select {

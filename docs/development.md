@@ -1,7 +1,7 @@
 # Development
 
 The reasoning behind the repository's configuration: the module list, the check, the SQL
-conventions, and the development stack. The [README](../README.md#development) lists the tasks.
+conventions, the tests, and the development stack. The [README](../README.md#development) lists the tasks.
 
 ## Modules
 
@@ -37,6 +37,31 @@ its tier and must carry its port note to compile, and a file there that declared
 tier is still held to the standard forms. The published patterns take the same delimiter and
 native-form checks. The migrations role has no native-forms check, since the DDL is
 PostgreSQL's, the only engine's; each migration holds a single statement.
+
+## The tests
+
+- **The zone.** The `postgres` package's `TestMain` sets `time.Local` to Europe/London, with
+  `time/tzdata` imported so the zone loads on a host without a zone database, so a `File` or
+  `Directory` the store returned in `time.Local`, not `time.UTC`, fails the conformance suite's
+  checks whatever zone the host runs in.
+- **The cost assertions.** `postgres/cost_integration_test.go` holds the plan-shape and cost
+  regression assertions for the statements the store runs. Each test seeds a fixture in its own
+  database, explains a statement as the store composes it with `EXPLAIN (ANALYZE, BUFFERS)`
+  through `internal/dbtest`, and asserts a plan shape and a buffer bound, never a time. The
+  bounds carry a wide margin over the measured value and sit well below what the guarded
+  regression would read. A plan shape is asserted only where the fixture makes the index the
+  planner's own choice, and no test disables a plan type.
+- **The cost fixtures.** In the listing fixture the big directory holds a tenth of the files,
+  so a read of the whole directory is a scan over its own pages and not a sequential scan of the
+  table, and its files were inserted first, so they sit on contiguous heap pages. The per-row
+  fixture has enough rows that a lookup by primary key or by a unique constraint is the
+  planner's choice over a sequential scan on both tables, and a tenth of its files are pending,
+  so the stale partial index is not the cheapest path to a row by id.
+- **The released migrations.** `postgres/golden_test.go` pins every released migration as
+  `Migrations` returns it: its name, the sha256 of its up and down texts without their `--|`
+  header, which `Transactional` carries, and whether it runs in a transaction. A new migration
+  adds a row; a changed row is a breaking change to the schema's version line. The pins start
+  at the module's first release, v0.1.0.
 
 ## The development stack
 
