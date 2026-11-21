@@ -142,6 +142,7 @@ mise run acceptance    # run db:up, integration, and example, then db:reset what
 carries its configuration and health check; `mise run currency` reports a pin behind its latest.
 `mise.toml` sets the connection settings the integration tier and the example read, their ports
 following the same two variables. The integration tier is not part of CI.
+[Development](docs/development.md) explains the configuration's reasoning.
 
 ## License
 

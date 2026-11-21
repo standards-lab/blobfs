@@ -4,22 +4,15 @@ golangci-lint = "2.15.0"
 jq = "1.8.2"
 "aqua:google/go-containerregistry" = "0.22.1"
 
-# Space-separated list of module directories, kept in sync with the go.work
-# use-list. "." is the base module; postgres is the engine sub-module and
-# example the composition proof. The maintenance tasks below skip a
-# directory without a go.mod; check, currency, and upgrade require one.
+# See docs/development.md
 [env]
 GO_MODULES = ". postgres example"
-# The compose stack's defaults, whose ports follow POSTGRES_PORT and
-# AZURITE_BLOB_PORT as compose.yml's do. The Azurite account and key are the
-# emulator's published development credentials, not secrets.
 BLOBFS_DSN = "postgres://app:app@127.0.0.1:{{ get_env(name='POSTGRES_PORT', default='5434') }}/app?sslmode=disable"
 BLOBFS_STORAGE_ENDPOINT = "http://127.0.0.1:{{ get_env(name='AZURITE_BLOB_PORT', default='10000') }}/devstoreaccount1"
 BLOBFS_STORAGE_ACCOUNT = "devstoreaccount1"
 BLOBFS_STORAGE_KEY = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
 BLOBFS_STORAGE_CONTAINER = "blobfs"
 
-# The one check: read-only and deterministic, stopping at the first failure.
 [tasks.check]
 description = "Build, vet, format, fix, tidy, test, and lint every module, then sqlint the repository; writes nothing"
 run = '''
@@ -37,17 +30,12 @@ for mod in $GO_MODULES; do
   go test -race ./...
   golangci-lint run ./...
 done
-# sqlint resolves the modules sqlint.toml names with go list -m, which the
-# base module reaches only through the committed go.work, so it runs with
-# the workspace on. go list -m does not download, so the engine is fetched
-# first.
 echo "check: sqlint"
 cd "$MISE_PROJECT_ROOT"
 env -u GOWORK go mod download github.com/standards-lab/sqlate/postgres
 env -u GOWORK go run github.com/standards-lab/sqlate/sqlint/cmd/sqlint .
 '''
 
-# Currency: report what trails its latest, and the convenience that upgrades it.
 [tasks.currency]
 description = "Report every requirement, Go version, tool, action pin, and image tag behind its latest; writes nothing"
 run = "scripts/currency.sh"
@@ -57,7 +45,6 @@ description = "Upgrade every module's go directive and direct requirements and t
 run = '''
 set -eu
 export GOWORK=off
-# The go directive follows the current Go minor, with no toolchain line.
 go_minor=$(mise latest go | cut -d. -f1,2)
 for mod in $GO_MODULES; do
   cd "$MISE_PROJECT_ROOT/$mod"
@@ -70,7 +57,6 @@ cd "$MISE_PROJECT_ROOT"
 mise upgrade --bump --local
 '''
 
-# Maintenance.
 [tasks.tidy]
 description = "Run go mod tidy across all modules"
 run = '''
@@ -82,7 +68,6 @@ for mod in $GO_MODULES; do
 done
 '''
 
-# Verification.
 [tasks.fmt]
 description = "Format all Go source"
 run = "gofmt -w ."
@@ -98,7 +83,6 @@ for mod in $GO_MODULES; do
 done
 if [ -f sqlint.toml ]; then
   echo "==> sqlint"
-  # The engine resolves through go list -m, which does not download.
   go mod download github.com/standards-lab/sqlate/postgres
   go run github.com/standards-lab/sqlate/sqlint/cmd/sqlint .
 fi
@@ -126,7 +110,6 @@ for mod in $GO_MODULES; do
 done
 '''
 
-# Testing.
 [tasks.test]
 description = "Run the unit tier across all modules"
 run = '''
@@ -156,8 +139,6 @@ mise run integration
 mise run example
 '''
 
-# The development stack: compose.yml's PostgreSQL and Azurite, whose data
-# lives in named volumes that db:down keeps and db:reset drops.
 [tasks."db:up"]
 description = "Build and start the compose PostgreSQL and Azurite and wait until they are healthy"
 run = "docker compose up -d --wait --build"
