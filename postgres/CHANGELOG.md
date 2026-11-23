@@ -7,6 +7,8 @@ changelog covers this sub-module only; the base module keeps its own.
 
 ## [Unreleased]
 
+## [v0.6.1] - 2026-11-23
+
 ### Changed
 
 - The integration tier's throwaway databases come from `sqlate/postgres/pgtest`, created on the
@@ -147,7 +149,8 @@ The first release of the PostgreSQL engine.
 
 Requires `github.com/standards-lab/blobfs v0.1.0` and `github.com/standards-lab/sqlate v0.4.0`.
 
-[Unreleased]: https://github.com/standards-lab/blobfs/compare/postgres/v0.6.0...HEAD
+[Unreleased]: https://github.com/standards-lab/blobfs/compare/postgres/v0.6.1...HEAD
+[v0.6.1]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.6.1
 [v0.6.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.6.0
 [v0.5.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.5.0
 [v0.4.0]: https://github.com/standards-lab/blobfs/releases/tag/postgres/v0.4.0
